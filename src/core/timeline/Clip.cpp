@@ -34,45 +34,78 @@ void Clip::reserveId(uint64_t usedId) noexcept
     }
 }
 
-void Clip::copyBaseStateTo(Clip& dst) const
+std::unique_ptr<Clip> Clip::clone() const
 {
-    dst.m_label        = m_label;
-    dst.m_shotName     = m_shotName;
-    dst.m_layerId      = m_layerId;
-    dst.m_groupId      = m_groupId;
-    dst.m_linkId       = m_linkId;
-    dst.m_syncLine     = m_syncLine;
-    dst.m_color        = m_color;
-    dst.m_enabled      = m_enabled;
-    dst.m_offline      = m_offline;
-    dst.m_renderStatus = m_renderStatus;
+    auto copy = createEmpty();
+    copy->copyBaseStateFrom(*this, CloneMode::Duplicate);
+    copy->copyOwnStateFrom(*this, CloneMode::Duplicate);
+    return copy;
+}
 
-    dst.m_timelineIn        = m_timelineIn;
-    dst.m_duration          = m_duration;
-    dst.m_sourceIn          = m_sourceIn;
-    dst.m_speed             = m_speed;
-    dst.m_maintainPitch     = m_maintainPitch;
-    dst.m_timeInterpolation = m_timeInterpolation;
-    dst.m_speedRamp         = m_speedRamp;
+std::unique_ptr<Clip> Clip::cloneForSnapshot() const
+{
+    auto copy = createEmpty();
+    copy->copyBaseStateFrom(*this, CloneMode::Snapshot);
+    copy->copyOwnStateFrom(*this, CloneMode::Snapshot);
+    copy->m_id = m_id;
+    return copy;
+}
 
-    dst.m_opacity      = m_opacity;
-    dst.m_posX         = m_posX;
-    dst.m_posY         = m_posY;
-    dst.m_scaleX       = m_scaleX;
-    dst.m_scaleY       = m_scaleY;
-    dst.m_rotation     = m_rotation;
-    dst.m_shutterAngle = m_shutterAngle;
-    dst.m_anchorX      = m_anchorX;
-    dst.m_anchorY      = m_anchorY;
+bool Clip::assignStateFrom(const Clip& src)
+{
+    if (src.m_type != m_type) return false;
+    if (&src == this) return true;
+    copyBaseStateFrom(src, CloneMode::Assign);
+    copyOwnStateFrom(src, CloneMode::Assign);
+    return true;
+}
 
-    dst.m_blendMode = m_blendMode;
-    if (!m_effects.isEmpty()) {
-        auto clonedEffects = m_effects.clone();
-        if (clonedEffects)
-            dst.m_effects = std::move(*clonedEffects);
+void Clip::copyBaseStateFrom(const Clip& src, CloneMode mode)
+{
+    m_label        = src.m_label;
+    m_shotName     = src.m_shotName;
+    m_layerId      = src.m_layerId;
+    m_groupId      = src.m_groupId;
+    m_linkId       = src.m_linkId;
+    m_syncLine     = src.m_syncLine;
+    m_color        = src.m_color;
+    m_enabled      = src.m_enabled;
+    m_offline      = src.m_offline;
+    m_renderStatus = src.m_renderStatus;
+
+    m_timelineIn        = src.m_timelineIn;
+    m_duration          = src.m_duration;
+    m_sourceIn          = src.m_sourceIn;
+    m_speed             = src.m_speed;
+    m_maintainPitch     = src.m_maintainPitch;
+    m_timeInterpolation = src.m_timeInterpolation;
+    m_speedRamp         = src.m_speedRamp;
+
+    m_opacity      = src.m_opacity;
+    m_posX         = src.m_posX;
+    m_posY         = src.m_posY;
+    m_scaleX       = src.m_scaleX;
+    m_scaleY       = src.m_scaleY;
+    m_rotation     = src.m_rotation;
+    m_shutterAngle = src.m_shutterAngle;
+    m_anchorX      = src.m_anchorX;
+    m_anchorY      = src.m_anchorY;
+
+    m_blendMode = src.m_blendMode;
+    switch (mode) {
+    case CloneMode::Duplicate:
+        if (auto cloned = src.m_effects.clone())
+            m_effects = std::move(*cloned);
+        break;
+    case CloneMode::Snapshot:
+        m_effects = src.m_effects.cloneKeepingIds();
+        break;
+    case CloneMode::Assign:
+        m_effects.assignStateFrom(src.m_effects);
+        break;
     }
-    dst.m_masks   = m_masks;
-    dst.m_markers = m_markers;
+    m_masks   = src.m_masks;
+    m_markers = src.m_markers;
 }
 
 int Clip::migrateLegacyMasksToSourceLocal(uint32_t sequenceWidth,

@@ -74,6 +74,12 @@ public:
 
     // ── Clone ───────────────────────────────────────────────────────────
     [[nodiscard]] std::unique_ptr<EffectStack> clone() const;
+    /// Exact copy keeping every effect id (render snapshots, undo copies).
+    [[nodiscard]] EffectStack cloneKeepingIds() const;
+    /// Make this stack equal to `src` in place: effects present in both (same
+    /// id and type) are kept as objects and assigned; the rest are removed or
+    /// copied in with their ids. Order follows `src`.
+    void assignStateFrom(const EffectStack& src);
 
 private:
     std::vector<std::unique_ptr<Effect>> m_effects;

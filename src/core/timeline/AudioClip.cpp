@@ -21,25 +21,26 @@ AudioClip::AudioClip(const std::string& mediaPath)
     m_mediaPath = mediaPath;
 }
 
-std::unique_ptr<Clip> AudioClip::clone() const
+std::unique_ptr<Clip> AudioClip::createEmpty() const
 {
-    auto copy = std::make_unique<AudioClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<AudioClip>();
+}
 
+void AudioClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const AudioClip&>(src);
     // AudioClip-specific
-    copy->m_mediaPath        = m_mediaPath;
-    copy->m_mediaId          = m_mediaId;
-    copy->m_sampleRate       = m_sampleRate;
-    copy->m_channels         = m_channels;
-    copy->m_sourceDuration   = m_sourceDuration;
-    copy->m_audioStreamIndex = m_audioStreamIndex;
-    copy->m_volume         = m_volume;
-    copy->m_pan            = m_pan;
-    copy->m_fadeIn         = m_fadeIn;
-    copy->m_fadeOut        = m_fadeOut;
-    copy->m_audioFx        = m_audioFx.clone();
-
-    return copy;
+    m_mediaPath        = o.m_mediaPath;
+    m_mediaId          = o.m_mediaId;
+    m_sampleRate       = o.m_sampleRate;
+    m_channels         = o.m_channels;
+    m_sourceDuration   = o.m_sourceDuration;
+    m_audioStreamIndex = o.m_audioStreamIndex;
+    m_volume         = o.m_volume;
+    m_pan            = o.m_pan;
+    m_fadeIn         = o.m_fadeIn;
+    m_fadeOut        = o.m_fadeOut;
+    m_audioFx        = o.m_audioFx.clone();
 }
 
 } // namespace rt

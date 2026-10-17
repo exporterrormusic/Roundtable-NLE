@@ -53,6 +53,19 @@ EffectControlsPanel::EffectControlsPanel(QWidget* parent)
 
 EffectControlsPanel::~EffectControlsPanel() = default;
 
+void EffectControlsPanel::beginWidgetEdit()
+{
+    if (m_widgetEdit.active() || !m_timeline || !m_commandStack) return;
+    if (EditSession* edits = m_commandStack->editSession())
+        m_widgetEdit = EditGesture(*edits, "Effect Controls", *m_timeline);
+}
+
+void EffectControlsPanel::endWidgetEdit()
+{
+    // Each widget's own commit push names the step (CommandStack absorbs it).
+    m_widgetEdit.commit();
+}
+
 ScrubbySpinBox* EffectControlsPanel::createScrubby(double min, double max,
                                                     double step, int decimals,
                                                     const QString& suffix)

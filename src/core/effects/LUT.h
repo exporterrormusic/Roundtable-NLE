@@ -34,6 +34,9 @@ public:
     ~LUT() override = default;
 
     [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+protected:
+    void copyExtraStateFrom(const Effect& src) override;
+public:
 
     enum Param : size_t {
         Intensity = 0,  // 0–1 (blend between original and LUT-graded)

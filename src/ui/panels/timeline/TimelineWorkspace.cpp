@@ -49,6 +49,8 @@
 #include "panels/monitors/SourceMonitor.h"
 #include "playback/PlaybackController.h"
 #include "playback/SnapshotPublisher.h"
+#include "command/CommandStack.h"
+#include "edit/EditSession.h"
 
 #include <QMouseEvent>
 #include <QTimer>
@@ -219,6 +221,9 @@ TimelineWorkspace::~TimelineWorkspace()
     }
     if (m_snapshotPublishTimer) m_snapshotPublishTimer->stop();
     if (m_snapshotVerifyTimer) m_snapshotVerifyTimer->stop();
+    // The edit session outlives this widget; drop the listener that captures us.
+    if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
+        edits->setCommitListener({});
 
     // Cancel any in-flight background audio decode before destroying
     if (m_audioPlayback) {

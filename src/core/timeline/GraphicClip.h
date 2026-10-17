@@ -65,7 +65,10 @@ public:
     ShapeLayer* addShapeLayer(ShapeType shape = ShapeType::Rectangle);
 
     // ── Clone ───────────────────────────────────────────────────────────
-    [[nodiscard]] std::unique_ptr<Clip> clone() const override;
+protected:
+    [[nodiscard]] std::unique_ptr<Clip> createEmpty() const override;
+    void copyOwnStateFrom(const Clip& src, CloneMode mode) override;
+public:
 
 private:
     /// Layer stack: index 0 = bottom (rendered first), last = top.

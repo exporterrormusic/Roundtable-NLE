@@ -41,6 +41,10 @@ namespace rt {
 
 void TimelinePanel::setTimeline(Timeline* timeline)
 {
+    // A drag still open on the outgoing sequence ends here (its sequence is
+    // still alive: callers unbind before destroying a project).
+    if (timeline != m_timeline) commitDragEditGesture();
+
     auto& mediaTasks = MediaTaskQueue::instance();
     mediaTasks.cancelOwner(m_waveformTaskOwner);
     mediaTasks.cancelOwner(m_thumbnailTaskOwner);

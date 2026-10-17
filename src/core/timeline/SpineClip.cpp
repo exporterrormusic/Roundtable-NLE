@@ -21,26 +21,27 @@ SpineClip::SpineClip(const std::string& characterName, const std::string& outfit
     m_outfit = outfit;
 }
 
-std::unique_ptr<Clip> SpineClip::clone() const
+std::unique_ptr<Clip> SpineClip::createEmpty() const
 {
-    auto copy = std::make_unique<SpineClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<SpineClip>();
+}
 
+void SpineClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const SpineClip&>(src);
     // SpineClip-specific properties
-    copy->m_characterName = m_characterName;
-    copy->m_outfit        = m_outfit;
-    copy->m_stance        = m_stance;
-    copy->m_animation     = m_animation;
-    copy->m_looping       = m_looping;
-    copy->m_talking       = m_talking;
-    copy->m_animSpeed     = m_animSpeed;
-    copy->m_useGlobalTime = m_useGlobalTime;
-    copy->m_cropL         = m_cropL;
-    copy->m_cropR         = m_cropR;
-    copy->m_cropT         = m_cropT;
-    copy->m_cropB         = m_cropB;
-
-    return copy;
+    m_characterName = o.m_characterName;
+    m_outfit        = o.m_outfit;
+    m_stance        = o.m_stance;
+    m_animation     = o.m_animation;
+    m_looping       = o.m_looping;
+    m_talking       = o.m_talking;
+    m_animSpeed     = o.m_animSpeed;
+    m_useGlobalTime = o.m_useGlobalTime;
+    m_cropL         = o.m_cropL;
+    m_cropR         = o.m_cropR;
+    m_cropT         = o.m_cropT;
+    m_cropB         = o.m_cropB;
 }
 
 } // namespace rt

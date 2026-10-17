@@ -13,16 +13,17 @@ SequenceClip::SequenceClip()
     // Color left at sentinel — theme tint applies.
 }
 
-std::unique_ptr<Clip> SequenceClip::clone() const
+std::unique_ptr<Clip> SequenceClip::createEmpty() const
 {
-    auto copy = std::make_unique<SequenceClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<SequenceClip>();
+}
 
+void SequenceClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const SequenceClip&>(src);
     // SequenceClip fields
-    copy->m_sequenceIndex = m_sequenceIndex;
-    copy->m_sequenceName  = m_sequenceName;
-
-    return copy;
+    m_sequenceIndex = o.m_sequenceIndex;
+    m_sequenceName  = o.m_sequenceName;
 }
 
 } // namespace rt

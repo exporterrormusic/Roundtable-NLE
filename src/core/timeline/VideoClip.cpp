@@ -22,34 +22,35 @@ VideoClip::VideoClip(const std::string& mediaPath)
     m_mediaPath = mediaPath;
 }
 
-std::unique_ptr<Clip> VideoClip::clone() const
+std::unique_ptr<Clip> VideoClip::createEmpty() const
 {
-    auto copy = std::make_unique<VideoClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<VideoClip>();
+}
 
+void VideoClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const VideoClip&>(src);
     // VideoClip-specific
-    copy->m_mediaPath      = m_mediaPath;
-    copy->m_mediaId        = m_mediaId;
-    copy->m_sourceWidth    = m_sourceWidth;
-    copy->m_sourceHeight   = m_sourceHeight;
-    copy->m_sourceRotation = m_sourceRotation;
-    copy->m_sourceMetadataAuthoritative = m_sourceMetadataAuthoritative;
-    copy->m_sourceFps      = m_sourceFps;
-    copy->m_sourceDuration = m_sourceDuration;
-    copy->m_hasAudio       = m_hasAudio;
-    copy->m_volume         = m_volume;
-    copy->m_cropL          = m_cropL;
-    copy->m_cropR          = m_cropR;
-    copy->m_cropT          = m_cropT;
-    copy->m_cropB          = m_cropB;
-    copy->m_characterName  = m_characterName;
-    copy->m_isTalking      = m_isTalking;
-    copy->m_videoMutePath  = m_videoMutePath;
-    copy->m_videoTalkPath  = m_videoTalkPath;
-    copy->m_outfit         = m_outfit;
-    copy->m_animationName  = m_animationName;
-
-    return copy;
+    m_mediaPath      = o.m_mediaPath;
+    m_mediaId        = o.m_mediaId;
+    m_sourceWidth    = o.m_sourceWidth;
+    m_sourceHeight   = o.m_sourceHeight;
+    m_sourceRotation = o.m_sourceRotation;
+    m_sourceMetadataAuthoritative = o.m_sourceMetadataAuthoritative;
+    m_sourceFps      = o.m_sourceFps;
+    m_sourceDuration = o.m_sourceDuration;
+    m_hasAudio       = o.m_hasAudio;
+    m_volume         = o.m_volume;
+    m_cropL          = o.m_cropL;
+    m_cropR          = o.m_cropR;
+    m_cropT          = o.m_cropT;
+    m_cropB          = o.m_cropB;
+    m_characterName  = o.m_characterName;
+    m_isTalking      = o.m_isTalking;
+    m_videoMutePath  = o.m_videoMutePath;
+    m_videoTalkPath  = o.m_videoTalkPath;
+    m_outfit         = o.m_outfit;
+    m_animationName  = o.m_animationName;
 }
 
 } // namespace rt

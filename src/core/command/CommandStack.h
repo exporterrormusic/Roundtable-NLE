@@ -56,6 +56,8 @@
 
 namespace rt {
 
+class EditSession;
+
 class CommandStack
 {
 public:
@@ -140,7 +142,16 @@ public:
     /// posted per finished gesture. undo()/redo()/clear() also seal.
     void sealMerge() noexcept { m_mergeSealed = true; }
 
+    /// The timeline edit gateway (EditSession.h). The session registers
+    /// itself; null when none exists (most core tests).
+    void setEditSession(EditSession* session) noexcept { m_editSession = session; }
+    [[nodiscard]] EditSession* editSession() const noexcept { return m_editSession; }
+
 private:
+    EditSession* m_editSession{nullptr};
+    /// True when an open EditSession gesture takes over `cmd` (see .cpp).
+    bool absorbedByOpenGesture(const Command& cmd, bool alreadyApplied);
+
     std::deque<std::unique_ptr<Command>> m_undoStack;
     std::deque<std::unique_ptr<Command>> m_redoStack;
     size_t                               m_maxDepth;

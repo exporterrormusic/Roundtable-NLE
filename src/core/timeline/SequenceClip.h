@@ -25,8 +25,12 @@ public:
     /// Display name of the nested sequence (informational, not authoritative).
     [[nodiscard]] const std::string& sequenceName() const noexcept { return m_sequenceName; }
     void setSequenceName(const std::string& name) { m_sequenceName = name; }
+protected:
 
-    [[nodiscard]] std::unique_ptr<Clip> clone() const override;
+    [[nodiscard]] std::unique_ptr<Clip> createEmpty() const override;
+
+    void copyOwnStateFrom(const Clip& src, CloneMode mode) override;
+public:
 
 private:
     size_t      m_sequenceIndex{0};

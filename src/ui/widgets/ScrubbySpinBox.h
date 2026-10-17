@@ -87,6 +87,11 @@ private:
     void applyPremiereStyle();
     void installLineEditFilter();
     void onEditingFinished();
+    // Tell the hosting panel (EditBracketHost.h) where one edit — a scrub or
+    // a typed entry — begins and ends, so it records as one undo step.
+    void beginHostEdit();
+    void endHostEdit();
+    bool m_hostEditOpen{false};
 
     double m_scrubStep{0.01};
     double m_fineMultiplier{0.1};

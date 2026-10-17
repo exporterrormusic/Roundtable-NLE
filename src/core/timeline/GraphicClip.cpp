@@ -102,18 +102,36 @@ ShapeLayer* GraphicClip::addShapeLayer(ShapeType shape)
 //  Clone (deep copy)
 // ═════════════════════════════════════════════════════════════════════════════
 
-std::unique_ptr<Clip> GraphicClip::clone() const
+std::unique_ptr<Clip> GraphicClip::createEmpty() const
 {
-    auto copy = std::make_unique<GraphicClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<GraphicClip>();
+}
 
-    // Clone all graphic layers
-    for (const auto& layer : m_layers) {
-        if (layer)
-            copy->m_layers.push_back(layer->clone());
+void GraphicClip::copyOwnStateFrom(const Clip& src, CloneMode mode)
+{
+    const auto& o = static_cast<const GraphicClip&>(src);
+    std::vector<std::unique_ptr<GraphicLayer>> layers;
+    layers.reserve(o.m_layers.size());
+    for (const auto& want : o.m_layers) {
+        if (!want) continue;
+        if (mode == CloneMode::Assign) {
+            // Keep the live layer object (the Graphics panel holds pointers
+            // to it) when the same id and type still exist.
+            auto it = std::find_if(m_layers.begin(), m_layers.end(),
+                [&](const std::unique_ptr<GraphicLayer>& have) {
+                    return have && have->layerId() == want->layerId()
+                        && have->layerType() == want->layerType();
+                });
+            if (it != m_layers.end()) {
+                (*it)->assignStateFrom(*want);
+                layers.push_back(std::move(*it));
+                continue;
+            }
+        }
+        layers.push_back(mode == CloneMode::Duplicate ? want->clone()
+                                                      : want->cloneKeepingId());
     }
-
-    return copy;
+    m_layers = std::move(layers);
 }
 
 } // namespace rt

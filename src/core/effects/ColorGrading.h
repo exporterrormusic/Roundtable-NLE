@@ -29,6 +29,9 @@ public:
     ~ColorGrading() override = default;
 
     [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+protected:
+    void copyExtraStateFrom(const Effect& src) override;
+public:
 
     // ── Parameter indices (into m_params) ───────────────────────────────
     // Must match the order that addParam() is called in the constructor,

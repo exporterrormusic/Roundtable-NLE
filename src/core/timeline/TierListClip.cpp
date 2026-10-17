@@ -56,26 +56,27 @@ int64_t TierListClip::eventTickAt(int64_t timelineTick) const noexcept
     return std::max<int64_t>(0, mapped);
 }
 
-std::unique_ptr<Clip> TierListClip::clone() const
+std::unique_ptr<Clip> TierListClip::createEmpty() const
 {
-    auto copy = std::make_unique<TierListClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<TierListClip>();
+}
 
+void TierListClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const TierListClip&>(src);
     // TierListClip-specific
-    copy->m_title          = m_title;
-    copy->m_tiers          = m_tiers;
-    copy->m_entryAspect    = m_entryAspect;
-    copy->m_customAspectW  = m_customAspectW;
-    copy->m_customAspectH  = m_customAspectH;
-    copy->m_topSafeMargin  = m_topSafeMargin;
-    copy->m_rightSafeMargin= m_rightSafeMargin;
-    copy->m_bgColor        = m_bgColor;
-    copy->m_entries        = m_entries;
-    copy->m_subbins        = m_subbins;
-    copy->m_events         = m_events;
-    copy->m_renderRevision.store(renderRevision(), std::memory_order_relaxed);
-
-    return copy;
+    m_title          = o.m_title;
+    m_tiers          = o.m_tiers;
+    m_entryAspect    = o.m_entryAspect;
+    m_customAspectW  = o.m_customAspectW;
+    m_customAspectH  = o.m_customAspectH;
+    m_topSafeMargin  = o.m_topSafeMargin;
+    m_rightSafeMargin= o.m_rightSafeMargin;
+    m_bgColor        = o.m_bgColor;
+    m_entries        = o.m_entries;
+    m_subbins        = o.m_subbins;
+    m_events         = o.m_events;
+    m_renderRevision.store(o.renderRevision(), std::memory_order_relaxed);
 }
 
 } // namespace rt

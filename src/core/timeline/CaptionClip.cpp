@@ -113,41 +113,42 @@ void CaptionClip::setStyleRuns(std::vector<TextStyleRun> runs)
  m_styleRuns = std::move(normalized);
 }
 
-std::unique_ptr<Clip> CaptionClip::clone() const
+std::unique_ptr<Clip> CaptionClip::createEmpty() const
 {
- auto copy = std::make_unique<CaptionClip>();
- copyBaseStateTo(*copy);
+ return std::make_unique<CaptionClip>();
+}
 
+void CaptionClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+ const auto& o = static_cast<const CaptionClip&>(src);
  // CaptionClip-specific
- copy->m_text = m_text;
- copy->m_speaker = m_speaker;
- copy->m_confidence = m_confidence;
- copy->m_fontFamily = m_fontFamily;
- copy->m_fontStyle = m_fontStyle;
- copy->m_fontSize = m_fontSize;
- copy->m_textColor = m_textColor;
- copy->m_bgColor = m_bgColor;
- copy->m_position = m_position;
- copy->m_bold = m_bold;
- copy->m_outlineColor = m_outlineColor;
- copy->m_outlineWidth = m_outlineWidth;
- copy->m_showSpeaker = m_showSpeaker;
- copy->m_italic = m_italic;
- copy->m_allCaps = m_allCaps;
- copy->m_smallCaps = m_smallCaps;
- copy->m_underline = m_underline;
- copy->m_superscript = m_superscript;
- copy->m_subscript = m_subscript;
- copy->m_fauxBold = m_fauxBold;
- copy->m_fauxItalic = m_fauxItalic;
- copy->m_tracking = m_tracking;
- copy->m_leading = m_leading;
- copy->m_alignment = m_alignment;
- copy->m_trackStyleName = m_trackStyleName;
- copy->m_styleRuns = m_styleRuns;
- copy->m_paragraphStyles = m_paragraphStyles;
-
- return copy;
+ m_text = o.m_text;
+ m_speaker = o.m_speaker;
+ m_confidence = o.m_confidence;
+ m_fontFamily = o.m_fontFamily;
+ m_fontStyle = o.m_fontStyle;
+ m_fontSize = o.m_fontSize;
+ m_textColor = o.m_textColor;
+ m_bgColor = o.m_bgColor;
+ m_position = o.m_position;
+ m_bold = o.m_bold;
+ m_outlineColor = o.m_outlineColor;
+ m_outlineWidth = o.m_outlineWidth;
+ m_showSpeaker = o.m_showSpeaker;
+ m_italic = o.m_italic;
+ m_allCaps = o.m_allCaps;
+ m_smallCaps = o.m_smallCaps;
+ m_underline = o.m_underline;
+ m_superscript = o.m_superscript;
+ m_subscript = o.m_subscript;
+ m_fauxBold = o.m_fauxBold;
+ m_fauxItalic = o.m_fauxItalic;
+ m_tracking = o.m_tracking;
+ m_leading = o.m_leading;
+ m_alignment = o.m_alignment;
+ m_trackStyleName = o.m_trackStyleName;
+ m_styleRuns = o.m_styleRuns;
+ m_paragraphStyles = o.m_paragraphStyles;
 }
 
 } // namespace rt

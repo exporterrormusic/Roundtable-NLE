@@ -8,14 +8,18 @@
 #include "timeline/Transition.h"
 
 #include <algorithm>
+#include <atomic>
 #include <spdlog/spdlog.h>
 
 namespace rt {
 
 // ── Construction ────────────────────────────────────────────────────────────
 
+static std::atomic<uint64_t> s_nextTrackId{1};
+
 Track::Track(TrackType type, const std::string& name)
-    : m_type(type)
+    : m_id(s_nextTrackId.fetch_add(1, std::memory_order_relaxed))
+    , m_type(type)
     , m_name(name)
 {
 }
@@ -235,12 +239,10 @@ std::unique_ptr<Track> Track::cloneForSnapshot() const
     dup->m_volume             = m_volume;
     dup->m_pan                = m_pan;
 
+    dup->m_id = m_id;
     dup->m_clips.reserve(m_clips.size());
-    for (const auto& c : m_clips) {
-        auto copy = c->clone();
-        copy->setId(c->id());
-        dup->m_clips.push_back(std::move(copy));
-    }
+    for (const auto& c : m_clips)
+        dup->m_clips.push_back(c->cloneForSnapshot());
     dup->m_transitions = m_transitions;
     return dup;
 }

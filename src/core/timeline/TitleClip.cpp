@@ -14,27 +14,28 @@ TitleClip::TitleClip()
     // Color left at sentinel — theme tint applies.
 }
 
-std::unique_ptr<Clip> TitleClip::clone() const
+std::unique_ptr<Clip> TitleClip::createEmpty() const
 {
-    auto copy = std::make_unique<TitleClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<TitleClip>();
+}
 
+void TitleClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const TitleClip&>(src);
     // TitleClip-specific
-    copy->m_text         = m_text;
-    copy->m_fontFamily   = m_fontFamily;
-    copy->m_fontSize     = m_fontSize;
-    copy->m_bold         = m_bold;
-    copy->m_italic       = m_italic;
-    copy->m_align        = m_align;
-    copy->m_valign       = m_valign;
-    copy->m_textColor    = m_textColor;
-    copy->m_bgColor      = m_bgColor;
-    copy->m_outlineColor = m_outlineColor;
-    copy->m_outlineWidth = m_outlineWidth;
-    copy->m_tracking     = m_tracking;
-    copy->m_lineHeight   = m_lineHeight;
-
-    return copy;
+    m_text         = o.m_text;
+    m_fontFamily   = o.m_fontFamily;
+    m_fontSize     = o.m_fontSize;
+    m_bold         = o.m_bold;
+    m_italic       = o.m_italic;
+    m_align        = o.m_align;
+    m_valign       = o.m_valign;
+    m_textColor    = o.m_textColor;
+    m_bgColor      = o.m_bgColor;
+    m_outlineColor = o.m_outlineColor;
+    m_outlineWidth = o.m_outlineWidth;
+    m_tracking     = o.m_tracking;
+    m_lineHeight   = o.m_lineHeight;
 }
 
 } // namespace rt

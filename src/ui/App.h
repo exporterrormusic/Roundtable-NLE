@@ -34,6 +34,7 @@ class AudioEngine;
 class AVSyncClock;
 class CachePolicy;
 class CommandStack;
+class EditSession;
 class MainWindow;
 class MediaPool;
 class MediaSourceService;
@@ -109,6 +110,7 @@ private:
     // ── Core subsystems (owned) ─────────────────────────────────────────
     std::unique_ptr<Timeline>        m_timeline;
     std::unique_ptr<CommandStack>    m_commandStack;
+    std::unique_ptr<EditSession>     m_editSession;  // timeline edit gateway → m_commandStack
     std::unique_ptr<QObject>         m_undoGestureSealer; // app event filter → m_commandStack
     std::unique_ptr<ShortcutManager> m_shortcutManager;
     std::unique_ptr<AudioEngine>          m_audioEngine;

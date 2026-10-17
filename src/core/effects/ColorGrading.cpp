@@ -56,18 +56,24 @@ std::unique_ptr<Effect> ColorGrading::clone() const
 {
     auto copy = std::make_unique<ColorGrading>();
     copy->m_enabled = m_enabled;
-    copy->m_basicEnabled    = m_basicEnabled;
-    copy->m_creativeEnabled = m_creativeEnabled;
-    copy->m_wheelsEnabled   = m_wheelsEnabled;
-    copy->m_curvesEnabled   = m_curvesEnabled;
-    copy->m_hslEnabled      = m_hslEnabled;
-    copy->m_vignetteEnabled = m_vignetteEnabled;
-    copy->m_curveLuts       = m_curveLuts;
-    copy->m_curvesIdentity  = m_curvesIdentity;
-    copy->m_hslParams       = m_hslParams;
+    copy->copyExtraStateFrom(*this);
     for (size_t i = 0; i < m_params.size(); ++i)
         copy->m_params[i].track = m_params[i].track;
     return copy;
+}
+
+void ColorGrading::copyExtraStateFrom(const Effect& src)
+{
+    const auto& o = static_cast<const ColorGrading&>(src);
+    m_basicEnabled    = o.m_basicEnabled;
+    m_creativeEnabled = o.m_creativeEnabled;
+    m_wheelsEnabled   = o.m_wheelsEnabled;
+    m_curvesEnabled   = o.m_curvesEnabled;
+    m_hslEnabled      = o.m_hslEnabled;
+    m_vignetteEnabled = o.m_vignetteEnabled;
+    m_curveLuts       = o.m_curveLuts;
+    m_curvesIdentity  = o.m_curvesIdentity;
+    m_hslParams       = o.m_hslParams;
 }
 
 void ColorGrading::resetCurveLUTs()

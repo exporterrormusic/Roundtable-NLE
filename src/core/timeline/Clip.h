@@ -45,6 +45,16 @@ enum class TimeInterpolation : uint8_t
     OpticalFlow   = 2
 };
 
+/// How Clip::copyStateFrom treats nested objects that carry ids (effects,
+/// graphic layers). Plain fields are copied the same way in every mode.
+enum class CloneMode : uint8_t
+{
+    Duplicate,  ///< paste/duplicate: nested objects get fresh ids
+    Snapshot,   ///< exact copy: nested objects keep their ids
+    Assign      ///< into an existing clip: nested objects matched by id are
+                ///< updated in place (their addresses survive), others copied
+};
+
 /// Base clip class. Derived classes add type-specific data.
 class Clip
 {
@@ -294,15 +304,27 @@ public:
         if (index < m_markers.size()) m_markers.erase(m_markers.begin() + static_cast<ptrdiff_t>(index));
     }
 
-    /// Create a deep clone (for undo snapshots where delta is too complex)
-    [[nodiscard]] virtual std::unique_ptr<Clip> clone() const = 0;
+    /// Deep copy with a NEW clip id and fresh nested ids (paste, duplicate).
+    [[nodiscard]] std::unique_ptr<Clip> clone() const;
+    /// Exact copy: same clip id, same effect and layer ids. Render snapshots
+    /// and undo copies use this so they match the live clip they mirror.
+    [[nodiscard]] std::unique_ptr<Clip> cloneForSnapshot() const;
+    /// Make this clip equal to `src` (same clip type) without replacing it:
+    /// the clip, its keyframe tracks, and effects/layers that `src` still has
+    /// keep their addresses. Used by undo/redo. Returns false on type mismatch.
+    bool assignStateFrom(const Clip& src);
 
 protected:
-    /// Copy every base-class field except type and id into `dst`. Each
-    /// subclass clone() calls this, so a field added here reaches every clip
-    /// type (hand-copied lists used to drift: masks, markers and pitch were
-    /// silently lost on Image/Graphic/Audio/... clones).
-    void copyBaseStateTo(Clip& dst) const;
+    /// An empty clip of this clip's type.
+    [[nodiscard]] virtual std::unique_ptr<Clip> createEmpty() const = 0;
+    /// Copy this type's own fields from `src` (always the same type). The
+    /// single field list per type: clone, snapshot and assign all use it.
+    virtual void copyOwnStateFrom(const Clip& src, CloneMode mode) = 0;
+
+    /// Copy every base-class field except type and id from `src`. A field
+    /// added here reaches every clip type (hand-copied lists used to drift:
+    /// masks, markers and pitch were silently lost on several clip types).
+    void copyBaseStateFrom(const Clip& src, CloneMode mode);
 
     ClipType m_type;
     uint64_t m_id;

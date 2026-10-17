@@ -757,6 +757,13 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
 
 void KeyframeTimeline::beginSelectionDrag(int64_t anchorTick)
 {
+    // The drag is one undo step for the hosting panel (EditBracketHost.h).
+    if (!m_hostEditOpen) {
+        if (auto* host = EditBracketHost::findFor(this)) {
+            m_hostEditOpen = true;
+            host->beginWidgetEdit();
+        }
+    }
     m_dragAnchorTick = anchorTick;
     m_dragEntries.clear();
     m_maskDragEntries.clear();
@@ -1172,6 +1179,11 @@ void KeyframeTimeline::mouseReleaseEvent(QMouseEvent* event)
         } else if (moved) {
             emit keyframeChanged();
         }
+    }
+    if (m_hostEditOpen) {
+        m_hostEditOpen = false;
+        if (auto* host = EditBracketHost::findFor(this))
+            host->endWidgetEdit();
     }
     m_scrubbing = false;
     m_draggingSelection = false;

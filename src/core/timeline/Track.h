@@ -42,6 +42,9 @@ public:
     ~Track();
 
     // ── Properties ──────────────────────────────────────────────────────
+    /// Session-unique identity (not saved). Snapshot copies keep it, so undo
+    /// can match a copy back to the live track.
+    [[nodiscard]] uint64_t           id()   const noexcept { return m_id; }
     [[nodiscard]] TrackType          type() const noexcept { return m_type; }
     [[nodiscard]] const std::string& name() const noexcept { return m_name; }
     void setName(const std::string& name) { m_name = name; }
@@ -167,11 +170,14 @@ public:
     [[nodiscard]] std::unique_ptr<Track> cloneForSnapshot() const;
 
 private:
+    friend struct ModelDeltaAccess;   // undo rebuilds the layout in place
+
     [[nodiscard]] bool mutationAllowed(TrackMutationPolicy policy) const noexcept
     {
         return policy == TrackMutationPolicy::BypassLock || !m_locked;
     }
 
+    uint64_t                               m_id;
     TrackType                              m_type;
     std::string                            m_name;
     bool                                   m_locked{false};

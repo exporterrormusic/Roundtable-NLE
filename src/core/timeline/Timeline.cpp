@@ -7,6 +7,7 @@
 #include "timeline/Clip.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <limits>
 #include <unordered_map>
@@ -16,7 +17,12 @@ namespace rt {
 
 // ── Construction ────────────────────────────────────────────────────────────
 
-Timeline::Timeline()  = default;
+static std::atomic<uint64_t> s_nextTimelineId{1};
+
+Timeline::Timeline()
+    : m_id(s_nextTimelineId.fetch_add(1, std::memory_order_relaxed))
+{
+}
 
 Timeline::~Timeline()
 {
@@ -486,6 +492,7 @@ std::unique_ptr<Timeline> Timeline::clone() const
 std::unique_ptr<Timeline> Timeline::cloneForSnapshot() const
 {
     auto dup = std::make_unique<Timeline>();
+    dup->m_id       = m_id;
     dup->m_name     = m_name;
     dup->m_settings = m_settings;
     dup->m_tracks.reserve(m_tracks.size());

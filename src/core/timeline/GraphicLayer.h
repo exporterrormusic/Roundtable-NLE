@@ -255,6 +255,13 @@ public:
     const Appearance& appearance() const noexcept { return m_appearance; }
 
     [[nodiscard]] virtual std::unique_ptr<GraphicLayer> clone() const = 0;
+    /// clone() that keeps this layer's id (render snapshots, undo copies).
+    [[nodiscard]] std::unique_ptr<GraphicLayer> cloneKeepingId() const
+    {
+        auto copy = clone();
+        if (copy) copy->m_id = m_id;
+        return copy;
+    }
 
     /// Copy all editable state (transform, appearance, type-specific fields)
     /// from another layer of the same type, WITHOUT changing this layer's id

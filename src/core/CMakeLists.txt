@@ -56,6 +56,8 @@ add_library(roundtable_core STATIC
 
     # Command
     command/CommandStack.cpp
+    edit/EditSession.cpp
+    edit/ModelDelta.cpp
     command/CompoundCommand.cpp
     command/commands/ClipCommands.cpp
     command/commands/TrackCommands.cpp

@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -245,7 +246,34 @@ public:
         return copy;
     }
 
+    /// cloneWithMasks() that keeps this effect's id — for render snapshots
+    /// and undo copies, which must match the live effect they mirror.
+    [[nodiscard]] std::unique_ptr<Effect> cloneKeepingId() const
+    {
+        auto copy = cloneWithMasks();
+        if (copy) copy->m_id = m_id;
+        return copy;
+    }
+
+    /// Overwrite this effect's state with `src` (same type) in place: enabled,
+    /// masks, every parameter's keyframes, and subclass extras. The object and
+    /// its parameter tracks keep their addresses, so panels holding pointers
+    /// into them stay valid across undo/redo.
+    void assignStateFrom(const Effect& src)
+    {
+        m_enabled = src.m_enabled;
+        m_masks = src.m_masks;
+        const size_t n = std::min(m_params.size(), src.m_params.size());
+        for (size_t i = 0; i < n; ++i)
+            m_params[i].track = src.m_params[i].track;
+        copyExtraStateFrom(src);
+    }
+
 protected:
+    /// Subclass state beyond params/enabled/masks (LUT data, grading toggles).
+    /// clone() and assignStateFrom() both call it, so the list lives once.
+    virtual void copyExtraStateFrom(const Effect& /*src*/) {}
+
     /// Derived classes call this in their constructor to register parameters
     void addParam(const std::string& name, float defaultValue,
                   float minVal = 0.0f, float maxVal = 1.0f);

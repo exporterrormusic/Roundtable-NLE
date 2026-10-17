@@ -4,6 +4,7 @@
  */
 
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/EditBracketHost.h"
 #include "Theme.h"
 
 #include <QApplication>
@@ -54,13 +55,45 @@ ScrubbySpinBox::ScrubbySpinBox(QWidget* parent)
     // track (flip H/V is stored as the sign of scaleX/scaleY).  We only sync
     // when there is no active user gesture: scrubbing maintains its own
     // press-time baseline, and typed entry seeds m_startValue on FocusIn.
+    //
+    // Connected first, so it runs before the panel's own valueChanged
+    // handlers: a typed value lands here (keyboard tracking is off, so only
+    // Return/focus-out or code changes the value while focused), and the
+    // host's undo bracket must open before the panel writes the model.
     connect(this, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        const bool focused = hasFocus() || (lineEdit() && lineEdit()->hasFocus());
+        if (!m_scrubbing && focused && !m_hostEditOpen) {
+            beginHostEdit();
+            // onEditingFinished closes it in this same event; a code-driven
+            // change (no editingFinished) closes on the next turn.
+            QTimer::singleShot(0, this, [this]() { endHostEdit(); });
+        }
         if (!m_scrubbing && !hasFocus())
             m_startValue = v;
     });
 }
 
+// No endHostEdit() here: spinboxes are destroyed inside their parent panel's
+// teardown, when the host is already half-destroyed. The host closes its own
+// edit (its next commit, or App shutdown abandoning open gestures).
 ScrubbySpinBox::~ScrubbySpinBox() = default;
+
+void ScrubbySpinBox::beginHostEdit()
+{
+    if (m_hostEditOpen) return;
+    if (auto* host = EditBracketHost::findFor(this)) {
+        m_hostEditOpen = true;
+        host->beginWidgetEdit();
+    }
+}
+
+void ScrubbySpinBox::endHostEdit()
+{
+    if (!m_hostEditOpen) return;
+    m_hostEditOpen = false;
+    if (auto* host = EditBracketHost::findFor(this))
+        host->endWidgetEdit();
+}
 
 void ScrubbySpinBox::installLineEditFilter()
 {
@@ -240,6 +273,7 @@ void ScrubbySpinBox::mouseMoveEvent(QMouseEvent* event)
     if (!m_gesture.isActive())
         return; // Haven't moved far enough yet
 
+    if (!m_scrubbing) beginHostEdit();   // before the scrub's first change
     m_scrubbing = true;
     m_potentialScrub = false;
 
@@ -282,6 +316,7 @@ void ScrubbySpinBox::mouseReleaseEvent(QMouseEvent* event)
 
             if (finalValue != m_startValue)
                 emit valueCommitted(m_startValue, finalValue);
+            endHostEdit();
 
             // Block signals around clearFocus to prevent editingFinished
             // from firing a duplicate undo push.
@@ -325,6 +360,7 @@ void ScrubbySpinBox::onEditingFinished()
         emit valueCommitted(m_startValue, newVal);
         m_startValue = newVal; // prevent duplicate on subsequent focus loss
     }
+    endHostEdit();
 
     // Defer focus transfer so we don't re-enter during signal processing.
     // Block signals to prevent a second editingFinished from the focus change.

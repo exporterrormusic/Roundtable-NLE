@@ -422,12 +422,22 @@ signals:
     void cropDragFinished(float oldL, float oldR, float oldT, float oldB,
                           float newL, float newR, float newT, float newB);
 
+    /// A drag that edits the clip (transform, anchor, crop, mask point,
+    /// motion-path handle) has begun — emitted on press, before its first
+    /// change. editDragEnded follows on release, after that drag's
+    /// *Finished signal. The workspace records the drag as one undo step.
+    /// Pen/shape mask drawing spans several clicks and is not bracketed.
+    void editDragStarted();
+    void editDragEnded();
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void handleMousePress(QMouseEvent* event);
+    void handleMouseRelease(QMouseEvent* event);
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -588,6 +598,8 @@ private:
         DrawMaskPoint,      ///< click/drag a new Pen Mask vertex + tangents
         DrawMaskShape,      ///< drag out a new Ellipse/Rectangle mask
     };
+    /// True between editDragStarted and editDragEnded.
+    bool m_editDragOpen{false};
     DragMode m_dragMode{DragMode::None};
     int      m_dragHandle{-1};
     int      m_cropHandle{-1};          ///< 0=L,1=R,2=T,3=B during a CropEdge drag

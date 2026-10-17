@@ -14,6 +14,8 @@
 #include "Theme.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
+#include "project/Project.h"
 #include "audio/AudioEngine.h"
 #include "decode/VideoDecoder.h"
 #include "playback/AVSyncClock.h"
@@ -210,6 +212,10 @@ App::~App()
     // destructor late in Phase 3.
     sm.advanceTo(ShutdownPhase::Phase1_StopThreads);
     MediaTaskQueue::instance().shutdown();
+    // Drop any half-finished edit without touching the model: the project is
+    // destroyed before the widgets whose gesture handles would otherwise
+    // try to cancel (rewind) into it.
+    if (m_editSession) m_editSession->abandon();
     if (m_mainWindow) {
         // Export owns an isolated CompositeService but borrows MediaPool,
         // model, and GPU dependencies. Join its worker and destroy that
@@ -289,6 +295,7 @@ App::~App()
     if (m_undoGestureSealer && qApp)
         qApp->removeEventFilter(m_undoGestureSealer.get());
     m_undoGestureSealer.reset();
+    m_editSession.reset();   // unregisters from the stack, so it goes first
     m_commandStack.reset();
     m_timeline.reset();
 
@@ -321,6 +328,19 @@ bool App::init()
     // ── Core subsystems ─────────────────────────────────────────────────
     m_timeline = std::make_unique<Timeline>();
     m_commandStack = std::make_unique<CommandStack>();
+    // Undo steps find their sequence by id at undo time: the current
+    // project's sequences, or the app's bare default timeline.
+    m_editSession = std::make_unique<EditSession>(*m_commandStack);
+    m_editSession->setSequenceResolver([this](uint64_t id) -> Timeline* {
+        if (m_mainWindow) {
+            if (Project* project = m_mainWindow->currentProject()) {
+                for (size_t i = 0; i < project->sequenceCount(); ++i)
+                    if (Timeline* seq = project->sequence(i); seq && seq->id() == id)
+                        return seq;
+            }
+        }
+        return m_timeline && m_timeline->id() == id ? m_timeline.get() : nullptr;
+    });
     if (qApp) {
         m_undoGestureSealer = std::make_unique<UndoGestureSealer>(m_commandStack.get());
         qApp->installEventFilter(m_undoGestureSealer.get());

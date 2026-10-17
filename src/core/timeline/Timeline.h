@@ -103,6 +103,10 @@ public:
     [[nodiscard]] Settings&       settings() noexcept { return m_settings; }
     void setSettings(const Settings& s) { m_settings = s; }
 
+    /// Session-unique identity (not saved). Snapshot copies keep it, so an
+    /// undo step can find its live sequence without holding a pointer.
+    [[nodiscard]] uint64_t id() const noexcept { return m_id; }
+
     // ── Serialization helpers ───────────────────────────────────────────
     [[nodiscard]] const std::string& name() const noexcept;
     void setName(const std::string& name);
@@ -120,6 +124,9 @@ public:
     void restoreFrom(const Timeline& snapshot);
 
 private:
+    friend struct ModelDeltaAccess;   // undo rebuilds the layout in place
+
+    uint64_t                           m_id;
     std::string                        m_name{"Sequence 1"};
     Settings                           m_settings;  // per-sequence resolution/fps/etc.
     std::vector<std::unique_ptr<Track>> m_tracks;

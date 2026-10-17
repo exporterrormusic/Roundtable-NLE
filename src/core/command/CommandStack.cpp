@@ -5,6 +5,7 @@
 
 #include "command/CommandStack.h"
 #include "command/Command.h"  // for MacroCommand
+#include "edit/EditSession.h"
 
 #include <spdlog/spdlog.h>
 
@@ -17,12 +18,35 @@ CommandStack::CommandStack(size_t maxDepth)
 
 CommandStack::~CommandStack() = default;
 
+bool CommandStack::absorbedByOpenGesture(const Command& cmd, bool alreadyApplied)
+{
+    if (!m_editSession || !m_editSession->isOpen()) return false;
+    // The gesture's before/after diff records whatever this command changed,
+    // so keeping its own undo too would revert the change twice. The step
+    // takes the command's (more precise) name.
+    if (alreadyApplied) {
+        // A finished edit reporting what it already applied — the normal
+        // pattern of widgets inside a bracketed gesture.
+        spdlog::debug("[EDIT] '{}' recorded by gesture '{}'", cmd.description(),
+                      m_editSession->openDescription());
+    } else {
+        // Ran while a gesture was open: correct for timeline data, but any
+        // non-timeline state it changed is no longer undoable. Worth a look.
+        spdlog::warn("[EDIT] legacy command '{}' executed inside '{}' — absorbed "
+                     "into that undo step", cmd.description(),
+                     m_editSession->openDescription());
+    }
+    m_editSession->renameOpen(cmd.description());
+    return true;
+}
+
 void CommandStack::execute(std::unique_ptr<Command> cmd)
 {
     if (!cmd) return;
 
     // Always execute first (apply the change)
     cmd->execute();
+    if (absorbedByOpenGesture(*cmd, /*alreadyApplied=*/false)) return;
 
     // During a macro, buffer the command instead of pushing directly
     if (m_macroDepth > 0 && m_activeMacro) {
@@ -59,6 +83,7 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
 void CommandStack::pushWithoutExecute(std::unique_ptr<Command> cmd)
 {
     if (!cmd) return;
+    if (absorbedByOpenGesture(*cmd, /*alreadyApplied=*/true)) return;
 
     // During a macro, buffer the command instead of pushing directly
     if (m_macroDepth > 0 && m_activeMacro) {
@@ -81,6 +106,12 @@ void CommandStack::pushWithoutExecute(std::unique_ptr<Command> cmd)
 bool CommandStack::undo()
 {
     if (m_undoStack.empty()) return false;
+    // Undo mid-drag would rewind the model under the open gesture's copy.
+    if (m_editSession && m_editSession->isOpen()) {
+        spdlog::debug("[EDIT] undo ignored while '{}' is in progress",
+                      m_editSession->openDescription());
+        return false;
+    }
 
     auto cmd = std::move(m_undoStack.back());
     m_undoStack.pop_back();
@@ -98,6 +129,11 @@ bool CommandStack::undo()
 bool CommandStack::redo()
 {
     if (m_redoStack.empty()) return false;
+    if (m_editSession && m_editSession->isOpen()) {
+        spdlog::debug("[EDIT] redo ignored while '{}' is in progress",
+                      m_editSession->openDescription());
+        return false;
+    }
 
     auto cmd = std::move(m_redoStack.back());
     m_redoStack.pop_back();
@@ -143,6 +179,9 @@ size_t CommandStack::redoCount() const noexcept
 
 void CommandStack::clear()
 {
+    // History is going away (project switch/close): an open gesture's copy
+    // may belong to a sequence that is about to be destroyed.
+    if (m_editSession) m_editSession->abandon();
     m_undoStack.clear();
     m_redoStack.clear();
     m_mergeSealed = true;

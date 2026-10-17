@@ -143,6 +143,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
         if (m_commandStack && m_commandStack->isMacroActive()) {
             m_commandStack->endMacro();
         }
+        // Same for its edit gesture: keep what was applied as one step.
+        commitDragEditGesture();
         m_dragMode = DragMode::None;
         m_dragClipRef = {};
         m_dragSelectedClips.clear();

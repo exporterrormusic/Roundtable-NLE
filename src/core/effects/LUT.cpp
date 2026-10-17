@@ -30,11 +30,17 @@ std::unique_ptr<Effect> LUT::clone() const
 {
     auto copy = std::make_unique<LUT>();
     copy->m_enabled  = m_enabled;
-    copy->m_cube.store(cube(), std::memory_order_release);   // immutable: share it
-    copy->m_lutPath  = m_lutPath;
+    copy->copyExtraStateFrom(*this);
     for (size_t i = 0; i < m_params.size(); ++i)
         copy->m_params[i].track = m_params[i].track;
     return copy;
+}
+
+void LUT::copyExtraStateFrom(const Effect& src)
+{
+    const auto& o = static_cast<const LUT&>(src);
+    m_cube.store(o.cube(), std::memory_order_release);   // immutable: share it
+    m_lutPath = o.m_lutPath;
 }
 
 bool LUT::loadCubeFile(const std::string& path)

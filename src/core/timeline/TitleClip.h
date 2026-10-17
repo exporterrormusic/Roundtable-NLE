@@ -74,7 +74,10 @@ public:
     KeyframeTrack<float>& lineHeight() noexcept { return m_lineHeight; }
 
     // ── Clone ───────────────────────────────────────────────────────────
-    [[nodiscard]] std::unique_ptr<Clip> clone() const override;
+protected:
+    [[nodiscard]] std::unique_ptr<Clip> createEmpty() const override;
+    void copyOwnStateFrom(const Clip& src, CloneMode mode) override;
+public:
 
 private:
     std::string m_text{"Title"};

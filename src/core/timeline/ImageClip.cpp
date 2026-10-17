@@ -19,22 +19,23 @@ ImageClip::ImageClip(const std::string& mediaPath)
     m_mediaPath = mediaPath;
 }
 
-std::unique_ptr<Clip> ImageClip::clone() const
+std::unique_ptr<Clip> ImageClip::createEmpty() const
 {
-    auto copy = std::make_unique<ImageClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<ImageClip>();
+}
 
+void ImageClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const ImageClip&>(src);
     // ImageClip-specific
-    copy->m_mediaPath    = m_mediaPath;
-    copy->m_mediaId      = m_mediaId;
-    copy->m_sourceWidth  = m_sourceWidth;
-    copy->m_sourceHeight = m_sourceHeight;
-    copy->m_cropL        = m_cropL;
-    copy->m_cropR        = m_cropR;
-    copy->m_cropT        = m_cropT;
-    copy->m_cropB        = m_cropB;
-
-    return copy;
+    m_mediaPath    = o.m_mediaPath;
+    m_mediaId      = o.m_mediaId;
+    m_sourceWidth  = o.m_sourceWidth;
+    m_sourceHeight = o.m_sourceHeight;
+    m_cropL        = o.m_cropL;
+    m_cropR        = o.m_cropR;
+    m_cropT        = o.m_cropT;
+    m_cropB        = o.m_cropB;
 }
 
 } // namespace rt

@@ -96,12 +96,59 @@ void TimelinePanel::applyCaptionTrackVisibility()
 void TimelinePanel::executeCommand(std::unique_ptr<Command> cmd)
 {
     if (cmd && m_commandStack) {
-        m_commandStack->execute(std::move(cmd));
+        // Recorded from before/after copies (EditSession.h); inside a drag's
+        // gesture it simply joins that one undo step.
+        if (EditSession* edits = editSession(); edits && m_timeline)
+            edits->execute(*m_timeline, std::move(cmd));
+        else
+            m_commandStack->execute(std::move(cmd));
         // Refresh all track widgets to reflect the change immediately
         onScrollChanged();
         // Notify workspace so ProgramMonitor re-composites
         emit contentChanged();
     }
+}
+
+EditSession* TimelinePanel::editSession() const noexcept
+{
+    return m_commandStack ? m_commandStack->editSession() : nullptr;
+}
+
+void TimelinePanel::ensureDragEditGesture()
+{
+    if (m_dragEdit.active() || !m_timeline) return;
+    const char* description = nullptr;
+    switch (m_dragMode) {
+    case DragMode::ClipMove:         description = "Move clips"; break;
+    case DragMode::ClipTrimHead:     description = "Trim clip head"; break;
+    case DragMode::ClipTrimTail:     description = "Trim clip tail"; break;
+    case DragMode::SlipTool:         description = "Slip clip"; break;
+    case DragMode::SlideTool:        description = "Slide clip"; break;
+    case DragMode::RollingEdit:      description = "Rolling edit"; break;
+    case DragMode::TransitionTrim:   description = "Trim transition"; break;
+    case DragMode::TransitionHandle: description = "Add Transition"; break;
+    default:                         break;   // these modes change nothing
+    }
+    EditSession* edits = editSession();
+    if (!description || !edits) return;
+    m_dragEdit = EditGesture(*edits, description, *m_timeline);
+}
+
+void TimelinePanel::commitDragEditGesture()
+{
+    m_dragEdit.commit();
+}
+
+void TimelinePanel::cancelDragEditGesture()
+{
+    m_dragEdit.cancel();
+}
+
+void TimelinePanel::recordAppliedDragResult(std::unique_ptr<Command> cmd)
+{
+    if (!cmd || !m_commandStack) return;
+    if (m_dragEdit.active()) return;   // the drag's gesture records it
+    m_commandStack->pushWithoutExecute(std::move(cmd));
 }
 
 bool TimelinePanel::copySelectedTransitionToClipboard()

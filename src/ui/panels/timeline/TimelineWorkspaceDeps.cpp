@@ -22,6 +22,8 @@
 #include "panels/timeline/TimelinePanel.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
+#include "timeline/Timeline.h"
 #include "audio/AudioEngine.h"
 #include "audio/AudioPlaybackService.h"
 #include "playback/MediaPool.h"
@@ -42,7 +44,16 @@
 
 namespace rt {
 
-void TimelineWorkspace::setCommandStack(CommandStack* stack) { m_commandStack = stack; }
+void TimelineWorkspace::setCommandStack(CommandStack* stack)
+{
+    m_commandStack = stack;
+    // Each recorded edit (and its undo/redo) names the sequence it changed.
+    if (EditSession* edits = stack ? stack->editSession() : nullptr) {
+        edits->setCommitListener([this](uint64_t sequenceId) {
+            markSnapshotDirty(!m_timeline || m_timeline->id() != sequenceId);
+        });
+    }
+}
 void TimelineWorkspace::setShortcutManager(ShortcutManager* mgr) { m_shortcutManager = mgr; }
 
 void TimelineWorkspace::setAudioEngine(AudioEngine* engine) {

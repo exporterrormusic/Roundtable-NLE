@@ -67,7 +67,9 @@
 #include <string>
 #include <vector>
 
+#include "edit/EditSession.h"
 #include "timeline/OpacityMask.h"
+#include "widgets/EditBracketHost.h"
 
 namespace rt {
 
@@ -373,6 +375,7 @@ private:
     // (the snapshot brings it back on the next move).
     std::map<KeyframeTrack<float>*, std::vector<Keyframe<float>>> m_dragTrackSnap;
     std::map<MaskPathId, std::vector<MaskPathKeyframe>> m_dragMaskSnap;
+    bool m_hostEditOpen{false};   // keyframe drag bracketed for undo
 
     CommandStack*  m_commandStack{nullptr};
 
@@ -406,13 +409,18 @@ private:
 //  EffectControlsPanel — the main panel widget
 // ═════════════════════════════════════════════════════════════════════════════
 
-class EffectControlsPanel : public QWidget
+class EffectControlsPanel : public QWidget, public EditBracketHost
 {
     Q_OBJECT
 
 public:
     explicit EffectControlsPanel(QWidget* parent = nullptr);
     ~EffectControlsPanel() override;
+
+    // ── EditBracketHost: a scrub / typed value / keyframe drag in this
+    //    panel is recorded as one undo step (EditSession.h) ──────────────
+    void beginWidgetEdit() override;
+    void endWidgetEdit() override;
 
     // ── Clip binding ────────────────────────────────────────────────────
     void setClip(Clip* clip, Track* track = nullptr);
@@ -431,7 +439,11 @@ public:
         m_commandStack = stack;
         if (m_kfTimeline) m_kfTimeline->setCommandStack(stack);
     }
-    void setTimeline(Timeline* tl) noexcept { m_timeline = tl; }
+    void setTimeline(Timeline* tl) noexcept
+    {
+        if (tl != m_timeline) m_widgetEdit.commit();   // outgoing sequence still alive
+        m_timeline = tl;
+    }
 
     /// Sequence resolution used to convert the internal REF-1920 Position
     /// values into displayed sequence pixels (Premiere-style Motion).  Stored
@@ -712,6 +724,7 @@ protected:
     GraphicLayer*  m_graphicLayer{nullptr};
     CommandStack*  m_commandStack{nullptr};
     Timeline*      m_timeline{nullptr};
+    EditGesture    m_widgetEdit;   // open between beginWidgetEdit/endWidgetEdit
     bool           m_updating{false};
     int64_t        m_playheadTick{0};
     int            m_selectedEffectIndex{-1};  // -1 = none selected

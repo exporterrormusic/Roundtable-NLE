@@ -1217,6 +1217,12 @@ void TimelinePanel::showPasteAttributesDialog()
                     target->effects().addEffect(attrs.effects->effect(ei).cloneWithMasks());
         };
 
+        // The loop below applies values before the command runs, so the
+        // undo step must start here (the command then joins it).
+        EditGesture pasteEdit;
+        if (EditSession* edits = editSession(); edits && m_timeline)
+            pasteEdit = EditGesture(*edits, "Paste Attributes", *m_timeline);
+
         for (const auto& sel : m_selection.clips()) {
             Track* st = m_timeline->track(sel.trackIndex);
             if (!st) continue;
@@ -1285,9 +1291,12 @@ void TimelinePanel::showPasteAttributesDialog()
             emit contentChanged();
         }
 
-        // Wrap the entire operation in a LambdaCommand for undo/redo
+        // Wrap the entire operation in a LambdaCommand for undo/redo.
+        // executeCommand records it from before/after copies when an edit
+        // session exists — the lambda's own undo only resets default values
+        // and would leave pasted keyframes behind.
         if (m_commandStack) {
-            m_commandStack->execute(std::make_unique<LambdaCommand>(
+            executeCommand(std::make_unique<LambdaCommand>(
                 "Paste Attributes",
                 [this, snapshots, pastedAttributes, checks_states = [&]() {
                     std::vector<bool> states;
@@ -1371,6 +1380,7 @@ void TimelinePanel::showPasteAttributesDialog()
                     emit contentChanged();
                 }));
         }
+        pasteEdit.commit();
     }
 }
 

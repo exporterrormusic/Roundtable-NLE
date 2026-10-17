@@ -32,7 +32,10 @@ public:
     void setAffectsSingleTrack(bool v) noexcept { m_singleTrack = v; }
 
     // ── Clone ───────────────────────────────────────────────────────────
-    [[nodiscard]] std::unique_ptr<Clip> clone() const override;
+protected:
+    [[nodiscard]] std::unique_ptr<Clip> createEmpty() const override;
+    void copyOwnStateFrom(const Clip& src, CloneMode mode) override;
+public:
 
 private:
     uint8_t m_blendMode{0};     // 0 = Normal

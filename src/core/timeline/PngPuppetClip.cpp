@@ -23,25 +23,26 @@ PngPuppetClip::PngPuppetClip(const std::string& characterName, const std::string
         m_label = characterName;
 }
 
-std::unique_ptr<Clip> PngPuppetClip::clone() const
+std::unique_ptr<Clip> PngPuppetClip::createEmpty() const
 {
-    auto copy = std::make_unique<PngPuppetClip>();
-    copyBaseStateTo(*copy);
+    return std::make_unique<PngPuppetClip>();
+}
 
+void PngPuppetClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
+{
+    const auto& o = static_cast<const PngPuppetClip&>(src);
     // PngPuppetClip-specific properties
-    copy->m_characterName        = m_characterName;
-    copy->m_variant              = m_variant;
-    copy->m_facePaths            = m_facePaths;
-    copy->m_talking              = m_talking;
-    copy->m_talkSwapSeconds      = m_talkSwapSeconds;
-    copy->m_blinkIntervalSeconds = m_blinkIntervalSeconds;
-    copy->m_blinkDurationSeconds = m_blinkDurationSeconds;
-    copy->m_breathAmplitude      = m_breathAmplitude;
-    copy->m_breathSpeed          = m_breathSpeed;
-    copy->m_swayAmplitude        = m_swayAmplitude;
-    copy->m_seed                 = m_seed;
-
-    return copy;
+    m_characterName        = o.m_characterName;
+    m_variant              = o.m_variant;
+    m_facePaths            = o.m_facePaths;
+    m_talking              = o.m_talking;
+    m_talkSwapSeconds      = o.m_talkSwapSeconds;
+    m_blinkIntervalSeconds = o.m_blinkIntervalSeconds;
+    m_blinkDurationSeconds = o.m_blinkDurationSeconds;
+    m_breathAmplitude      = o.m_breathAmplitude;
+    m_breathSpeed          = o.m_breathSpeed;
+    m_swayAmplitude        = o.m_swayAmplitude;
+    m_seed                 = o.m_seed;
 }
 
 } // namespace rt

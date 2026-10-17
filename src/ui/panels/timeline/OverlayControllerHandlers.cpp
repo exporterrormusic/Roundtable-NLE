@@ -113,6 +113,19 @@ void OverlayController::wireTransformOverlaySignals()
         connect(ov, &TransformOverlayWidget::cropDragFinished,
                 this, &OverlayController::onOverlayCropDragFinished);
 
+        // -- One undo step per monitor drag: open before the drag's first
+        //    change, close after its *Finished handler ran --
+        connect(ov, &TransformOverlayWidget::editDragStarted, this, [this]() {
+            if (m_ws->isDestroying() || m_dragEdit.active()) return;
+            CommandStack* stack = m_ws->commandStack();
+            EditSession* edits = stack ? stack->editSession() : nullptr;
+            if (edits && m_ws->timeline())
+                m_dragEdit = EditGesture(*edits, "Transform", *m_ws->timeline());
+        });
+        connect(ov, &TransformOverlayWidget::editDragEnded, this, [this]() {
+            m_dragEdit.commit();
+        });
+
         // -- Mask / motion-path live updates: refresh composite during drag --
         connect(ov, &TransformOverlayWidget::maskLiveUpdate,
                 this, [this]() {
@@ -353,7 +366,7 @@ void OverlayController::onOverlayAnchorDragFinished(float oldX, float oldY,
         }
     };
     auto* panel = this;
-    m_ws->commandStack()->pushWithoutExecute(std::make_unique<LambdaCommand>(
+    recordAppliedEdit(std::make_unique<LambdaCommand>(
         "Anchor Point",
         [apply, newX, newY, panel]() {
             apply(newX, newY);
@@ -408,7 +421,7 @@ void OverlayController::onOverlayCropDragFinished(
         ws->invalidateCompositeCache();
         if (ws->programMonitor()) ws->programMonitor()->requestRefresh();
     };
-    m_ws->commandStack()->pushWithoutExecute(std::make_unique<LambdaCommand>(
+    recordAppliedEdit(std::make_unique<LambdaCommand>(
         "Crop",
         [applyCrop, newL, newR, newT, newB]() { applyCrop(newL, newR, newT, newB); },
         [applyCrop, oldL, oldR, oldT, oldB]() { applyCrop(oldL, oldR, oldT, oldB); }));
@@ -625,9 +638,9 @@ void OverlayController::onOverlayDragFinished(
                             "Group Move");
                         compound->addCommand(std::move(cmd));
                         compound->addCommand(std::move(sibCmd));
-                        m_ws->commandStack()->pushWithoutExecute(std::move(compound));
+                        recordAppliedEdit(std::move(compound));
                     } else {
-                        m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
+                        recordAppliedEdit(std::move(cmd));
                     }
                 }
             } else {
@@ -686,7 +699,7 @@ void OverlayController::onOverlayDragFinished(
                             else clip->rotation().writeValue(relTick, oldRot);
                         }
                     });
-                m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
+                recordAppliedEdit(std::move(cmd));
             }
         }
     }
@@ -740,7 +753,7 @@ void OverlayController::onOverlayMaskDragFinished(int maskIndex,
             if (it != masks->end())
                 *it = oldMask;
         });
-    m_ws->commandStack()->pushWithoutExecute(std::move(cmd));
+    recordAppliedEdit(std::move(cmd));
 }
 
 void OverlayController::onOverlayMaskCreated(int maskIndex,
@@ -817,7 +830,7 @@ void OverlayController::onOverlayMaskCreated(int maskIndex,
                 if (it != masks->end()) masks->erase(it);
             }
         });
-    m_ws->commandStack()->pushWithoutExecute(std::move(command));
+    recordAppliedEdit(std::move(command));
 
     m_ws->invalidateCompositeCache();
     if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
@@ -1166,7 +1179,7 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
         auto clipCmd = std::make_unique<AddClipCommand>(targetTrack, std::move(gc));
         clipCmd->execute();
         textCompound->addExecuted(std::move(clipCmd));
-        m_ws->commandStack()->pushWithoutExecute(std::move(textCompound));
+        recordAppliedEdit(std::move(textCompound));
     } else if (m_ws->commandStack()) {
         m_ws->commandStack()->execute(
             std::make_unique<AddClipCommand>(targetTrack, std::move(gc)));
@@ -1214,6 +1227,20 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     }
 
     spdlog::info("Text tool: created GraphicClip at frame ({}, {}), track {}", frameX, frameY, targetTrackIdx);
+}
+
+void OverlayController::recordAppliedEdit(std::unique_ptr<Command> cmd)
+{
+    if (!cmd) return;
+    CommandStack* stack = m_ws->commandStack();
+    if (!stack) return;
+    if (m_dragEdit.active()) {
+        // The drag's gesture records the change; keep its precise name.
+        if (EditSession* edits = stack->editSession())
+            edits->renameOpen(cmd->description());
+        return;
+    }
+    stack->pushWithoutExecute(std::move(cmd));
 }
 
 } // namespace rt

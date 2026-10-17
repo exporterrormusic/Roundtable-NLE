@@ -288,6 +288,10 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         }
     }
 
+    // Open this drag's undo step before its first change (no-op for modes
+    // that change nothing, and once open).
+    ensureDragEditGesture();
+
     switch (m_dragMode)
     {
     case DragMode::ClipMove:

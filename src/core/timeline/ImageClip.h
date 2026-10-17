@@ -41,7 +41,10 @@ public:
     [[nodiscard]] float cropBottom() const noexcept { return m_cropB; }
 
     // ── Clone ───────────────────────────────────────────────────────────
-    [[nodiscard]] std::unique_ptr<Clip> clone() const override;
+protected:
+    [[nodiscard]] std::unique_ptr<Clip> createEmpty() const override;
+    void copyOwnStateFrom(const Clip& src, CloneMode mode) override;
+public:
 
 private:
     std::string m_mediaPath;

@@ -18,6 +18,7 @@
 #include <QPushButton>
 #include <QPixmap>
 
+#include "edit/EditSession.h"
 #include "timeline/TimelineLayoutEngine.h"
 #include "timeline/EditOperations.h"
 #include "timeline/Clip.h"
@@ -531,6 +532,18 @@ private:
     void restoreClipMoveToOrigin();
     void restoreRollingEditToOrigin();
     std::unique_ptr<QObject> m_dragEscapeFilter;   // app filter: Esc cancels a drag
+
+    // One recorded undo step per drag (EditSession.h): opened before the
+    // drag's first change, committed on release, cancelled on Esc. Without
+    // an edit session (bare test stacks) drags keep their old macros.
+    EditGesture m_dragEdit;
+    void ensureDragEditGesture();
+    void commitDragEditGesture();
+    void cancelDragEditGesture();
+    /// A drag's already-applied result: dropped while the drag's gesture
+    /// records it, otherwise pushed to the stack as before.
+    void recordAppliedDragResult(std::unique_ptr<Command> cmd);
+    [[nodiscard]] EditSession* editSession() const noexcept;
 
     // Drop placement shared by the media ghost and every media drop path,
     // so a release lands exactly where the ghost was drawn.

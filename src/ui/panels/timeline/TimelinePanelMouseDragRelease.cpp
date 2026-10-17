@@ -150,6 +150,8 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
 
         if (altCopy) {
             auto masterCompound = std::make_unique<CompoundCommand>("Copy clips");
+            if (m_dragEdit.active())
+                if (EditSession* edits = editSession()) edits->renameOpen("Copy clips");
 
             if (hasGhostTrack) {
                 masterCompound->addCommand(
@@ -209,7 +211,7 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             }
 
             if (masterCompound->size() > 0) {
-                m_commandStack->pushWithoutExecute(std::move(masterCompound));
+                recordAppliedDragResult(std::move(masterCompound));
                 onScrollChanged();
                 emit contentChanged();
                 didMove = true;
@@ -366,7 +368,7 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             }
 
             if (masterCompound->size() > 0) {
-                m_commandStack->pushWithoutExecute(std::move(masterCompound));
+                recordAppliedDragResult(std::move(masterCompound));
                 onScrollChanged();
                 emit contentChanged();
                 didMove = true;
@@ -474,6 +476,10 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
             m_trackWidgets[w]->setSelectedTransition(SIZE_MAX);
         emit selectionChanged();
     }
+
+    // The whole drag — live changes and the release's final commands — is
+    // one undo step (nothing is recorded when it changed nothing).
+    commitDragEditGesture();
 
     // ── Reset all drag-related state ─────────────────────────────────────
     if (m_dragMode != DragMode::None) {
@@ -656,6 +662,9 @@ bool TimelinePanel::cancelActiveDrag()
     default:
         break;   // marquee / pending click: nothing applied yet
     }
+    // Restore anything the drag changed that the code above didn't (and
+    // record nothing).
+    cancelDragEditGesture();
 
     m_dragMode = DragMode::None;
     m_dragClipRef = {};

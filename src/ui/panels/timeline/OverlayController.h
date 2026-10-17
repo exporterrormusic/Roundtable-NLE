@@ -30,11 +30,15 @@
 #include <string>
 #include <vector>
 
+#include "edit/EditSession.h"
 #include "timeline/GraphicLayer.h"
+
+#include <memory>
 
 namespace rt {
 
 class TimelineWorkspace;
+class Command;
 class TextLayer;
 struct OpacityMask;
 struct TransformOverlayInfo;
@@ -72,6 +76,14 @@ private:
     /// Program-monitor editing is read-only while the selected clip's track
     /// is padlocked. Playback and rendering remain unaffected.
     [[nodiscard]] bool selectedTrackIsEditable() const noexcept;
+
+    // One undo step per monitor drag (EditSession.h), bracketed by the GPU
+    // overlay's editDragStarted/editDragEnded. The software Viewport has no
+    // bracket and keeps recording through the *Finished handlers.
+    EditGesture m_dragEdit;
+    /// A finished drag's already-applied result: names the drag's undo step
+    /// and is dropped while the gesture records it, else pushed as before.
+    void recordAppliedEdit(std::unique_ptr<Command> cmd);
 
     /// Measure a text layer's rendered glyph bounds and fill the overlay's
     /// content-rect fields (useContentRect + contentL/T/R/B + canvas dims) so

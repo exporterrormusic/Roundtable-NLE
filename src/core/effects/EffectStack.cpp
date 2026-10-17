@@ -272,4 +272,33 @@ std::unique_ptr<EffectStack> EffectStack::clone() const
     return copy;
 }
 
+EffectStack EffectStack::cloneKeepingIds() const
+{
+    EffectStack copy;
+    copy.m_effects.reserve(m_effects.size());
+    for (const auto& e : m_effects)
+        copy.m_effects.push_back(e->cloneKeepingId());
+    return copy;
+}
+
+void EffectStack::assignStateFrom(const EffectStack& src)
+{
+    std::vector<std::unique_ptr<Effect>> next;
+    next.reserve(src.m_effects.size());
+    for (const auto& want : src.m_effects) {
+        auto it = std::find_if(m_effects.begin(), m_effects.end(),
+            [&](const std::unique_ptr<Effect>& have) {
+                return have && have->id() == want->id()
+                    && have->effectType() == want->effectType();
+            });
+        if (it != m_effects.end()) {
+            (*it)->assignStateFrom(*want);
+            next.push_back(std::move(*it));
+        } else {
+            next.push_back(want->cloneKeepingId());
+        }
+    }
+    m_effects = std::move(next);
+}
+
 } // namespace rt

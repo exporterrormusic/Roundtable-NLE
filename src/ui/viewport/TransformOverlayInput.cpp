@@ -9,6 +9,7 @@
 #include "timeline/Keyframe.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "edit/EditSession.h"
 #include "command/commands/KeyframeCmds.h"
 #include "Theme.h"
 
@@ -126,6 +127,36 @@ void TransformOverlayWidget::syncMaskOwnerToEditedOuterTransform() noexcept
 }
 
 void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
+{
+    handleMousePress(event);
+    switch (m_dragMode) {
+    case DragMode::MoveBody:
+    case DragMode::ScaleCorner:
+    case DragMode::RotateCorner:
+    case DragMode::DragMaskPoint:
+    case DragMode::DragMotionHandle:
+    case DragMode::MoveAnchor:
+    case DragMode::CropEdge:
+        if (!m_editDragOpen) {
+            m_editDragOpen = true;
+            emit editDragStarted();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
+{
+    handleMouseRelease(event);
+    if (m_editDragOpen && m_dragMode == DragMode::None) {
+        m_editDragOpen = false;
+        emit editDragEnded();
+    }
+}
+
+void TransformOverlayWidget::handleMousePress(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton)
         m_lastLeftPressHitSelectedBody = false;
@@ -1281,7 +1312,7 @@ void TransformOverlayWidget::mouseMoveEvent(QMouseEvent* event)
     event->ignore();
 }
 
-void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
+void TransformOverlayWidget::handleMouseRelease(QMouseEvent* event)
 {
     if (m_dragMode == DragMode::Pan) {
         m_dragMode = DragMode::None;
@@ -1309,9 +1340,12 @@ void TransformOverlayWidget::mouseReleaseEvent(QMouseEvent* event)
     }
 
     if (m_dragMode == DragMode::DragMotionHandle) {
-        // Record an undoable command capturing the spatial-handle change.
+        // Record an undoable command capturing the spatial-handle change —
+        // unless the workspace's edit gesture for this drag records it.
+        const EditSession* edits =
+            m_motionCmdStack ? m_motionCmdStack->editSession() : nullptr;
         if (m_motionCmdStack && m_motionX && m_motionY &&
-            m_dragMotionKfIdx >= 0)
+            m_dragMotionKfIdx >= 0 && !(edits && edits->isOpen()))
         {
             auto* tx = m_motionX;
             auto* ty = m_motionY;
