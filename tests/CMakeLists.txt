@@ -161,6 +161,12 @@ add_roundtable_test(test_keyframe_editor LIBS roundtable_ui roundtable_core USES
 add_roundtable_test(test_main_window     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_render_policy   LIBS roundtable_ui roundtable_gpu roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_history_panel   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+# Whole-timeline pixel regression harness (needs Vulkan; skips without).
+# Golden PNGs live in tests/golden; ROUNDTABLE_GOLDEN_UPDATE=1 rewrites them.
+add_roundtable_test(test_golden_frames   LIBS roundtable_ui roundtable_export roundtable_gpu roundtable_core USES_QT GROUP ui)
+target_compile_definitions(test_golden_frames PRIVATE
+    ROUNDTABLE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+    ROUNDTABLE_GOLDEN_FAILURE_DIR="${CMAKE_BINARY_DIR}/golden_failures")
 add_roundtable_test(test_mask_tracker    LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 # Pure QtCore JSON logic: headless + deterministic, so it gates CI.
 add_roundtable_test(test_comfy_workflow LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
