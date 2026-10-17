@@ -129,18 +129,16 @@ std::shared_ptr<CachedFrame> MediaPool::fetchForPolicy(
     }
 
     case FramePolicy::BestEffort: {
+        // Exact, nearby or last-good from the cache; a miss has queued the
+        // decode and returns nothing (the compositor's sticky frame covers
+        // it). The render thread never decodes.
         auto frame = tryGetFrame(handle, frameNumber, tier);
-        if (frame) {
-            // Any-tier hit is accepted (rejecting it left the layer unrendered
-            // after a live file replace, showing the OLD media); queue the
-            // requested tier so the next composite is sharp.
-            if (frame->tier != tier)
-                schedulePrefetch(handle, frameNumber, 1, /*urgent=*/true, tier);
-            return frame;
-        }
-        // Playback miss: getFrame with scrubMode=false returns the last-good
-        // frame without decoding inline — the render thread never stalls.
-        return getFrame(handle, frameNumber, tier, /*scrubMode=*/false);
+        // Any-tier hit is accepted (rejecting it left the layer unrendered
+        // after a live file replace, showing the OLD media); queue the
+        // requested tier so the next composite is sharp.
+        if (frame && frame->tier != tier)
+            schedulePrefetch(handle, frameNumber, 1, /*urgent=*/true, tier);
+        return frame;
     }
     }
     return nullptr;

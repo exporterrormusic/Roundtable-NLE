@@ -184,7 +184,8 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 if (handle != 0) {
                     const auto warmTier = m_forceFullResolution.load()
                         ? ResolutionTier::Full : previewTier;
-                    (void)m_mediaPool->tryGetFrame(handle, 0, warmTier);
+                    (void)m_mediaPool->requestFrame(
+                        {handle, 0, warmTier, FramePolicy::BestEffort});
                     m_mediaPool->schedulePrefetch(
                         handle, 0, 1, /*urgent=*/true, warmTier);
                     prerollTargets.push_back({handle, 0, warmTier});
@@ -237,10 +238,11 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 const auto warmTier = m_forceFullResolution.load()
                     ? ResolutionTier::Full
                     : previewTier;
-                (void)m_mediaPool->tryGetFrame(handle, frameNum, warmTier);
+                (void)m_mediaPool->requestFrame(
+                    {handle, frameNum, warmTier, FramePolicy::BestEffort});
                 if (temporal) {
-                    (void)m_mediaPool->tryGetFrame(
-                        handle, mapped.upperFrame, warmTier);
+                    (void)m_mediaPool->requestFrame(
+                        {handle, mapped.upperFrame, warmTier, FramePolicy::BestEffort});
                     m_mediaPool->schedulePrefetch(
                         handle, mapped.upperFrame, 2,
                         /*urgent=*/true, warmTier);
