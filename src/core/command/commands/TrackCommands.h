@@ -34,6 +34,8 @@ public:
 
     void execute() override;
     void undo() override;
+    void releaseHeldObjects(HeldModelObjects& out) override
+    { if (m_track) out.tracks.push_back(std::move(m_track)); }
     [[nodiscard]] std::string description() const override;
     [[nodiscard]] int typeId() const override { return static_cast<int>(CommandTypeId::AddTrack); }
 
@@ -59,6 +61,8 @@ public:
 
     void execute() override;
     void undo() override;
+    void releaseHeldObjects(HeldModelObjects& out) override
+    { if (m_track) out.tracks.push_back(std::move(m_track)); }
     [[nodiscard]] std::string description() const override;
     [[nodiscard]] int typeId() const override { return static_cast<int>(CommandTypeId::RemoveTrack); }
 

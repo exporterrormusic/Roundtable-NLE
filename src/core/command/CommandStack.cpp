@@ -20,7 +20,7 @@ CommandStack::CommandStack(size_t maxDepth)
 
 CommandStack::~CommandStack() = default;
 
-bool CommandStack::absorbedByOpenGesture(const Command& cmd, bool alreadyApplied)
+bool CommandStack::absorbedByOpenGesture(std::unique_ptr<Command>& cmd, bool alreadyApplied)
 {
     if (!m_editSession || !m_editSession->isOpen()) return false;
     // The gesture's before/after diff records whatever this command changed,
@@ -29,16 +29,18 @@ bool CommandStack::absorbedByOpenGesture(const Command& cmd, bool alreadyApplied
     if (alreadyApplied) {
         // A finished edit reporting what it already applied — the normal
         // pattern of widgets inside a bracketed gesture.
-        spdlog::debug("[EDIT] '{}' recorded by gesture '{}'", cmd.description(),
+        spdlog::debug("[EDIT] '{}' recorded by gesture '{}'", cmd->description(),
                       m_editSession->openDescription());
     } else {
         // Ran while a gesture was open: correct for timeline data, but any
         // non-timeline state it changed is no longer undoable. Worth a look.
         spdlog::warn("[EDIT] legacy command '{}' executed inside '{}' — absorbed "
-                     "into that undo step", cmd.description(),
+                     "into that undo step", cmd->description(),
                      m_editSession->openDescription());
     }
-    m_editSession->renameOpen(cmd.description());
+    m_editSession->renameOpen(cmd->description());
+    // The step keeps the command (and the clips/tracks it holds) alive.
+    m_editSession->absorb(std::move(cmd));
     return true;
 }
 
@@ -48,7 +50,7 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
 
     // Always execute first (apply the change)
     cmd->execute();
-    if (absorbedByOpenGesture(*cmd, /*alreadyApplied=*/false)) return;
+    if (absorbedByOpenGesture(cmd, /*alreadyApplied=*/false)) return;
 
     // During a macro, buffer the command instead of pushing directly
     if (m_macroDepth > 0 && m_activeMacro) {
@@ -87,7 +89,7 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
 void CommandStack::pushWithoutExecute(std::unique_ptr<Command> cmd)
 {
     if (!cmd) return;
-    if (absorbedByOpenGesture(*cmd, /*alreadyApplied=*/true)) return;
+    if (absorbedByOpenGesture(cmd, /*alreadyApplied=*/true)) return;
 
     // During a macro, buffer the command instead of pushing directly
     if (m_macroDepth > 0 && m_activeMacro) {

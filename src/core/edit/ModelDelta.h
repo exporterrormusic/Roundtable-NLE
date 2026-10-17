@@ -19,6 +19,7 @@
 #pragma once
 
 #include "project/Settings.h"
+#include "timeline/Clip.h"     // owned (parked) clips
 #include "timeline/Marker.h"
 #include "timeline/Track.h"
 #include "timeline/Transition.h"
@@ -31,7 +32,6 @@
 
 namespace rt {
 
-class Clip;
 class Timeline;
 
 struct DeltaTrack
@@ -82,6 +82,21 @@ struct ModelDelta
     /// Changed or added clips as they are after the edit.
     std::unordered_map<uint64_t, std::shared_ptr<const Clip>> clipsAfter;
 
+    /// Live objects currently OFF the timeline because of this step (removed
+    /// by it, or brought back by its undo and removed again by its redo).
+    /// applyDelta parks objects here instead of destroying them and takes
+    /// them back when they return, so a clip/track keeps its address across
+    /// undo/redo and pointers held elsewhere never dangle while the step is
+    /// in history. Displaced duplicates go to the graveyards for the same
+    /// reason.
+    std::unordered_map<uint64_t, std::unique_ptr<Clip>>  parkedClips;
+    std::unordered_map<uint64_t, std::unique_ptr<Track>> parkedTracks;
+    std::vector<std::unique_ptr<Clip>>  clipGraveyard;
+    std::vector<std::unique_ptr<Track>> trackGraveyard;
+
+    void parkClip(std::unique_ptr<Clip> clip);
+    void parkTrack(std::unique_ptr<Track> track);
+
     [[nodiscard]] bool empty() const;
     /// Distinct clips this delta touches.
     [[nodiscard]] size_t changedClipCount() const;
@@ -90,8 +105,9 @@ struct ModelDelta
 /// What changed from `before` to `after` (two states of one sequence).
 [[nodiscard]] ModelDelta diffSequence(const Timeline& before, const Timeline& after);
 
-/// Make `live` match one side of `delta`, reusing live tracks and clips.
+/// Make `live` match one side of `delta`, reusing live and parked tracks and
+/// clips (objects leaving the timeline are parked in `delta`, never freed).
 /// Ends with one onTimelineStructureChanged() notification.
-void applyDelta(Timeline& live, const ModelDelta& delta, DeltaSide side);
+void applyDelta(Timeline& live, ModelDelta& delta, DeltaSide side);
 
 } // namespace rt

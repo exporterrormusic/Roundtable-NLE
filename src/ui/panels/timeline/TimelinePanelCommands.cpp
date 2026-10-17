@@ -144,7 +144,12 @@ void TimelinePanel::cancelDragEditGesture()
 void TimelinePanel::recordAppliedDragResult(std::unique_ptr<Command> cmd)
 {
     if (!cmd || !m_commandStack) return;
-    if (m_dragEdit.active()) return;   // the drag's gesture records it
+    if (m_dragEdit.active()) {
+        // The drag's gesture records the change; it keeps the bundle (and
+        // any clips it removed, e.g. overwritten by the move) alive.
+        if (EditSession* edits = editSession()) edits->absorb(std::move(cmd));
+        return;
+    }
     m_commandStack->pushWithoutExecute(std::move(cmd));
 }
 

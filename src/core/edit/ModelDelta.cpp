@@ -182,7 +182,23 @@ ModelDelta diffSequence(const Timeline& before, const Timeline& after)
     return d;
 }
 
-void applyDelta(Timeline& live, const ModelDelta& delta, DeltaSide side)
+void ModelDelta::parkClip(std::unique_ptr<Clip> clip)
+{
+    if (!clip) return;
+    auto& slot = parkedClips[clip->id()];
+    if (slot) clipGraveyard.push_back(std::move(slot));   // keep, never free
+    slot = std::move(clip);
+}
+
+void ModelDelta::parkTrack(std::unique_ptr<Track> track)
+{
+    if (!track) return;
+    auto& slot = parkedTracks[track->id()];
+    if (slot) trackGraveyard.push_back(std::move(slot));
+    slot = std::move(track);
+}
+
+void applyDelta(Timeline& live, ModelDelta& delta, DeltaSide side)
 {
     const DeltaSequenceState& state = side == DeltaSide::After ? delta.after : delta.before;
     const auto& copies = side == DeltaSide::After ? delta.clipsAfter : delta.clipsBefore;
@@ -190,15 +206,28 @@ void applyDelta(Timeline& live, const ModelDelta& delta, DeltaSide side)
     // Take every track and clip out of the live sequence, keyed by id.
     std::unordered_map<uint64_t, std::unique_ptr<Track>> trackPool;
     std::unordered_map<uint64_t, std::unique_ptr<Clip>> clipPool;
+    auto poolTrackClips = [&clipPool](Track& t) {
+        for (auto& c : ModelDeltaAccess::clips(t))
+            if (c) clipPool.emplace(c->id(), std::move(c));
+        ModelDeltaAccess::clips(t).clear();
+    };
     for (auto& t : ModelDeltaAccess::tracks(live)) {
         if (!t) continue;
-        for (auto& c : ModelDeltaAccess::clips(*t))
-            if (c) clipPool.emplace(c->id(), std::move(c));
-        ModelDeltaAccess::clips(*t).clear();
+        poolTrackClips(*t);
         const uint64_t id = t->id();
         trackPool.emplace(id, std::move(t));
     }
     ModelDeltaAccess::tracks(live).clear();
+
+    // A clip this side needs that isn't live: the parked object if this step
+    // removed it earlier (same address as before), else a fresh copy.
+    auto takeParkedClip = [&delta](uint64_t id) -> std::unique_ptr<Clip> {
+        auto it = delta.parkedClips.find(id);
+        if (it == delta.parkedClips.end()) return nullptr;
+        auto clip = std::move(it->second);
+        delta.parkedClips.erase(it);
+        return clip;
+    };
 
     // Rebuild the layout of the requested side.
     for (const DeltaTrack& h : state.tracks) {
@@ -207,6 +236,11 @@ void applyDelta(Timeline& live, const ModelDelta& delta, DeltaSide side)
         if (auto it = trackPool.find(h.id); it != trackPool.end()) {
             track = std::move(it->second);
             trackPool.erase(it);
+        } else if (auto parked = delta.parkedTracks.find(h.id);
+                   parked != delta.parkedTracks.end()) {
+            track = std::move(parked->second);
+            delta.parkedTracks.erase(parked);
+            poolTrackClips(*track);   // a removed track may still hold clips
         } else {
             track = std::make_unique<Track>(h.type, h.name);
             ModelDeltaAccess::setTrackId(*track, h.id);
@@ -217,19 +251,24 @@ void applyDelta(Timeline& live, const ModelDelta& delta, DeltaSide side)
         auto& clips = ModelDeltaAccess::clips(*track);
         clips.reserve(h.clipIds.size());
         for (const uint64_t id : h.clipIds) {
-            auto pooled = clipPool.find(id);
+            std::unique_ptr<Clip> object;
+            if (auto pooled = clipPool.find(id); pooled != clipPool.end()) {
+                object = std::move(pooled->second);
+                clipPool.erase(pooled);
+            } else {
+                object = takeParkedClip(id);
+            }
+
             auto copy = copies.find(id);
             if (copy != copies.end()) {
-                if (pooled != clipPool.end() && pooled->second
-                        && pooled->second->assignStateFrom(*copy->second)) {
-                    clips.push_back(std::move(pooled->second));
-                    clipPool.erase(pooled);
+                if (object && object->assignStateFrom(*copy->second)) {
+                    clips.push_back(std::move(object));
                 } else {
+                    delta.parkClip(std::move(object));   // type changed: keep it alive
                     clips.push_back(copy->second->cloneForSnapshot());
                 }
-            } else if (pooled != clipPool.end()) {
-                clips.push_back(std::move(pooled->second));
-                clipPool.erase(pooled);
+            } else if (object) {
+                clips.push_back(std::move(object));
             } else {
                 spdlog::error("[EDIT] undo: clip {} is neither in the sequence nor "
                               "in the undo record; skipped", id);
@@ -241,8 +280,11 @@ void applyDelta(Timeline& live, const ModelDelta& delta, DeltaSide side)
     live.setName(state.name);
     live.setSettings(state.settings);
     ModelDeltaAccess::setMarkers(live, state.markers);
-    // Tracks and clips left in the pools are not part of this side; they are
-    // destroyed here, exactly as a removing command would.
+    // Tracks and clips not part of this side leave the timeline. They are
+    // parked, not destroyed: a panel or an older undo step may still point
+    // at them, and the opposite side brings these exact objects back.
+    for (auto& [id, clip] : clipPool) delta.parkClip(std::move(clip));
+    for (auto& [id, track] : trackPool) delta.parkTrack(std::move(track));
     ModelDeltaAccess::notifyStructure(live);
 }
 

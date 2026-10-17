@@ -31,6 +31,11 @@ public:
 
     void execute() override;
     void undo() override;
+    void releaseHeldObjects(HeldModelObjects& out) override
+    {
+        for (auto& cmd : m_commands)
+            if (cmd) cmd->releaseHeldObjects(out);
+    }
     [[nodiscard]] std::string description() const override;
 
     /// Number of sub-commands

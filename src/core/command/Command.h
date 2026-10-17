@@ -14,10 +14,27 @@
 
 namespace rt {
 
+class Clip;
+class Track;
+
+/// Model objects a command owns while they are off the timeline (a removed
+/// clip, an undone track). EditSession takes them over when it records a
+/// command, so the same objects come back on undo instead of copies.
+struct HeldModelObjects
+{
+    std::vector<std::unique_ptr<Clip>>  clips;
+    std::vector<std::unique_ptr<Track>> tracks;
+};
+
 class Command
 {
 public:
     virtual ~Command() = default;
+
+    /// Hand over the clips/tracks this command currently holds off the
+    /// timeline. Only called on a command that will never be undone or
+    /// redone again (one EditSession has recorded and absorbed).
+    virtual void releaseHeldObjects(HeldModelObjects& /*out*/) {}
 
     /// Execute the command (first time or redo)
     virtual void execute() = 0;
@@ -53,6 +70,12 @@ public:
 
     [[nodiscard]] bool empty() const noexcept { return m_children.empty(); }
     [[nodiscard]] size_t size() const noexcept { return m_children.size(); }
+
+    void releaseHeldObjects(HeldModelObjects& out) override
+    {
+        for (auto& cmd : m_children)
+            if (cmd) cmd->releaseHeldObjects(out);
+    }
 
     void execute() override
     {

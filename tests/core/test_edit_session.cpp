@@ -17,6 +17,7 @@
 
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "command/commands/TrackCommands.h"
 #include "edit/EditSession.h"
 #include "edit/ModelDelta.h"
 #include "effects/Effect.h"
@@ -364,6 +365,70 @@ TEST(EditSession, CommitListenerHearsStepsAndUndo)
 
 // A gesture costs one copy at begin and one diff at commit; both run on the
 // UI thread once per user gesture.
+// ── Object lifetime: removed clips/tracks stay alive and come back ─────────
+
+TEST(EditSession, DeletedClipComesBackAsTheSameObject)
+{
+    Fixture f;
+    Clip* image = f.clip(f.imageId);
+    ASSERT_TRUE(f.session.execute(
+        f.tl, EditOperations::deleteSelection(f.tl, selectionOf(f.v1, f.imageId))));
+    EXPECT_EQ(f.clip(f.imageId), nullptr);
+    // Still allocated (held by the step): reading it must be safe.
+    EXPECT_EQ(image->id(), f.imageId);
+
+    for (int round = 0; round < 3; ++round) {
+        ASSERT_TRUE(f.stack.undo());
+        EXPECT_EQ(f.clip(f.imageId), image) << "round " << round;
+        ASSERT_TRUE(f.stack.redo());
+        EXPECT_EQ(f.clip(f.imageId), nullptr);
+    }
+}
+
+TEST(EditSession, UndoneAddKeepsTheObjectForRedo)
+{
+    Fixture f;
+    Clip* added = nullptr;
+    ASSERT_TRUE(f.session.edit("Add", f.tl, [&] {
+        auto clip = std::make_unique<ImageClip>();
+        clip->setTimelineIn(20 * kSec);
+        clip->setDuration(kSec);
+        added = f.tl.track(f.v2)->addClip(std::move(clip));
+    }));
+    const uint64_t id = added->id();
+    ASSERT_TRUE(f.stack.undo());
+    EXPECT_EQ(f.clip(id), nullptr);
+    EXPECT_EQ(added->id(), id) << "parked, not freed";
+    ASSERT_TRUE(f.stack.redo());
+    EXPECT_EQ(f.clip(id), added);
+}
+
+TEST(EditSession, RemovedTrackComesBackAsTheSameObject)
+{
+    Fixture f;
+    Track* v2 = f.tl.track(f.v2);
+    const size_t before = f.tl.trackCount();
+    ASSERT_TRUE(f.session.execute(
+        f.tl, std::make_unique<RemoveTrackCommand>(&f.tl, f.v2)));
+    EXPECT_EQ(f.tl.trackCount(), before - 1);
+    ASSERT_TRUE(f.stack.undo());
+    ASSERT_EQ(f.tl.trackCount(), before);
+    EXPECT_EQ(f.tl.track(f.v2), v2);
+    EXPECT_EQ(f.clip(f.spineId) != nullptr, true) << "its clip came back too";
+}
+
+TEST(EditSession, CancelBringsBackTheSameDeletedObject)
+{
+    Fixture f;
+    Clip* image = f.clip(f.imageId);
+    f.session.beginGesture("Drag", f.tl);
+    f.session.execute(f.tl,
+        EditOperations::deleteSelection(f.tl, selectionOf(f.v1, f.imageId)));
+    EXPECT_EQ(f.clip(f.imageId), nullptr);
+    f.session.cancel();
+    EXPECT_EQ(f.clip(f.imageId), image);
+}
+
 TEST(EditSession, GestureCostFor1000Clips)
 {
     Timeline tl;

@@ -20,10 +20,12 @@ namespace {
 class DeltaCommand final : public Command
 {
 public:
-    DeltaCommand(EditSession& session, std::string description, ModelDelta delta)
+    DeltaCommand(EditSession& session, std::string description, ModelDelta delta,
+                 std::vector<std::unique_ptr<Command>> absorbed)
         : m_session(session)
         , m_description(std::move(description))
         , m_delta(std::move(delta))
+        , m_absorbed(std::move(absorbed))
     {}
 
     void execute() override { apply(DeltaSide::After); }
@@ -46,6 +48,10 @@ private:
     EditSession&  m_session;
     std::string   m_description;
     ModelDelta    m_delta;
+    // Legacy commands this step recorded. Never undone (the delta covers
+    // them) but kept, like the stack used to keep them, so whatever they
+    // own or point at lives exactly as long as this step is in history.
+    std::vector<std::unique_ptr<Command>> m_absorbed;
 };
 
 } // namespace
@@ -57,7 +63,25 @@ struct EditSession::Open
     std::unique_ptr<Timeline> baseline;   // exact copy at begin
     int                       depth{1};
     uint64_t                  generation{0};
+    // Legacy commands run inside this gesture, and the clips/tracks they
+    // held off the timeline (e.g. a RemoveClipCommand's removed clip).
+    std::vector<std::unique_ptr<Command>> absorbed;
+    HeldModelObjects                      held;
 };
+
+namespace {
+
+// The objects legacy commands handed over become the delta's parked objects,
+// so undo/cancel brings back these exact objects rather than copies.
+void parkHeldObjects(ModelDelta& delta, HeldModelObjects& held)
+{
+    for (auto& clip : held.clips) delta.parkClip(std::move(clip));
+    for (auto& track : held.tracks) delta.parkTrack(std::move(track));
+    held.clips.clear();
+    held.tracks.clear();
+}
+
+} // namespace
 
 uint64_t EditSession::openGeneration() const noexcept
 {
@@ -114,12 +138,14 @@ bool EditSession::commit()
     std::unique_ptr<Open> open = std::move(m_open);
     ModelDelta delta = diffSequence(*open->baseline, *open->sequence);
     if (delta.empty()) return false;
+    parkHeldObjects(delta, open->held);
 
     const uint64_t sequenceId = delta.sequenceId;
     spdlog::debug("[EDIT] '{}' recorded ({} clip(s) changed)",
                   open->description, delta.changedClipCount());
     m_stack.pushWithoutExecute(std::make_unique<DeltaCommand>(
-        *this, std::move(open->description), std::move(delta)));
+        *this, std::move(open->description), std::move(delta),
+        std::move(open->absorbed)));
     notifyChanged(sequenceId);
     return true;
 }
@@ -130,8 +156,17 @@ void EditSession::cancel()
     std::unique_ptr<Open> open = std::move(m_open);
     ModelDelta delta = diffSequence(*open->baseline, *open->sequence);
     if (delta.empty()) return;
+    parkHeldObjects(delta, open->held);
     applyDelta(*open->sequence, delta, DeltaSide::Before);
     notifyChanged(delta.sequenceId);
+}
+
+void EditSession::absorb(std::unique_ptr<Command> cmd)
+{
+    if (!cmd) return;
+    if (!m_open) return;   // nothing to record into; the caller's own path
+    cmd->releaseHeldObjects(m_open->held);
+    m_open->absorbed.push_back(std::move(cmd));
 }
 
 void EditSession::abandon() noexcept
@@ -149,6 +184,7 @@ bool EditSession::execute(Timeline& sequence, std::unique_ptr<Command> cmd)
         cancel();
         throw;
     }
+    absorb(std::move(cmd));   // keeps what it owns alive in the recorded step
     const bool recorded = commit();
     return outer && recorded;
 }

@@ -93,6 +93,11 @@ public:
     /// not used). Description comes from the command.
     bool execute(Timeline& sequence, std::unique_ptr<Command> cmd);
 
+    /// Take over an already-run legacy command into the open gesture: its
+    /// held clips/tracks become the step's parked objects and the command is
+    /// kept alive with the step. No-op (command dropped) when none is open.
+    void absorb(std::unique_ptr<Command> cmd);
+
     // ── Used by DeltaCommand ────────────────────────────────────────────
     [[nodiscard]] Timeline* resolve(uint64_t sequenceId) const;
     void notifyChanged(uint64_t sequenceId) const;

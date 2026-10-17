@@ -161,7 +161,7 @@ public:
 private:
     EditSession* m_editSession{nullptr};
     /// True when an open EditSession gesture takes over `cmd` (see .cpp).
-    bool absorbedByOpenGesture(const Command& cmd, bool alreadyApplied);
+    bool absorbedByOpenGesture(std::unique_ptr<Command>& cmd, bool alreadyApplied);
 
     std::deque<std::unique_ptr<Command>> m_undoStack;
     std::deque<std::unique_ptr<Command>> m_redoStack;

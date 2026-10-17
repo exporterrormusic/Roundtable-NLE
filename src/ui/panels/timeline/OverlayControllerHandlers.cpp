@@ -1235,9 +1235,12 @@ void OverlayController::recordAppliedEdit(std::unique_ptr<Command> cmd)
     CommandStack* stack = m_ws->commandStack();
     if (!stack) return;
     if (m_dragEdit.active()) {
-        // The drag's gesture records the change; keep its precise name.
-        if (EditSession* edits = stack->editSession())
+        // The drag's gesture records the change; keep its precise name, and
+        // keep the command (and anything it holds) alive with the step.
+        if (EditSession* edits = stack->editSession()) {
             edits->renameOpen(cmd->description());
+            edits->absorb(std::move(cmd));
+        }
         return;
     }
     stack->pushWithoutExecute(std::move(cmd));
