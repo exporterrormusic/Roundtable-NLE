@@ -10,13 +10,10 @@
 
 namespace rt {
 
-class Sharpen : public Effect
+class Sharpen final : public Effect
 {
 public:
-    Sharpen();
-    ~Sharpen() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Sharpen() : Effect(EffectType::Sharpen) {}
 
     enum Param : size_t {
         Amount = 0,    // 0–5.0

@@ -12,13 +12,10 @@
 
 namespace rt {
 
-class Blur : public Effect
+class Blur final : public Effect
 {
 public:
-    Blur();
-    ~Blur() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Blur() : Effect(EffectType::Blur) {}
 
     enum Param : size_t {
         Radius = 0,         // 0–100 pixels

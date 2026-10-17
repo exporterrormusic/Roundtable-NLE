@@ -11,13 +11,10 @@
 
 namespace rt {
 
-class Letterbox : public Effect
+class Letterbox final : public Effect
 {
 public:
-    Letterbox();
-    ~Letterbox() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Letterbox() : Effect(EffectType::Letterbox) {}
 
     enum Param : size_t {
         AspectWidth = 0,  // 1–4 (numerator, e.g. 2.39 for 2.39:1)

@@ -23,17 +23,6 @@ namespace rt {
 LUT::LUT()
     : Effect(EffectType::LUT)
 {
-    addParam("Intensity", 1.0f, 0.0f, 1.0f);
-}
-
-std::unique_ptr<Effect> LUT::clone() const
-{
-    auto copy = std::make_unique<LUT>();
-    copy->m_enabled  = m_enabled;
-    copy->copyExtraStateFrom(*this);
-    for (size_t i = 0; i < m_params.size(); ++i)
-        copy->m_params[i].track = m_params[i].track;
-    return copy;
 }
 
 void LUT::copyExtraStateFrom(const Effect& src)

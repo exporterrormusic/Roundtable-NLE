@@ -6,22 +6,12 @@
 
 #include "effects/EffectStack.h"
 #include "effects/Effect.h"
-#include "effects/ColorCorrect.h"
-#include "effects/Blur.h"
-#include "effects/Sharpen.h"
-#include "effects/Glow.h"
-#include "effects/ChromaKey.h"
-#include "effects/Transform2D.h"
-#include "effects/Vignette.h"
-#include "effects/LUT.h"
-#include "effects/Letterbox.h"
-#include "effects/Ots.h"
-#include "effects/Flip.h"
-#include "effects/ColorGrading.h"
-#include "effects/FillChannel.h"
-#include "effects/GlitchEffects.h"
+#include "effects/EffectRegistry.h"
 #include "effects/BeatEffects.h"
-#include "effects/Tint.h"
+#include "effects/ChromaKey.h"
+#include "effects/ColorGrading.h"
+#include "effects/LUT.h"
+#include "effects/Ots.h"
 
 #include "Constants.h"
 
@@ -40,6 +30,29 @@ Effect::Effect(EffectType type)
     : m_type(type)
     , m_id(s_nextId++)
 {
+    const auto& def = effectDef(type);
+    m_params.reserve(def.params.size());
+    for (const auto& p : def.params) {
+        EffectParam param;
+        param.name   = p.name;
+        param.track  = KeyframeTrack<float>(p.def);
+        param.minVal = p.min;
+        param.maxVal = p.max;
+        m_params.push_back(std::move(param));
+    }
+}
+
+std::unique_ptr<Effect> Effect::clone() const
+{
+    auto copy = createEffect(m_type);
+    if (!copy)
+        copy = std::make_unique<Effect>(m_type);
+    copy->m_enabled = m_enabled;
+    const size_t n = std::min(m_params.size(), copy->m_params.size());
+    for (size_t i = 0; i < n; ++i)
+        copy->m_params[i].track = m_params[i].track;
+    copy->copyExtraStateFrom(*this);
+    return copy;
 }
 
 Effect::~Effect() = default;
@@ -67,55 +80,27 @@ std::vector<float> Effect::evalAllParams(int64_t time) const
     return vals;
 }
 
-void Effect::addParam(const std::string& name, float defaultValue,
-                      float minVal, float maxVal)
-{
-    EffectParam p;
-    p.name   = name;
-    p.track  = KeyframeTrack<float>(defaultValue);
-    p.minVal = minVal;
-    p.maxVal = maxVal;
-    m_params.push_back(std::move(p));
-}
-
 // ---- Factory ----------------------------------------------------------------
 
 std::unique_ptr<Effect> createEffect(EffectType type)
 {
+    // Only effects with state beyond their parameters have a class of their
+    // own; every other effect is a plain Effect built from its table entry.
     switch (type) {
-    case EffectType::ColorCorrect: return std::make_unique<ColorCorrect>();
-    case EffectType::Blur:         return std::make_unique<Blur>();
-    case EffectType::Sharpen:      return std::make_unique<Sharpen>();
-    case EffectType::Glow:         return std::make_unique<Glow>();
     case EffectType::ChromaKey:    return std::make_unique<ChromaKey>();
-    case EffectType::Transform2D:  return std::make_unique<Transform2D>();
-    case EffectType::Vignette:      return std::make_unique<Vignette>();
-    case EffectType::LUT:            return std::make_unique<LUT>();
-    case EffectType::Letterbox:      return std::make_unique<Letterbox>();
-    case EffectType::ColorGrading:   return std::make_unique<ColorGrading>();
-    case EffectType::LumetriColor:   return std::make_unique<ColorGrading>();
-    case EffectType::OtsLeft:        return std::make_unique<Ots>(EffectType::OtsLeft);
-    case EffectType::OtsRight:       return std::make_unique<Ots>(EffectType::OtsRight);
-    case EffectType::OtsIntro:       return std::make_unique<Ots>(EffectType::OtsIntro);
-    case EffectType::FlipHorizontal: return std::make_unique<Flip>(EffectType::FlipHorizontal);
-    case EffectType::FlipVertical:   return std::make_unique<Flip>(EffectType::FlipVertical);
-    case EffectType::FillLeftWithRight:  return std::make_unique<FillLeftWithRight>();
-    case EffectType::FillRightWithLeft:  return std::make_unique<FillRightWithLeft>();
-    case EffectType::Scanlines:          return std::make_unique<Scanlines>();
-    case EffectType::BlockGlitch:        return std::make_unique<BlockGlitch>();
-    case EffectType::ChromaticSplit:     return std::make_unique<ChromaticSplit>();
-    case EffectType::TurbulentDisplace:  return std::make_unique<TurbulentDisplace>();
-    case EffectType::Posterize:          return std::make_unique<Posterize>();
-    case EffectType::Grain:              return std::make_unique<Grain>();
-    case EffectType::SignalTear:         return std::make_unique<SignalTear>();
-    case EffectType::BeatZoom:           return std::make_unique<BeatZoom>();
-    case EffectType::BeatFlash:          return std::make_unique<BeatFlash>();
-    case EffectType::BeatShake:          return std::make_unique<BeatShake>();
-    case EffectType::BeatChroma:         return std::make_unique<BeatChroma>();
-    case EffectType::BeatDrop:           return std::make_unique<BeatDrop>();
-    case EffectType::Tint:               return std::make_unique<Tint>();
-    default: return nullptr;
+    case EffectType::LUT:          return std::make_unique<LUT>();
+    case EffectType::ColorGrading:
+    case EffectType::LumetriColor: return std::make_unique<ColorGrading>();  // legacy loads as Color Grading
+    case EffectType::OtsLeft:
+    case EffectType::OtsRight:
+    case EffectType::OtsIntro:     return std::make_unique<Ots>(type);
+    default:                       break;
     }
+    if (static_cast<size_t>(type) >= static_cast<size_t>(EffectType::Count))
+        return nullptr;   // not an effect type
+    if (isBeatReactEffect(type))
+        return std::make_unique<BeatReactEffect>(type);
+    return std::make_unique<Effect>(type);
 }
 
 // =============================================================================

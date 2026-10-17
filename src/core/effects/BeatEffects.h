@@ -28,8 +28,8 @@ class BeatReactEffect : public Effect
 public:
     explicit BeatReactEffect(EffectType type);
 
-    /// Shared params. Subclasses add Amount at index 0 first, then call
-    /// addBeatParams() so these land at the indices below.
+    /// Parameter indices, shared by every beat effect (EffectRegistry.cpp:
+    /// Amount's unit and range differ per effect).
     enum BeatParam : size_t {
         Amount = 0,  // effect-specific strength (units vary per effect)
         BPM,         // 1–300   manual tempo
@@ -54,51 +54,11 @@ public:
     [[nodiscard]] uint64_t audioSourceId() const noexcept { return m_audioSourceId; }
 
 protected:
-    /// Register the shared beat params (call after adding "Amount").
-    void addBeatParams();
-
-    /// Copy base state (params, beat times, source) into a freshly cloned obj.
-    void copyBeatStateTo(BeatReactEffect& dst) const;
+    /// Onsets and their source travel with clone() and undo/redo.
+    void copyExtraStateFrom(const Effect& src) override;
 
     std::vector<float> m_beatTimes;       ///< detected onset times (seconds)
     uint64_t           m_audioSourceId{0};
-};
-
-// ── Reactions ───────────────────────────────────────────────────────────────
-class BeatZoom : public BeatReactEffect
-{
-public:
-    BeatZoom();
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-};
-
-class BeatFlash : public BeatReactEffect
-{
-public:
-    BeatFlash();
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-};
-
-class BeatShake : public BeatReactEffect
-{
-public:
-    BeatShake();
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-};
-
-class BeatChroma : public BeatReactEffect
-{
-public:
-    BeatChroma();
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-};
-
-// Combined "drop": zoom + flash + chroma in one pass, one Amount knob.
-class BeatDrop : public BeatReactEffect
-{
-public:
-    BeatDrop();
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
 };
 
 } // namespace rt

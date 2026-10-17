@@ -42,14 +42,12 @@ enum class GlitchPreset : int {
 /// Returns them in stack order (index 0 applied first).
 [[nodiscard]] std::vector<std::unique_ptr<Effect>> buildGlitchPreset(GlitchPreset p);
 
-// ── Scanlines ───────────────────────────────────────────────────────────────
-class Scanlines : public Effect
-{
-public:
-    Scanlines();
-    ~Scanlines() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+// Parameter index names of the glitch building blocks (their parameters
+// are defined in EffectRegistry.cpp).
 
+// ── Scanlines ───────────────────────────────────────────────────────────────
+struct Scanlines
+{
     enum Param : size_t {
         Intensity = 0,  // 0–1   line darkening strength
         LineCount,      // 1–2000 scanlines down the frame
@@ -64,13 +62,8 @@ public:
 };
 
 // ── Block Glitch (datamosh) ─────────────────────────────────────────────────
-class BlockGlitch : public Effect
+struct BlockGlitch
 {
-public:
-    BlockGlitch();
-    ~BlockGlitch() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-
     enum Param : size_t {
         Intensity = 0,  // 0–1   fraction of blocks that glitch
         BlockSize,      // 2–256 px block grid
@@ -82,13 +75,8 @@ public:
 };
 
 // ── Chromatic Split ─────────────────────────────────────────────────────────
-class ChromaticSplit : public Effect
+struct ChromaticSplit
 {
-public:
-    ChromaticSplit();
-    ~ChromaticSplit() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-
     enum Param : size_t {
         Intensity = 0,  // 0–1   overall strength
         Amount,         // 0–50  channel offset in px
@@ -100,13 +88,8 @@ public:
 };
 
 // ── Turbulent Displace ──────────────────────────────────────────────────────
-class TurbulentDisplace : public Effect
+struct TurbulentDisplace
 {
-public:
-    TurbulentDisplace();
-    ~TurbulentDisplace() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-
     enum Param : size_t {
         Intensity = 0,  // 0–1   displacement strength
         Scale,          // 0.5–20 noise frequency
@@ -117,13 +100,8 @@ public:
 };
 
 // ── Posterize / Banding ─────────────────────────────────────────────────────
-class Posterize : public Effect
+struct Posterize
 {
-public:
-    Posterize();
-    ~Posterize() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-
     enum Param : size_t {
         Intensity = 0,  // 0–1   blend toward quantized
         Levels,         // 2–64  colour levels per channel
@@ -133,13 +111,8 @@ public:
 };
 
 // ── Grain / Noise ───────────────────────────────────────────────────────────
-class Grain : public Effect
+struct Grain
 {
-public:
-    Grain();
-    ~Grain() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-
     enum Param : size_t {
         Intensity = 0,  // 0–1   noise amount
         Size,           // 1–8   grain pixel size
@@ -149,13 +122,8 @@ public:
 };
 
 // ── Signal Tear ─────────────────────────────────────────────────────────────
-class SignalTear : public Effect
+struct SignalTear
 {
-public:
-    SignalTear();
-    ~SignalTear() override = default;
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
-
     enum Param : size_t {
         Intensity = 0,  // 0–1   fraction of bands that tear
         TearAmount,     // 0–1   max horizontal displacement

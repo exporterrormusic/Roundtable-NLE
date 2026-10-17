@@ -11,13 +11,10 @@
 
 namespace rt {
 
-class Vignette : public Effect
+class Vignette final : public Effect
 {
 public:
-    Vignette();
-    ~Vignette() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Vignette() : Effect(EffectType::Vignette) {}
 
     enum Param : size_t {
         Intensity = 0,  // 0–2 (0 = no effect, 1 = standard, 2 = heavy)

@@ -28,13 +28,12 @@ public:
     ColorGrading();
     ~ColorGrading() override = default;
 
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
 protected:
     void copyExtraStateFrom(const Effect& src) override;
 public:
 
     // ── Parameter indices (into m_params) ───────────────────────────────
-    // Must match the order that addParam() is called in the constructor,
+    // Must match the order of the parameters in EffectRegistry.cpp,
     // and must match the order expected by the GPU compute shader
     // (shaders/lumetri_color.comp — legacy name, this class replaces
     // the old LumetriColor effect).

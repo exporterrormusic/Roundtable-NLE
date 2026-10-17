@@ -1,7 +1,6 @@
 /*
- * GlitchEffects.cpp — constructors (param registration) + clone() for the
- * procedural glitch building blocks. Grouped into one translation unit like
- * SimpleEffects.cpp to keep build overhead down.
+ * GlitchEffects.cpp — glitch presets: curated stacks of the procedural
+ * building blocks (whose parameters are defined in EffectRegistry.cpp).
  */
 
 #include "effects/GlitchEffects.h"
@@ -10,101 +9,6 @@
 #include <utility>
 
 namespace rt {
-
-// Boilerplate clone(): copy enabled flag + every param track.
-#define RT_GLITCH_CLONE(Klass)                                   \
-    std::unique_ptr<Effect> Klass::clone() const                 \
-    {                                                            \
-        auto copy = std::make_unique<Klass>();                   \
-        copy->m_enabled = m_enabled;                             \
-        for (size_t i = 0; i < m_params.size(); ++i)             \
-            copy->m_params[i].track = m_params[i].track;         \
-        return copy;                                             \
-    }
-
-// ── Scanlines ───────────────────────────────────────────────────────────────
-Scanlines::Scanlines()
-    : Effect(EffectType::Scanlines)
-{
-    addParam("Intensity",  0.6f,   0.0f,   1.0f);
-    addParam("Line Count", 400.0f, 1.0f,   2000.0f);
-    addParam("Roll",       0.2f,  -2.0f,   2.0f);
-    addParam("Interlace",  0.0f,   0.0f,   1.0f);
-    addParam("Tint R",     0.0f,   0.0f,   1.0f);
-    addParam("Tint G",     0.0f,   0.0f,   1.0f);
-    addParam("Tint B",     0.0f,   0.0f,   1.0f);
-    addParam("Flicker",    0.0f,   0.0f,   1.0f);
-}
-RT_GLITCH_CLONE(Scanlines)
-
-// ── Block Glitch ────────────────────────────────────────────────────────────
-BlockGlitch::BlockGlitch()
-    : Effect(EffectType::BlockGlitch)
-{
-    addParam("Intensity",  0.5f,  0.0f,   1.0f);
-    addParam("Block Size", 32.0f, 2.0f,   256.0f);
-    addParam("Speed",      4.0f,  0.0f,   10.0f);
-    addParam("Smear",      0.3f,  0.0f,   1.0f);
-    addParam("Seed",       17.0f, 0.0f,   100.0f);
-}
-RT_GLITCH_CLONE(BlockGlitch)
-
-// ── Chromatic Split ─────────────────────────────────────────────────────────
-ChromaticSplit::ChromaticSplit()
-    : Effect(EffectType::ChromaticSplit)
-{
-    addParam("Intensity", 0.5f,  0.0f,   1.0f);
-    addParam("Amount",    6.0f,  0.0f,   50.0f);
-    addParam("Angle",     0.0f,  0.0f,   360.0f);
-    addParam("Jitter",    0.0f,  0.0f,   1.0f);
-    addParam("Speed",     6.0f,  0.0f,   20.0f);
-}
-RT_GLITCH_CLONE(ChromaticSplit)
-
-// ── Turbulent Displace ──────────────────────────────────────────────────────
-TurbulentDisplace::TurbulentDisplace()
-    : Effect(EffectType::TurbulentDisplace)
-{
-    addParam("Intensity",  0.5f, 0.0f,  1.0f);
-    addParam("Scale",      4.0f, 0.5f,  20.0f);
-    addParam("Speed",      1.0f, 0.0f,  5.0f);
-    addParam("Complexity", 2.0f, 1.0f,  5.0f);
-}
-RT_GLITCH_CLONE(TurbulentDisplace)
-
-// ── Posterize / Banding ─────────────────────────────────────────────────────
-Posterize::Posterize()
-    : Effect(EffectType::Posterize)
-{
-    addParam("Intensity",   1.0f, 0.0f,  1.0f);
-    addParam("Levels",      8.0f, 2.0f,  64.0f);
-    addParam("Block Quant", 0.0f, 0.0f,  1.0f);
-}
-RT_GLITCH_CLONE(Posterize)
-
-// ── Grain / Noise ───────────────────────────────────────────────────────────
-Grain::Grain()
-    : Effect(EffectType::Grain)
-{
-    addParam("Intensity", 0.4f, 0.0f, 1.0f);
-    addParam("Size",      1.0f, 1.0f, 8.0f);
-    addParam("Color",     0.0f, 0.0f, 1.0f);
-}
-RT_GLITCH_CLONE(Grain)
-
-// ── Signal Tear ─────────────────────────────────────────────────────────────
-SignalTear::SignalTear()
-    : Effect(EffectType::SignalTear)
-{
-    addParam("Intensity",   0.6f,  0.0f,  1.0f);
-    addParam("Tear Amount", 0.5f,  0.0f,  1.0f);
-    addParam("Frequency",   10.0f, 1.0f,  50.0f);
-    addParam("Mirror",      0.2f,  0.0f,  1.0f);
-    addParam("Seed",        7.0f,  0.0f,  100.0f);
-}
-RT_GLITCH_CLONE(SignalTear)
-
-#undef RT_GLITCH_CLONE
 
 // ── Presets ─────────────────────────────────────────────────────────────────
 

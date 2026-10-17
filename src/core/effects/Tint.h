@@ -12,13 +12,10 @@
 
 namespace rt {
 
-class Tint : public Effect
+class Tint final : public Effect
 {
 public:
-    Tint();
-    ~Tint() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Tint() : Effect(EffectType::Tint) {}
 
     enum Param : size_t {
         MapBlackR = 0,

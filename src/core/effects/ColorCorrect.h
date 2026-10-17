@@ -11,13 +11,10 @@
 
 namespace rt {
 
-class ColorCorrect : public Effect
+class ColorCorrect final : public Effect
 {
 public:
-    ColorCorrect();
-    ~ColorCorrect() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    ColorCorrect() : Effect(EffectType::ColorCorrect) {}
 
     // Convenience accessors (indices into m_params)
     enum Param : size_t {

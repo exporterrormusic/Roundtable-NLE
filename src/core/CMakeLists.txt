@@ -136,14 +136,10 @@ add_library(roundtable_core STATIC
     effects/EffectStack.cpp
     effects/EffectRegistry.cpp
     effects/CpuComposite.cpp
-    effects/ColorCorrect.cpp
     effects/ChromaKey.cpp
-    effects/Transform2D.cpp
     effects/LUT.cpp
     effects/ColorGrading.cpp
     effects/Ots.cpp
-    effects/Flip.cpp
-    effects/SimpleEffects.cpp
     effects/GlitchEffects.cpp
     effects/BeatEffects.cpp
 

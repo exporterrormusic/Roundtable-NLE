@@ -1,5 +1,5 @@
 /*
- * BeatEffects.cpp — beat-reactive base (pulse envelope) + the reactions.
+ * BeatEffects.cpp — beat-reactive effects: the pulse envelope and onsets.
  */
 
 #include "effects/BeatEffects.h"
@@ -18,30 +18,17 @@ BeatReactEffect::BeatReactEffect(EffectType type)
 {
 }
 
-void BeatReactEffect::addBeatParams()
-{
-    // Indices BPM..Mode — order must match BeatParam.
-    addParam("BPM",      120.0f, 1.0f,   300.0f);
-    addParam("Offset",   0.0f,  -2.0f,   2.0f);
-    addParam("Rate",     1.0f,   0.25f,  4.0f);
-    addParam("Attack",   0.01f,  0.0f,   0.5f);
-    addParam("Decay",    0.25f,  0.01f,  2.0f);
-    addParam("Mode",     0.0f,   0.0f,   1.0f);  // 0 = manual BPM, 1 = detected
-}
-
 void BeatReactEffect::setBeatTimes(std::vector<float> times)
 {
     std::sort(times.begin(), times.end());
     m_beatTimes = std::move(times);
 }
 
-void BeatReactEffect::copyBeatStateTo(BeatReactEffect& dst) const
+void BeatReactEffect::copyExtraStateFrom(const Effect& src)
 {
-    dst.m_enabled = m_enabled;
-    for (size_t i = 0; i < m_params.size(); ++i)
-        dst.m_params[i].track = m_params[i].track;
-    dst.m_beatTimes     = m_beatTimes;
-    dst.m_audioSourceId = m_audioSourceId;
+    const auto& o = static_cast<const BeatReactEffect&>(src);
+    m_beatTimes     = o.m_beatTimes;
+    m_audioSourceId = o.m_audioSourceId;
 }
 
 float BeatReactEffect::computePulse(int64_t clipLocalTick) const
@@ -73,52 +60,5 @@ float BeatReactEffect::computePulse(int64_t clipLocalTick) const
     if (dt < attack) return dt / attack;               // linear rise
     return std::clamp(std::exp(-(dt - attack) / decay), 0.0f, 1.0f);  // eased fall
 }
-
-// ── Reactions ────────────────────────────────────────────────────────────────
-
-#define RT_BEAT_CLONE(Klass)                          \
-    std::unique_ptr<Effect> Klass::clone() const      \
-    {                                                 \
-        auto copy = std::make_unique<Klass>();        \
-        copyBeatStateTo(*copy);                       \
-        return copy;                                  \
-    }
-
-BeatZoom::BeatZoom() : BeatReactEffect(EffectType::BeatZoom)
-{
-    addParam("Amount", 0.06f, 0.0f, 0.5f);   // fractional scale-up at full pulse
-    addBeatParams();
-}
-RT_BEAT_CLONE(BeatZoom)
-
-BeatFlash::BeatFlash() : BeatReactEffect(EffectType::BeatFlash)
-{
-    addParam("Amount", 0.6f, 0.0f, 2.0f);    // brightness gain at full pulse
-    addBeatParams();
-}
-RT_BEAT_CLONE(BeatFlash)
-
-BeatShake::BeatShake() : BeatReactEffect(EffectType::BeatShake)
-{
-    addParam("Amount", 20.0f, 0.0f, 150.0f); // max offset in px at full pulse
-    addBeatParams();
-}
-RT_BEAT_CLONE(BeatShake)
-
-BeatChroma::BeatChroma() : BeatReactEffect(EffectType::BeatChroma)
-{
-    addParam("Amount", 12.0f, 0.0f, 60.0f);  // channel split in px at full pulse
-    addBeatParams();
-}
-RT_BEAT_CLONE(BeatChroma)
-
-BeatDrop::BeatDrop() : BeatReactEffect(EffectType::BeatDrop)
-{
-    addParam("Amount", 1.0f, 0.0f, 2.0f);    // unitless punch (drives all three)
-    addBeatParams();
-}
-RT_BEAT_CLONE(BeatDrop)
-
-#undef RT_BEAT_CLONE
 
 } // namespace rt

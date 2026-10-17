@@ -82,35 +82,9 @@ bool extractNumber(const std::string& src, const std::string& key, double& out)
 Ots::Ots(EffectType type)
     : Effect(type)
 {
-    const float side = (type == EffectType::OtsRight) ? 1.0f : 0.0f;
-
-    addParam("Side",          side,  0.0f, 1.0f);
-    addParam("PosX",          0.05f, 0.0f, 1.0f);
-    addParam("PosY",          0.55f, 0.0f, 1.0f);
-    addParam("Scale",         0.35f, 0.0f, 1.0f);
-    addParam("StrokeWidth",   3.0f,  0.0f, 32.0f);
-    addParam("StrokeR",       1.0f,  0.0f, 1.0f);
-    addParam("StrokeG",       1.0f,  0.0f, 1.0f);
-    addParam("StrokeB",       1.0f,  0.0f, 1.0f);
-    addParam("ShadowOffsetX", 4.0f, -64.0f, 64.0f);
-    addParam("ShadowOffsetY", 4.0f, -64.0f, 64.0f);
-    addParam("ShadowBlur",   12.0f,  0.0f, 128.0f);
-    addParam("ShadowOpacity", 0.6f,  0.0f, 1.0f);
-    addParam("CornerRadius",  0.0f,  0.0f, 64.0f);
-    addParam("AspectMode",    0.0f,  0.0f, 1.0f);
-    addParam("CropFocusX",    0.5f,  0.0f, 1.0f);
-    addParam("CropFocusY",    0.5f,  0.0f, 1.0f);
-
+    // Parameters and their built-in defaults: EffectRegistry.cpp. Each
+    // side then takes its saved defaults, if any.
     loadDefaultsFromDisk();
-}
-
-std::unique_ptr<Effect> Ots::clone() const
-{
-    auto copy = std::make_unique<Ots>(effectType());
-    copy->m_enabled = m_enabled;
-    for (size_t i = 0; i < m_params.size() && i < copy->m_params.size(); ++i)
-        copy->m_params[i].track = m_params[i].track;
-    return copy;
 }
 
 void Ots::loadDefaultsFromDisk()

@@ -33,7 +33,6 @@ public:
     LUT();
     ~LUT() override = default;
 
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
 protected:
     void copyExtraStateFrom(const Effect& src) override;
 public:

@@ -356,4 +356,24 @@ const EffectDef& effectDef(EffectType type)
     return unknownDef();
 }
 
+const char* effectTypeName(EffectType t) noexcept
+{
+    return effectDef(t).name;
+}
+
+bool isAudioEffect(EffectType t) noexcept
+{
+    return effectDef(t).has(EffectFlag::Audio);
+}
+
+bool isProceduralTimeEffect(EffectType t) noexcept
+{
+    return effectDef(t).has(EffectFlag::ProceduralTime);
+}
+
+bool isBeatReactEffect(EffectType t) noexcept
+{
+    return effectDef(t).has(EffectFlag::BeatReact);
+}
+
 } // namespace rt

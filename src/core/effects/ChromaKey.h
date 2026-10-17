@@ -19,7 +19,6 @@ public:
     ChromaKey();
     ~ChromaKey() override = default;
 
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
 
     // ── Parameters (ordered to match GPU push constant layout) ──────────
     enum Param : size_t {

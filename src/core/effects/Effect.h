@@ -84,87 +84,14 @@ inline constexpr size_t kGlitchTimeSlot = 15;
 /// for beat-reactive effects. Shaders read pc.params[14].
 inline constexpr size_t kBeatPulseSlot = 14;
 
-/// Human-readable name for an effect type
-inline const char* effectTypeName(EffectType t) noexcept
-{
-    switch (t) {
-    case EffectType::ColorCorrect: return "Color Correct";
-    case EffectType::Blur:         return "Gaussian Blur";
-    case EffectType::Sharpen:      return "Sharpen";
-    case EffectType::Glow:         return "Glow";
-    case EffectType::ChromaKey:    return "Ultra Key";
-    case EffectType::Transform2D:  return "Transform 2D";
-    case EffectType::Vignette:     return "Vignette";
-    case EffectType::LUT:          return "LUT";
-    case EffectType::Letterbox:    return "Letterbox";
-    case EffectType::ColorGrading: return "Color Grading";
-    case EffectType::LumetriColor: return "Color Grading (legacy)";
-    case EffectType::OtsLeft:      return "OTS LEFT";
-    case EffectType::OtsRight:     return "OTS RIGHT";
-    case EffectType::OtsIntro:     return "OTS INTRO";
-    case EffectType::Tint:         return "Tint";
-    case EffectType::FlipHorizontal: return "Flip Horizontal";
-    case EffectType::FlipVertical:   return "Flip Vertical";
-    case EffectType::Scanlines:        return "Scanlines";
-    case EffectType::BlockGlitch:      return "Block Glitch";
-    case EffectType::ChromaticSplit:   return "Chromatic Split";
-    case EffectType::TurbulentDisplace: return "Turbulent Displace";
-    case EffectType::Posterize:        return "Posterize / Banding";
-    case EffectType::Grain:            return "Grain / Noise";
-    case EffectType::SignalTear:       return "Signal Tear";
-    case EffectType::BeatZoom:         return "Beat Zoom Punch";
-    case EffectType::BeatFlash:        return "Beat Flash";
-    case EffectType::BeatShake:        return "Beat Shake";
-    case EffectType::BeatChroma:       return "Beat Chromatic Kick";
-    case EffectType::BeatDrop:         return "Beat Drop";
-    case EffectType::FillLeftWithRight: return "Fill Left with Right";
-    case EffectType::FillRightWithLeft: return "Fill Right with Left";
-    default:                       return "Unknown";
-    }
-}
-
-/// Returns true for audio-only effects (no GPU shader needed)
-inline bool isAudioEffect(EffectType t) noexcept
-{
-    return t == EffectType::FillLeftWithRight
-        || t == EffectType::FillRightWithLeft;
-}
-
-/// Returns true for procedural effects that animate off a continuous clock.
-/// EffectStack::evaluate() injects clip-local seconds at kGlitchTimeSlot for
-/// these so the GPU shader can drive itself without authored keyframes.
-inline bool isProceduralTimeEffect(EffectType t) noexcept
-{
-    switch (t) {
-    case EffectType::Scanlines:
-    case EffectType::BlockGlitch:
-    case EffectType::ChromaticSplit:
-    case EffectType::TurbulentDisplace:
-    case EffectType::Posterize:
-    case EffectType::Grain:
-    case EffectType::SignalTear:
-        return true;
-    default:
-        return false;
-    }
-}
-
-/// Returns true for the beat-reactive effect family (pulse-driven). These also
-/// receive the clip-local clock at kGlitchTimeSlot; EffectStack additionally
-/// computes their 0–1 pulse envelope and injects it at kBeatPulseSlot.
-inline bool isBeatReactEffect(EffectType t) noexcept
-{
-    switch (t) {
-    case EffectType::BeatZoom:
-    case EffectType::BeatFlash:
-    case EffectType::BeatShake:
-    case EffectType::BeatChroma:
-    case EffectType::BeatDrop:
-        return true;
-    default:
-        return false;
-    }
-}
+/// Display name, and the effect families EffectStack::evaluate() feeds a
+/// clock to (procedural: clip-local seconds at kGlitchTimeSlot; beat:
+/// also the pulse at kBeatPulseSlot). All read the effect table
+/// (EffectRegistry.h).
+[[nodiscard]] const char* effectTypeName(EffectType t) noexcept;
+[[nodiscard]] bool isAudioEffect(EffectType t) noexcept;
+[[nodiscard]] bool isProceduralTimeEffect(EffectType t) noexcept;
+[[nodiscard]] bool isBeatReactEffect(EffectType t) noexcept;
 
 // ── Parameter descriptor ────────────────────────────────────────────────────
 
@@ -181,6 +108,10 @@ struct EffectParam
 class Effect
 {
 public:
+    /// An effect of `type` with the parameters its table entry lists
+    /// (EffectRegistry.h), at their defaults. Most effects are exactly this;
+    /// subclasses exist only for state beyond the parameters (LUT cube,
+    /// grading curves, beat onsets, Ultra Key presets, OTS saved defaults).
     explicit Effect(EffectType type);
     virtual ~Effect();
 
@@ -230,10 +161,10 @@ public:
     }
 
     // ── Clone ───────────────────────────────────────────────────────────
-    /// NOTE: derived clone() implementations copy type/params only. Callers
-    /// that need a full copy (EffectStack::clone, effect copy/paste) must
-    /// also copy masks — use cloneWithMasks() unless masks are unwanted.
-    [[nodiscard]] virtual std::unique_ptr<Effect> clone() const = 0;
+    /// New effect (new id) with this one's enabled flag, parameters and
+    /// subclass extras, but no masks — use cloneWithMasks() for a full copy
+    /// (EffectStack::clone, effect copy/paste).
+    [[nodiscard]] std::unique_ptr<Effect> clone() const;
 
     /// Full copy: clone() + enabled flag + effect masks.
     [[nodiscard]] std::unique_ptr<Effect> cloneWithMasks() const
@@ -270,13 +201,10 @@ public:
     }
 
 protected:
-    /// Subclass state beyond params/enabled/masks (LUT data, grading toggles).
-    /// clone() and assignStateFrom() both call it, so the list lives once.
+    /// Subclass state beyond params/enabled/masks (LUT data, grading toggles,
+    /// beat onsets). clone() and assignStateFrom() both call it, so the list
+    /// lives once.
     virtual void copyExtraStateFrom(const Effect& /*src*/) {}
-
-    /// Derived classes call this in their constructor to register parameters
-    void addParam(const std::string& name, float defaultValue,
-                  float minVal = 0.0f, float maxVal = 1.0f);
 
     EffectType m_type;
     uint64_t   m_id;

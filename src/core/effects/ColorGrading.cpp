@@ -14,52 +14,6 @@ ColorGrading::ColorGrading()
 {
     // Initialize curves to identity (linear ramp)
     resetCurveLUTs();
-    // ── Basic Correction ────────────────────────────────────────────────
-    addParam("Temperature",   0.0f, -100.0f, 100.0f);
-    addParam("Tint",          0.0f, -100.0f, 100.0f);
-    addParam("Exposure",      0.0f,  -5.0f,   5.0f);
-    addParam("Contrast",      0.0f, -100.0f, 100.0f);
-    addParam("Highlights",    0.0f, -100.0f, 100.0f);
-    addParam("Shadows",       0.0f, -100.0f, 100.0f);
-    addParam("Whites",        0.0f, -100.0f, 100.0f);
-    addParam("Blacks",        0.0f, -100.0f, 100.0f);
-    addParam("Saturation",  100.0f,   0.0f, 200.0f);
-
-    // ── Creative ────────────────────────────────────────────────────────
-    addParam("Faded Film",    0.0f,   0.0f, 100.0f);
-    addParam("Sharpen",       0.0f,   0.0f, 100.0f);
-    addParam("Vibrance",      0.0f, -100.0f, 100.0f);
-    addParam("Creative Sat",100.0f,   0.0f, 200.0f);
-
-    // ── Color Wheels (lift/gamma/gain per tonal range) ─────────────────
-    addParam("Shadow R",      0.0f,  -1.0f,  1.0f);
-    addParam("Shadow G",      0.0f,  -1.0f,  1.0f);
-    addParam("Shadow B",      0.0f,  -1.0f,  1.0f);
-    addParam("Midtone R",     0.0f,  -1.0f,  1.0f);
-    addParam("Midtone G",     0.0f,  -1.0f,  1.0f);
-    addParam("Midtone B",     0.0f,  -1.0f,  1.0f);
-    addParam("Highlight R",   0.0f,  -1.0f,  1.0f);
-    addParam("Highlight G",   0.0f,  -1.0f,  1.0f);
-    addParam("Highlight B",   0.0f,  -1.0f,  1.0f);
-    addParam("Shadow Master", 0.0f,  -1.0f,  1.0f);
-    addParam("Midtone Master",0.0f,  -1.0f,  1.0f);
-    addParam("Highlight Master",0.0f,-1.0f,  1.0f);
-
-    // ── Vignette ────────────────────────────────────────────────────────
-    addParam("Vignette Amount",    0.0f, -5.0f, 5.0f);
-    addParam("Vignette Midpoint", 50.0f,  0.0f, 100.0f);
-    addParam("Vignette Roundness", 0.0f, -100.0f, 100.0f);
-    addParam("Vignette Feather",  50.0f,  0.0f, 100.0f);
-}
-
-std::unique_ptr<Effect> ColorGrading::clone() const
-{
-    auto copy = std::make_unique<ColorGrading>();
-    copy->m_enabled = m_enabled;
-    copy->copyExtraStateFrom(*this);
-    for (size_t i = 0; i < m_params.size(); ++i)
-        copy->m_params[i].track = m_params[i].track;
-    return copy;
 }
 
 void ColorGrading::copyExtraStateFrom(const Effect& src)

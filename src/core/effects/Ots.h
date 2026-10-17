@@ -26,7 +26,6 @@ public:
     explicit Ots(EffectType type);
     ~Ots() override = default;
 
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
 
     enum Param : size_t {
         Side = 0,           // 0 = left, 1 = right (driven by effect type, not user-edited)

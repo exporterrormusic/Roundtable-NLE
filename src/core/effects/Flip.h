@@ -13,14 +13,11 @@
 
 namespace rt {
 
-class Flip : public Effect
+class Flip final : public Effect
 {
 public:
     /// `type` must be EffectType::FlipHorizontal or EffectType::FlipVertical.
-    explicit Flip(EffectType type);
-    ~Flip() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    explicit Flip(EffectType type) : Effect(type) {}
 
     enum Param : size_t {
         Axis = 0,   // 0 = horizontal, 1 = vertical (driven by effect type)

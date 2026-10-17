@@ -11,13 +11,10 @@
 
 namespace rt {
 
-class Transform2D : public Effect
+class Transform2D final : public Effect
 {
 public:
-    Transform2D();
-    ~Transform2D() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Transform2D() : Effect(EffectType::Transform2D) {}
 
     enum Param : size_t {
         OffsetX = 0,   // -2000 to 2000 pixels

@@ -11,13 +11,10 @@
 
 namespace rt {
 
-class Glow : public Effect
+class Glow final : public Effect
 {
 public:
-    Glow();
-    ~Glow() override = default;
-
-    [[nodiscard]] std::unique_ptr<Effect> clone() const override;
+    Glow() : Effect(EffectType::Glow) {}
 
     enum Param : size_t {
         GlowThreshold = 0,  // 0–1.0 luminance threshold

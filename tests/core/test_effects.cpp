@@ -19,12 +19,16 @@
 #include "effects/ColorGrading.h"
 #include "effects/LUT.h"
 #include "effects/EffectRegistry.h"
+#include "effects/BeatEffects.h"
+#include "project/Project.h"
+#include "project/ProjectSerializer.h"
+#include "timeline/Timeline.h"
+#include "timeline/Track.h"
+#include "timeline/VideoClip.h"
 #include "command/CommandStack.h"
 #include "command/commands/EffectCommands.h"
 
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -879,5 +883,91 @@ TEST(EffectRegistry, CreatedEffectsMatchTheirDefinition)
                 EXPECT_FLOAT_EQ(fx->param(i).track.evaluate(0), p.def);
             EXPECT_EQ(fx->param(i).track.keyframeCount(), 0u);
         }
+    }
+}
+// clone() and undo/redo's assignStateFrom() carry state beyond parameters.
+// (Beat onsets used to be dropped by assignStateFrom: an undo on a beat
+// effect lost its detected beats.)
+TEST(EffectRegistry, CloneAndAssignKeepSubclassState)
+{
+    auto beat = createEffect(EffectType::BeatZoom);
+    auto* beatFx = dynamic_cast<BeatReactEffect*>(beat.get());
+    ASSERT_NE(beatFx, nullptr);
+    beatFx->setBeatTimes({0.5f, 1.25f});
+    beatFx->setAudioSourceId(42);
+    beat->param(BeatReactEffect::BPM).track.writeValue(0, 90.0f);
+
+    auto copy = beat->clone();
+    auto* beatCopy = dynamic_cast<BeatReactEffect*>(copy.get());
+    ASSERT_NE(beatCopy, nullptr);
+    EXPECT_EQ(beatCopy->beatTimes(), beatFx->beatTimes());
+    EXPECT_EQ(beatCopy->audioSourceId(), 42u);
+    EXPECT_FLOAT_EQ(copy->evalParam(BeatReactEffect::BPM, 0), 90.0f);
+    EXPECT_NE(copy->id(), beat->id());
+
+    auto restored = createEffect(EffectType::BeatZoom);
+    restored->assignStateFrom(*beat);
+    EXPECT_EQ(static_cast<BeatReactEffect&>(*restored).beatTimes(), beatFx->beatTimes());
+    EXPECT_EQ(static_cast<BeatReactEffect&>(*restored).audioSourceId(), 42u);
+
+    ColorGrading grading;
+    grading.setHslEnabled(false);
+    grading.setVignetteEnabled(false);
+    auto gradingCopy = grading.clone();
+    auto* gc = dynamic_cast<ColorGrading*>(gradingCopy.get());
+    ASSERT_NE(gc, nullptr);
+    EXPECT_FALSE(gc->hslEnabled());
+    EXPECT_FALSE(gc->vignetteEnabled());
+
+    // A plain table-built effect keeps its type and every parameter.
+    Blur blur;
+    blur.setEnabled(false);
+    blur.param(Blur::Radius).track.addKeyframe(0, 3.0f);
+    blur.param(Blur::Radius).track.addKeyframe(48000, 9.0f);
+    auto blurCopy = blur.clone();
+    EXPECT_EQ(blurCopy->effectType(), EffectType::Blur);
+    EXPECT_FALSE(blurCopy->isEnabled());
+    EXPECT_EQ(blurCopy->param(Blur::Radius).track.keyframeCount(), 2u);
+    EXPECT_FLOAT_EQ(blurCopy->evalParam(Blur::Radius, 24000), 6.0f);
+}
+
+// Every effect, every parameter moved off its default, survives save/load.
+TEST(EffectRegistry, EveryEffectRoundTripsThroughTheProjectFile)
+{
+    auto project = Project::createNew("Effects");
+    auto* track = project->sequence(0)->addVideoTrack("FX");
+    auto clip = std::make_unique<VideoClip>("C:/fx.mp4");
+    clip->setDuration(48000);
+    for (int t = 0; t < static_cast<int>(EffectType::Count); ++t) {
+        auto fx = createEffect(static_cast<EffectType>(t));
+        ASSERT_NE(fx, nullptr);
+        for (size_t i = 0; i < fx->paramCount(); ++i) {
+            auto& p = fx->param(i);
+            p.track.writeValue(0, p.minVal + 0.3f * (p.maxVal - p.minVal));
+        }
+        clip->effects().addEffect(std::move(fx));
+    }
+    const Clip* original = track->addClip(std::move(clip));
+    const uint64_t clipId = original->id();
+
+    ProjectSerializer serializer;
+    auto loaded = serializer.deserialize(serializer.serialize(*project));
+    ASSERT_NE(loaded, nullptr);
+    const Clip* reloaded = nullptr;
+    for (size_t ti = 0; ti < loaded->sequence(0)->trackCount(); ++ti) {
+        const Track* tr = loaded->sequence(0)->track(ti);
+        const size_t idx = tr ? tr->findClipIndexById(clipId) : 0;
+        if (tr && idx < tr->clipCount())
+            reloaded = tr->clip(idx);
+    }
+    ASSERT_NE(reloaded, nullptr);
+    ASSERT_EQ(reloaded->effects().effectCount(), original->effects().effectCount());
+    for (size_t e = 0; e < original->effects().effectCount(); ++e) {
+        const auto& a = original->effects().effect(e);
+        const auto& b = reloaded->effects().effect(e);
+        SCOPED_TRACE(effectDef(a.effectType()).key);
+        ASSERT_EQ(a.paramCount(), b.paramCount());
+        for (size_t i = 0; i < a.paramCount(); ++i)
+            EXPECT_FLOAT_EQ(a.evalParam(i, 0), b.evalParam(i, 0)) << a.param(i).name;
     }
 }
