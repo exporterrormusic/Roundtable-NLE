@@ -580,9 +580,8 @@ private:
     void buildLUTUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Build Letterbox effect UI with preset aspect ratio dropdown
     void buildLetterboxUI(Effect& fx, size_t effectIdx, int& rowIdx);
-    /// Build Premiere-style Tint UI with two color swatches and amount.
-    void buildTintUI(Effect& fx, size_t effectIdx, int& rowIdx);
-    /// Build generic flat parameter rows for a non-Ultra Key effect
+    /// One row per parameter from the effect's table entry (EffectRegistry):
+    /// number, checkbox, choice, colour swatch, or none for hidden params.
     void buildGenericEffectUI(Effect& fx, size_t effectIdx, int& rowIdx);
     /// Build a beat-reactive effect UI: generic params + audio-source picker
     /// and a "Detect Beats" action that bakes onsets for Auto mode.

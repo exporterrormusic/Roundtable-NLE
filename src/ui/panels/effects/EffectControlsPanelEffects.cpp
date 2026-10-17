@@ -23,11 +23,10 @@
 #include "command/commands/KeyframeCmds.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
-#include "effects/Blur.h"
+#include "effects/EffectRegistry.h"
 #include "effects/ChromaKey.h"
 #include "effects/LUT.h"
 #include "effects/Letterbox.h"
-#include "effects/Tint.h"
 #include "effects/BeatEffects.h"
 #include "audio/AudioFile.h"
 #include "audio/BeatDetector.h"
@@ -127,6 +126,10 @@ void EffectControlsPanel::wireEffectParam(ScrubbySpinBox* spin,
 void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
                                                int& rowIdx)
 {
+    const auto& tc = Theme::colors();
+    const auto& def = effectDef(fx.effectType());
+    const uint64_t effectId = fx.id();
+
     // Row builder helper (same as the local lambda in buildPropertyTree)
     auto makeRow = [&](const QString& name,
                        KeyframeTrack<float>* track) -> PropertyRow* {
@@ -145,16 +148,78 @@ void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
         return row;
     };
 
-    for (size_t p = 0; p < fx.paramCount(); ++p) {
-        auto& param = fx.param(p);
+    // A plain labelled row for controls that are not keyframe rows.
+    auto makePlainRow = [&](const QString& label) -> QHBoxLayout* {
+        auto* row = new QWidget(m_propContainer);
+        row->setFixedHeight(30);
+        auto* layout = new QHBoxLayout(row);
+        layout->setContentsMargins(36, 2, 6, 2);
+        layout->setSpacing(6);
+        auto* nameLabel = new QLabel(label, row);
+        nameLabel->setStyleSheet(QStringLiteral(
+            "color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textPrimary))
+            .arg(Theme::typography().sizeXs));
+        layout->addWidget(nameLabel);
+        layout->addStretch();
+        m_propLayout->addWidget(row);
+        return layout;
+    };
 
-        if (fx.effectType() == EffectType::Blur &&
-            p == Blur::RepeatEdgePixels) {
-            const auto& tc = Theme::colors();
-            auto* check = new QCheckBox(tr("Repeat Edge Pixels"),
-                                        m_propContainer);
-            check->setObjectName(QStringLiteral("blurRepeatEdgePixelsCheck"));
-            check->setChecked(param.track.evaluate(clipRelativeTick()) >= 0.5f);
+    // Write consecutive params at the playhead as ONE undo step. `refresh`
+    // re-syncs the control after undo/redo replaces the tracks.
+    auto commitParams = [this, effectId](const QString& label, size_t first,
+                                         std::vector<float> values,
+                                         std::function<void()> refresh) {
+        if (!m_clip) return;
+        auto* stackPtr = &m_clip->effects();
+        auto* effect = stackPtr->effectById(effectId);
+        if (!effect || effect->paramCount() < first + values.size()) return;
+
+        const int64_t time = clipRelativeTick();
+        std::vector<KeyframeTrack<float>> before, after;
+        for (size_t i = 0; i < values.size(); ++i) {
+            before.push_back(effect->param(first + i).track);
+            after.push_back(before.back());
+            after.back().writeValue(time, values[i]);
+        }
+        auto apply = [stackPtr, effectId, first, refresh](
+                         const std::vector<KeyframeTrack<float>>& tracks) {
+            if (auto* target = stackPtr->effectById(effectId)) {
+                for (size_t i = 0; i < tracks.size() &&
+                                   first + i < target->paramCount(); ++i)
+                    target->param(first + i).track = tracks[i];
+            }
+            if (refresh) refresh();
+        };
+        if (m_commandStack) {
+            executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
+                label.toStdString(),
+                [apply, after]() { apply(after); },
+                [apply, before]() { apply(before); }));
+        } else {
+            apply(after);
+        }
+        if (m_kfTimeline) m_kfTimeline->update();
+        emit propertyChanged();
+    };
+
+    const int64_t now = clipRelativeTick();
+    for (size_t p = 0; p < fx.paramCount() && p < def.params.size(); ++p) {
+        auto& param = fx.param(p);
+        const ParamDef& pd = def.params[p];
+        const QString name = QString::fromStdString(param.name);
+
+        switch (pd.kind) {
+        case ParamKind::Hidden:
+        case ParamKind::ColorG:
+        case ParamKind::ColorB:
+            break;   // not shown, or part of the colour row before it
+
+        case ParamKind::Toggle: {
+            auto* check = new QCheckBox(name, m_propContainer);
+            if (pd.widget) check->setObjectName(QString::fromUtf8(pd.widget));
+            check->setChecked(param.track.evaluate(now) >= 0.5f);
             check->setFixedHeight(28);
             check->setStyleSheet(QStringLiteral(
                 "QCheckBox { color: %1; font-size: %2px; padding-left: 36px; background: transparent; }"
@@ -162,56 +227,116 @@ void EffectControlsPanel::buildGenericEffectUI(Effect& fx, size_t effectIdx,
                 .arg(Theme::hex(tc.textPrimary))
                 .arg(Theme::typography().sizeXs));
             m_propLayout->addWidget(check);
-
-            const uint64_t effectId = fx.id();
+            QPointer<QCheckBox> guarded(check);
             connect(check, &QCheckBox::toggled, this,
-                    [this, effectId, check](bool checked) {
+                    [this, effectId, p, name, guarded, commitParams](bool checked) {
                 if (!m_clip || m_updating) return;
-                auto& stack = m_clip->effects();
-                auto* effect = stack.effectById(effectId);
-                if (!effect || Blur::RepeatEdgePixels >= effect->paramCount())
+                auto* stackPtr = &m_clip->effects();
+                auto* effect = stackPtr->effectById(effectId);
+                if (!effect || p >= effect->paramCount()) return;
+                if ((effect->param(p).track.evaluate(clipRelativeTick()) >= 0.5f) == checked)
                     return;
-
-                const int64_t time = clipRelativeTick();
-                auto& track = effect->param(Blur::RepeatEdgePixels).track;
-                const float oldValue = track.evaluate(time);
-                const float newValue = checked ? 1.0f : 0.0f;
-                if ((oldValue >= 0.5f) == checked) return;
-
-                track.writeValue(time, newValue);
-                emit propertyChanged();
-
-                if (m_commandStack) {
-                    auto* effectStack = &stack;
-                    QPointer<QCheckBox> guardedCheck(check);
-                    auto apply = [effectStack, effectId, time, guardedCheck](
-                                     float value) {
-                        if (auto* current = effectStack->effectById(effectId)) {
-                            if (Blur::RepeatEdgePixels < current->paramCount())
-                                current->param(Blur::RepeatEdgePixels)
-                                    .track.writeValue(time, value);
-                        }
-                        if (guardedCheck) {
-                            const QSignalBlocker blocker(guardedCheck);
-                            guardedCheck->setChecked(value >= 0.5f);
-                        }
-                    };
-                    m_commandStack->pushWithoutExecute(
-                        std::make_unique<LambdaCommand>(
-                            "Set Repeat Edge Pixels",
-                            [apply, newValue]() { apply(newValue); },
-                            [apply, oldValue]() { apply(oldValue); }));
-                }
+                commitParams(tr("Set %1").arg(name), p, {checked ? 1.0f : 0.0f},
+                             [this, stackPtr, effectId, p, guarded]() {
+                    auto* e = stackPtr->effectById(effectId);
+                    if (!guarded || !e || p >= e->paramCount()) return;
+                    const QSignalBlocker blocker(guarded);
+                    guarded->setChecked(
+                        e->param(p).track.evaluate(clipRelativeTick()) >= 0.5f);
+                });
             });
-            continue;
+            break;
         }
 
-        auto* fxRow = makeRow(QString::fromStdString(param.name), &param.track);
-        auto* fxSpin = createScrubby(param.minVal, param.maxVal, 0.01, 2);
-        fxSpin->setValue(static_cast<double>(param.track.evaluate(clipRelativeTick())));
-        fxRow->addValueWidget(fxSpin);
-        m_propLayout->addWidget(fxRow);
-        wireEffectParam(fxSpin, effectIdx, p);
+        case ParamKind::Choice: {
+            auto* layout = makePlainRow(name);
+            auto* combo = new QComboBox(m_propContainer);
+            if (pd.widget) combo->setObjectName(QString::fromUtf8(pd.widget));
+            for (const char* label : pd.choices)
+                combo->addItem(QString::fromUtf8(label));
+            combo->setCurrentIndex(std::clamp(
+                static_cast<int>(std::lround(param.track.evaluate(now))),
+                0, combo->count() - 1));
+            combo->setFixedHeight(22);
+            layout->addWidget(combo);
+            QPointer<QComboBox> guarded(combo);
+            connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                    [this, effectId, p, name, guarded, commitParams](int index) {
+                if (!m_clip || m_updating || index < 0) return;
+                auto* stackPtr = &m_clip->effects();
+                commitParams(tr("Set %1").arg(name), p, {static_cast<float>(index)},
+                             [this, stackPtr, effectId, p, guarded]() {
+                    auto* e = stackPtr->effectById(effectId);
+                    if (!guarded || !e || p >= e->paramCount()) return;
+                    const QSignalBlocker blocker(guarded);
+                    guarded->setCurrentIndex(static_cast<int>(std::lround(
+                        e->param(p).track.evaluate(clipRelativeTick()))));
+                });
+            });
+            break;
+        }
+
+        case ParamKind::ColorR: {
+            if (p + 2 >= fx.paramCount()) break;
+            const QString label = pd.group ? QString::fromUtf8(pd.group) : name;
+            auto* layout = makePlainRow(label);
+            auto* swatch = new QPushButton(m_propContainer);
+            if (pd.widget) swatch->setObjectName(QString::fromUtf8(pd.widget));
+            swatch->setFixedSize(44, 22);
+            swatch->setToolTip(tr("Choose %1").arg(label));
+            auto paint = [](QPushButton* button, const QColor& color) {
+                button->setStyleSheet(QStringLiteral(
+                    "QPushButton { background: %1; border: 1px solid %2; border-radius: 2px; }")
+                    .arg(color.name(), Theme::hex(Theme::colors().controlBorder)));
+            };
+            paint(swatch, QColor::fromRgbF(fx.param(p).track.evaluate(now),
+                                           fx.param(p + 1).track.evaluate(now),
+                                           fx.param(p + 2).track.evaluate(now)));
+            layout->addWidget(swatch);
+            QPointer<QPushButton> guarded(swatch);
+            connect(swatch, &QPushButton::clicked, this,
+                    [this, effectId, p, label, guarded, paint, commitParams]() {
+                if (!m_clip) return;
+                auto* stackPtr = &m_clip->effects();
+                auto* effect = stackPtr->effectById(effectId);
+                if (!effect || p + 2 >= effect->paramCount()) return;
+                const int64_t time = clipRelativeTick();
+                const QColor current = QColor::fromRgbF(
+                    effect->param(p).track.evaluate(time),
+                    effect->param(p + 1).track.evaluate(time),
+                    effect->param(p + 2).track.evaluate(time));
+                const QColor chosen = QColorDialog::getColor(
+                    current, this, tr("Choose %1").arg(label));
+                if (!chosen.isValid()) return;
+                commitParams(tr("Set %1").arg(label), p,
+                             {static_cast<float>(chosen.redF()),
+                              static_cast<float>(chosen.greenF()),
+                              static_cast<float>(chosen.blueF())},
+                             [this, stackPtr, effectId, p, guarded, paint]() {
+                    auto* e = stackPtr->effectById(effectId);
+                    if (!guarded || !e || p + 2 >= e->paramCount()) return;
+                    const int64_t t = clipRelativeTick();
+                    paint(guarded, QColor::fromRgbF(e->param(p).track.evaluate(t),
+                                                    e->param(p + 1).track.evaluate(t),
+                                                    e->param(p + 2).track.evaluate(t)));
+                });
+            });
+            break;
+        }
+
+        case ParamKind::Number: {
+            auto* fxRow = makeRow(name, &param.track);
+            auto* fxSpin = createScrubby(pd.min, pd.max, pd.step, pd.decimals,
+                                         pd.suffix ? QString::fromUtf8(pd.suffix)
+                                                   : QString());
+            if (pd.widget) fxSpin->setObjectName(QString::fromUtf8(pd.widget));
+            fxSpin->setValue(static_cast<double>(param.track.evaluate(now)));
+            fxRow->addValueWidget(fxSpin);
+            m_propLayout->addWidget(fxRow);
+            wireEffectParam(fxSpin, effectIdx, p);
+            break;
+        }
+        }
     }
 }
 
@@ -2068,129 +2193,6 @@ void EffectControlsPanel::buildBeatUI(Effect& fx, size_t effectIdx, int& rowIdx)
 // ═══════════════════════════════════════════════════════════════════════════
 //  buildLetterboxUI — Letterbox with preset aspect ratio dropdown
 // ═══════════════════════════════════════════════════════════════════════════
-
-void EffectControlsPanel::buildTintUI(Effect& fx, size_t effectIdx, int& rowIdx)
-{
-    const auto& tc = Theme::colors();
-
-    auto addColorRow = [&](const QString& label, size_t firstParam,
-                           const QString& objectName) {
-        if (fx.paramCount() <= firstParam + 2) return;
-
-        auto* row = new QWidget(m_propContainer);
-        row->setFixedHeight(30);
-        auto* layout = new QHBoxLayout(row);
-        layout->setContentsMargins(36, 2, 6, 2);
-        layout->setSpacing(6);
-
-        auto* nameLabel = new QLabel(label, row);
-        nameLabel->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: %2px; background: transparent;")
-            .arg(Theme::hex(tc.textPrimary))
-            .arg(Theme::typography().sizeXs));
-        layout->addWidget(nameLabel);
-        layout->addStretch();
-
-        const int64_t t = clipRelativeTick();
-        const QColor initial = QColor::fromRgbF(
-            fx.param(firstParam).track.evaluate(t),
-            fx.param(firstParam + 1).track.evaluate(t),
-            fx.param(firstParam + 2).track.evaluate(t));
-
-        auto* swatch = new QPushButton(row);
-        swatch->setObjectName(objectName);
-        swatch->setFixedSize(44, 22);
-        swatch->setToolTip(tr("Choose %1").arg(label));
-        auto setSwatchColor = [swatch](const QColor& color) {
-            swatch->setStyleSheet(QStringLiteral(
-                "QPushButton { background: %1; border: 1px solid %2; border-radius: 2px; }")
-                .arg(color.name(), Theme::hex(Theme::colors().controlBorder)));
-        };
-        setSwatchColor(initial);
-        layout->addWidget(swatch);
-        m_propLayout->addWidget(row);
-
-        connect(swatch, &QPushButton::clicked, this,
-                [this, effectIdx, firstParam, label, setSwatchColor]() {
-            if (!m_clip) return;
-            auto& stack = m_clip->effects();
-            if (effectIdx >= stack.effectCount()) return;
-            auto& effect = stack.effect(effectIdx);
-            if (effect.paramCount() <= firstParam + 2) return;
-
-            const int64_t time = clipRelativeTick();
-            const QColor current = QColor::fromRgbF(
-                effect.param(firstParam).track.evaluate(time),
-                effect.param(firstParam + 1).track.evaluate(time),
-                effect.param(firstParam + 2).track.evaluate(time));
-            const QColor chosen = QColorDialog::getColor(
-                current, this, tr("Choose %1").arg(label));
-            if (!chosen.isValid()) return;
-
-            std::array<KeyframeTrack<float>, 3> before = {
-                effect.param(firstParam).track,
-                effect.param(firstParam + 1).track,
-                effect.param(firstParam + 2).track
-            };
-            auto after = before;
-            after[0].writeValue(time, static_cast<float>(chosen.redF()));
-            after[1].writeValue(time, static_cast<float>(chosen.greenF()));
-            after[2].writeValue(time, static_cast<float>(chosen.blueF()));
-
-            auto* stackPtr = &stack;
-            const uint64_t effectId = effect.id();
-            auto applyTracks = [stackPtr, effectId, firstParam](
-                                   const std::array<KeyframeTrack<float>, 3>& tracks) {
-                auto* target = stackPtr->effectById(effectId);
-                if (!target || target->paramCount() <= firstParam + 2) return;
-                for (size_t i = 0; i < tracks.size(); ++i)
-                    target->param(firstParam + i).track = tracks[i];
-            };
-
-            if (m_commandStack) {
-                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
-                    "Set Tint Color",
-                    [applyTracks, after]() { applyTracks(after); },
-                    [applyTracks, before]() { applyTracks(before); }));
-            } else {
-                applyTracks(after);
-            }
-
-            setSwatchColor(chosen);
-            if (m_kfTimeline) m_kfTimeline->update();
-            emit propertyChanged();
-        });
-    };
-
-    addColorRow(QStringLiteral("Map Black To"), Tint::MapBlackR,
-                QStringLiteral("tintMapBlackButton"));
-    addColorRow(QStringLiteral("Map White To"), Tint::MapWhiteR,
-                QStringLiteral("tintMapWhiteButton"));
-
-    if (fx.paramCount() > Tint::AmountToTint) {
-        auto& amount = fx.param(Tint::AmountToTint);
-        auto* amountRow = new PropertyRow(
-            QStringLiteral("Amount to Tint"), &amount.track, m_propContainer);
-        amountRow->setRowIndex(rowIdx++);
-        amountRow->setTimeProvider([this]() { return clipRelativeTick(); });
-        registerPropertyRow(amountRow);
-        connect(amountRow, &PropertyRow::addKeyframeRequested,
-                this, &EffectControlsPanel::onAddKeyframe);
-        connect(amountRow, &PropertyRow::deleteKeyframeRequested,
-                this, &EffectControlsPanel::onDeleteKeyframe);
-        connect(amountRow, &PropertyRow::goToPrevKeyframe,
-                this, &EffectControlsPanel::onGoToPrevKeyframe);
-        connect(amountRow, &PropertyRow::goToNextKeyframe,
-                this, &EffectControlsPanel::onGoToNextKeyframe);
-
-        auto* spin = createScrubby(0.0, 100.0, 1.0, 1, QStringLiteral(" %"));
-        spin->setObjectName(QStringLiteral("tintAmountSpin"));
-        spin->setValue(amount.track.evaluate(clipRelativeTick()));
-        amountRow->addValueWidget(spin);
-        m_propLayout->addWidget(amountRow);
-        wireEffectParam(spin, effectIdx, Tint::AmountToTint);
-    }
-}
 
 void EffectControlsPanel::buildLetterboxUI(Effect& fx, size_t effectIdx, int& rowIdx)
 {

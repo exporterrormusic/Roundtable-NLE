@@ -32,6 +32,7 @@
 #include "effects/Blur.h"
 #include "effects/Effect.h"
 #include "effects/Tint.h"
+#include "effects/Ots.h"
 
 #include <QApplication>
 #include <QSignalSpy>
@@ -47,6 +48,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QWheelEvent>
@@ -2361,6 +2363,46 @@ TEST(EffectsPanel, BrowserListsEveryRegisteredEffectOnce)
         ASSERT_NE(it, listedUnder.end()) << def.key << " is missing";
         EXPECT_EQ(it->second, QString::fromUtf8(def.category)) << def.key;
     }
+}
+
+// Generic rows follow the effect table: a Choice parameter is a combo box
+// whose change is one undo step, a colour group is one swatch, and hidden
+// parameters get no row.
+TEST(EffectControlsPanel, GenericRowsFollowParameterKinds)
+{
+    rt::VideoClip clip;
+    clip.effects().addEffect(rt::createEffect(rt::EffectType::OtsLeft));
+    clip.effects().addEffect(rt::createEffect(rt::EffectType::Scanlines));
+    clip.effects().addEffect(rt::createEffect(rt::EffectType::FlipHorizontal));
+
+    rt::CommandStack stack;
+    rt::EffectControlsPanel panel;
+    panel.setCommandStack(&stack);
+    panel.setClip(&clip);
+
+    QComboBox* aspect = nullptr;
+    for (auto* combo : panel.findChildren<QComboBox*>())
+        if (combo->count() == 2 && combo->itemText(0) == QStringLiteral("Crop to 16:9"))
+            aspect = combo;
+    ASSERT_NE(aspect, nullptr) << "OTS Aspect Mode is not a combo box";
+    auto& ots = clip.effects().effect(0);
+    const float before = ots.evalParam(rt::Ots::AspectMode, 0);
+    aspect->setCurrentIndex(before < 0.5f ? 1 : 0);
+    EXPECT_FLOAT_EQ(ots.evalParam(rt::Ots::AspectMode, 0), before < 0.5f ? 1.0f : 0.0f);
+    ASSERT_EQ(stack.undoCount(), 1u);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_FLOAT_EQ(ots.evalParam(rt::Ots::AspectMode, 0), before);
+    EXPECT_EQ(aspect->currentIndex(), before < 0.5f ? 0 : 1) << "combo not re-synced on undo";
+
+    bool tintSwatch = false;
+    for (auto* button : panel.findChildren<QPushButton*>())
+        tintSwatch |= button->toolTip() == QStringLiteral("Choose Tint");
+    EXPECT_TRUE(tintSwatch) << "Scanlines tint is not one colour swatch";
+
+    for (auto* label : panel.findChildren<QLabel*>())
+        EXPECT_NE(label->text(), QStringLiteral("Axis")) << "hidden Flip axis shown";
+    for (auto* check : panel.findChildren<QCheckBox*>())
+        EXPECT_NE(check->text(), QStringLiteral("Axis"));
 }
 
 TEST(EffectControlsPanel, TintUsesPremiereStyleColorAndAmountControls)
