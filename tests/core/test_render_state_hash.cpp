@@ -17,6 +17,7 @@
 #include "project/Project.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
+#include "timeline/Transition.h"
 #include "timeline/SpineClip.h"
 #include "timeline/SequenceClip.h"
 #include "effects/Effect.h"
@@ -105,6 +106,33 @@ TEST(RenderStateHash, MovingClipInvalidates)
     const uint64_t before = hashCompositeConfigAt(tl, 1000);
     c->setTimelineIn(500);   // shifted: tick 1000 now lands at a different source position
     EXPECT_NE(before, hashCompositeConfigAt(tl, 1000));
+}
+
+TEST(RenderStateHash, TransitionParametersInvalidate)
+{
+    Timeline tl;
+    auto* v1 = tl.addVideoTrack("V1");
+    Clip* left = addClip(v1, 0, 48000);
+    Clip* right = addClip(v1, 48000, 48000);
+    Transition t;
+    t.duration = 12000;
+    t.leftClipId = left->id();
+    t.rightClipId = right->id();
+    t.editPointTick = 48000;
+    v1->addTransition(t);
+    const int64_t tick = 48000;   // inside the transition
+    const uint64_t base = hashCompositeConfigAt(tl, tick);
+
+    Transition softer = t;
+    softer.param1 = 0.5f;          // wipe softness
+    v1->setTransition(0, softer);
+    const uint64_t withSoftness = hashCompositeConfigAt(tl, tick);
+    EXPECT_NE(base, withSoftness);
+
+    Transition shifted = softer;
+    shifted.offset = 1000;
+    v1->setTransition(0, shifted);
+    EXPECT_NE(withSoftness, hashCompositeConfigAt(tl, tick));
 }
 
 TEST(RenderStateHash, MutingTrackInvalidates)
