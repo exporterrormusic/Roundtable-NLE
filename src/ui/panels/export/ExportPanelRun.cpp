@@ -435,7 +435,9 @@ void ExportPanel::onStartExport()
     rememberExportDir(pathToUtf8(config.outputPath));
     // Capture one complete project graph now.  Both video and audio retain it,
     // so edits/project switches after this point cannot alter the job.
-    uint32_t jobId = m_renderQueue->addJob(config, m_project, m_timeline);
+    uint32_t jobId = m_renderQueue->addJob(
+        config, m_project, m_timeline,
+        m_renderSnapshotProvider ? m_renderSnapshotProvider() : nullptr);
     m_activeJobId = jobId;
 
     setJobRowState(jobId, JobRowState::Queued);

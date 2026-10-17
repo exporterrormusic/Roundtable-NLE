@@ -204,6 +204,13 @@ public:
     /// snapshot instead of the live m_timeline/m_project, which only the UI
     /// thread may touch. Snapshot-bound (export) services leave this unset.
     void setSnapshotPublisher(const SnapshotPublisher* p) noexcept { m_snapshotPublisher = p; }
+    /// Snapshot-bound (export) service: the immutable snapshot whose
+    /// timeline/project this service is bound to. Lets segment-cache hashing
+    /// resolve nested sequences when the snapshot carries no Project.
+    void bindRenderSnapshot(std::shared_ptr<const RenderSnapshot> s) noexcept
+    {
+        m_boundSnapshot = std::move(s);
+    }
 
     // ── Core compositing ────────────────────────────────────────────────
     /// Composite a frame for the given tick.
@@ -469,11 +476,11 @@ public:
     /// decodes the new file. Defined in the .cpp (needs CompositeEngine).
     void invalidateMediaTextures(uint64_t mediaId);
 
-    // ── Title/Graphic rendering ─────────────────────────────────────────
+    // ── Title rendering ─────────────────────────────────────────────────
+    // (GraphicClips render through rt::renderGraphicClip with the sequence's
+    // own resolution — see CompositeServiceLayerBuild.)
     std::shared_ptr<CachedFrame> renderTitleClip(TitleClip* clip, int64_t tick,
                                                   uint32_t outW, uint32_t outH);
-    std::shared_ptr<CachedFrame> renderGraphicClip(GraphicClip* clip, int64_t tick,
-                                                    uint32_t outW, uint32_t outH);
 
     // ── Cache policy ────────────────────────────────────────────────────
     /// Install the CachePolicy (may be null).  CompositeService stores the
@@ -661,9 +668,11 @@ private:
         bool immutableSnapshot{false};
         RenderExecutionOutcome* outcome{nullptr};
         FrameDiagnostics* diagnostics{nullptr};
-        /// Published live-preview snapshot backing `timeline` (held for the
-        /// whole render). Nested sequences resolve through it, not `project`.
-        std::shared_ptr<const RenderSnapshot> liveSnapshot{};
+        /// Snapshot whose `sequences` back this render (held for the whole
+        /// render): the live preview's latest publish, or an export snapshot
+        /// that carries sequences instead of a Project. Nested sequences
+        /// resolve through it, not `project`.
+        std::shared_ptr<const RenderSnapshot> sequenceSnapshot{};
     };
 
     /// Context for a live-service render: the latest published snapshot when
@@ -677,6 +686,9 @@ private:
     [[nodiscard]] static uint64_t configHashFor(
         const RenderExecutionContext& context, const Timeline& timeline,
         int64_t tick, uint32_t renderFlags);
+    /// configHashFor the bound m_timeline (UI-thread live model, or an
+    /// export service's bound snapshot). m_timeline must be non-null.
+    [[nodiscard]] uint64_t boundConfigHash(int64_t tick, uint32_t renderFlags) const;
 
     std::shared_ptr<CachedFrame> compositeFrameImpl(
         int64_t tick, uint32_t outW, uint32_t outH,
@@ -803,6 +815,7 @@ private:
     Project* m_project{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};
     const SnapshotPublisher* m_snapshotPublisher{nullptr};
+    std::shared_ptr<const RenderSnapshot> m_boundSnapshot;   // export services
 
     // Optional per-consumer mutable GPU helpers. Declared before m_engine so
     // the engine is destroyed first and cannot retain resolver pointers into

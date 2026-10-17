@@ -6,7 +6,7 @@
  * Contains:
  *   - compositeFrame()   — main compositing entry point
  *   - renderTitleClip()  — TitleClip rendering wrapper
- *   - renderGraphicClip() — GraphicClip rendering wrapper
+ *   (GraphicClip rendering is rt::renderGraphicClip, called from layer build)
  */
 
 #include "CompositeService.h"
@@ -237,11 +237,11 @@ CompositeService::RenderExecutionContext CompositeService::makeLiveContext(
     context.policy = policy;
     if (m_snapshotPublisher) {
         // Never the live model: only the UI thread may read m_timeline.
-        context.liveSnapshot = m_snapshotPublisher->latest();
-        if (context.liveSnapshot) {
+        context.sequenceSnapshot = m_snapshotPublisher->latest();
+        if (context.sequenceSnapshot) {
             context.timeline =
-                const_cast<Timeline*>(context.liveSnapshot->timeline.get());
-            context.editVersion = context.liveSnapshot->editVersion;
+                const_cast<Timeline*>(context.sequenceSnapshot->timeline.get());
+            context.editVersion = context.sequenceSnapshot->editVersion;
         }
         return context;
     }
@@ -253,8 +253,8 @@ CompositeService::RenderExecutionContext CompositeService::makeLiveContext(
 Timeline* CompositeService::resolveSequence(const RenderExecutionContext& context,
                                             size_t sequenceIndex)
 {
-    if (context.liveSnapshot)
-        return const_cast<Timeline*>(context.liveSnapshot->sequenceAt(sequenceIndex));
+    if (context.sequenceSnapshot)
+        return const_cast<Timeline*>(context.sequenceSnapshot->sequenceAt(sequenceIndex));
     if (context.project && sequenceIndex < context.project->sequenceCount())
         return context.project->sequence(sequenceIndex);
     return nullptr;
@@ -264,13 +264,25 @@ uint64_t CompositeService::configHashFor(const RenderExecutionContext& context,
                                          const Timeline& timeline, int64_t tick,
                                          uint32_t renderFlags)
 {
-    if (context.liveSnapshot) {
+    if (context.sequenceSnapshot) {
         const SequenceLookup lookup = [&context](size_t index) -> const Timeline* {
-            return context.liveSnapshot->sequenceAt(index);
+            return context.sequenceSnapshot->sequenceAt(index);
         };
         return hashCompositeConfigAt(timeline, tick, lookup, renderFlags);
     }
     return hashCompositeConfigAt(timeline, tick, context.project, renderFlags);
+}
+
+uint64_t CompositeService::boundConfigHash(int64_t tick, uint32_t renderFlags) const
+{
+    // A project-less export snapshot resolves nested sequences itself.
+    if (m_boundSnapshot && !m_boundSnapshot->project
+            && m_boundSnapshot->timeline.get() == m_timeline) {
+        RenderExecutionContext context;
+        context.sequenceSnapshot = m_boundSnapshot;
+        return configHashFor(context, *m_timeline, tick, renderFlags);
+    }
+    return hashCompositeConfigAt(*m_timeline, tick, m_project, renderFlags);
 }
 
 std::shared_ptr<CachedFrame> CompositeService::compositeFrame(
@@ -328,8 +340,9 @@ RenderResult CompositeService::renderFrame(
             return fail(RenderResultStatus::Failed,
                         "render snapshot timeline does not match compositor");
         }
-        if (!request.snapshot->project ||
-            request.snapshot->project.get() != m_project) {
+        // A published snapshot carries its sequences instead of a Project;
+        // the service is then bound without one.
+        if (request.snapshot->project.get() != m_project) {
             spdlog::error("CompositeService: render request project snapshot "
                           "does not match the bound project");
             return fail(RenderResultStatus::Failed,
@@ -339,8 +352,10 @@ RenderResult CompositeService::renderFrame(
         context.project = const_cast<Project*>(request.snapshot->project.get());
         context.editVersion = request.snapshot->editVersion;
         context.immutableSnapshot = true;
-        context.liveSnapshot.reset();
-    } else if (request.targetSequenceIndex && context.liveSnapshot) {
+        // Nested sequences resolve through the snapshot's own sequences when
+        // it has no Project (resolveSequence / configHashFor).
+        context.sequenceSnapshot = request.snapshot->project ? nullptr : request.snapshot;
+    } else if (request.targetSequenceIndex && context.sequenceSnapshot) {
         context.timeline = resolveSequence(context, *request.targetSequenceIndex);
         if (!context.timeline)
             return fail(RenderResultStatus::Failed,
@@ -913,7 +928,7 @@ try
         m_liveCacheGeneration.load(std::memory_order_acquire);
     const uint64_t compositeVersion = context.immutableSnapshot
         ? context.editVersion
-        : (context.liveSnapshot
+        : (context.sequenceSnapshot
                ? (context.editVersion * 0x9E3779B97F4A7C15ull) ^ liveGeneration
                : liveGeneration);
     const CompositeCacheKey compositeCacheKey{
@@ -1035,7 +1050,7 @@ try
         // (matches the depth=2 cap on compositeFrame recursion).  Without
         // this the nested sequence's first frame on a fresh shot shows
         // black instead of waiting up to 16 ms for inner decoders.
-        if (renderProject || context.liveSnapshot) {
+        if (renderProject || context.sequenceSnapshot) {
             for (size_t ti = 0; ti < renderTimeline->trackCount(); ++ti) {
                 auto* trk = renderTimeline->track(ti);
                 if (!trk || trk->type() != TrackType::Video || trk->isMuted())
@@ -1510,16 +1525,6 @@ std::shared_ptr<CachedFrame> CompositeService::renderTitleClip(
     return rt::renderTitleClip(clip, tick, outW, outH);
 }
 
-std::shared_ptr<CachedFrame> CompositeService::renderGraphicClip(
-    GraphicClip* clip, int64_t tick, uint32_t outW, uint32_t outH)
-{
-    uint32_t refW = 0, refH = 0;
-    if (m_project) {
-        refW = m_project->settings().resolution().width;
-        refH = m_project->settings().resolution().height;
-    }
-    return rt::renderGraphicClip(clip, tick, outW, outH, refW, refH);
-}
 
 namespace {
 // Clean CPU-only snapshot of a composite output frame.  compositeFrame returns
@@ -1555,8 +1560,7 @@ void CompositeService::cacheExportFrame(
     constexpr ResolutionTier tier = ResolutionTier::Full;
     const uint32_t renderFlags = frame->preservesAlpha
         ? RenderStatePreserveAlpha : RenderStateNone;
-    const uint64_t cfgHash = hashCompositeConfigAt(
-        *m_timeline, tick, m_project, renderFlags);
+    const uint64_t cfgHash = boundConfigHash(tick, renderFlags);
     if (m_segmentRenderCache->hasFresh(tick, tier, cfgHash)) return;  // already cached
 
     m_segmentRenderCache->put(tick, tier, cfgHash,
@@ -1588,7 +1592,7 @@ float CompositeService::measuredFrameCostMs(int64_t tick) const
 bool CompositeService::isTickCached(int64_t tick) const
 {
     if (!m_segmentRenderCache || !m_timeline) return false;
-    const uint64_t cfgHash = hashCompositeConfigAt(*m_timeline, tick, m_project);
+    const uint64_t cfgHash = boundConfigHash(tick, RenderStateNone);
     // "Render In to Out" pre-renders at Full (it serves export + full-res
     // playback), so the bar must probe Full to light green from the editing
     // (reduced-tier) context too.  Also accept the current effective tier so a

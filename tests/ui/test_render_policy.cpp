@@ -13,6 +13,8 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/ImageClip.h"
+#include "timeline/SequenceClip.h"
+#include "playback/SnapshotPublisher.h"
 #include "timeline/PngPuppetClip.h"
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
@@ -184,6 +186,49 @@ TEST(RenderPolicyTest, ExportSessionOwnsAndRebindsQueueSnapshots)
     EXPECT_TRUE(secondResult.frame->preservesAlpha);
     EXPECT_FALSE(session.storeFrame(first, 0, firstResult.frame));
     EXPECT_TRUE(session.storeFrame(second, 0, secondResult.frame));
+}
+
+// A published render snapshot carries its sequences instead of a Project.
+// Export must still look inside nested sequences: preflight reaches the
+// image that only the inner sequence holds, and rendering is accepted.
+TEST(RenderPolicyTest, ExportSessionUsesPublishedSnapshotSequences)
+{
+    Project project;
+    Timeline* parent = project.sequence(0);
+    Timeline* inner = project.addSequence("Inner");
+    auto image = std::make_unique<ImageClip>("C:/missing/inner_only_image.png");
+    image->setDuration(48000);
+    ASSERT_NE(inner->addVideoTrack("Inner V")->addClip(std::move(image)), nullptr);
+    auto nested = std::make_unique<SequenceClip>();
+    nested->setSequenceIndex(1);
+    nested->setDuration(48000);
+    ASSERT_NE(parent->addVideoTrack("Outer V")->addClip(std::move(nested)), nullptr);
+
+    SnapshotPublisher publisher;
+    publisher.bind(&project, parent);
+    ASSERT_TRUE(publisher.publish());
+    auto snapshot = std::make_shared<RenderSnapshot>(*publisher.latest());
+    snapshot->rangeStartTick = 0;
+    snapshot->rangeEndTick = 48000;
+    ASSERT_EQ(snapshot->project, nullptr);
+
+    ExportRenderSession session({});
+    const auto preflight = session.preflight(snapshot);
+    EXPECT_NE(preflight.status, RenderResultStatus::Ready);
+    EXPECT_NE(preflight.warning.find("inner_only_image.png"), std::string::npos)
+        << preflight.warning;
+
+    // An empty sequence from the same snapshot renders like a Project one.
+    Timeline* empty = project.addSequence("Empty");
+    (void)empty;
+    publisher.markDirty(SnapshotPublisher::DirtyScope::AllSequences);
+    ASSERT_TRUE(publisher.publish());
+    auto emptySnapshot = std::make_shared<RenderSnapshot>(*publisher.latest());
+    emptySnapshot->timeline = emptySnapshot->sequences[2];
+    emptySnapshot->sequenceIndex = 2;
+    const auto result = session.renderFrame(
+        emptySnapshot, 0, 2, 2, /*scrubMode=*/true, /*preserveAlpha=*/false);
+    EXPECT_TRUE(result.isComplete()) << result.diagnostics.warning;
 }
 
 TEST(RenderPolicyTest, CompositeLruRequiresCompleteRenderIdentity)

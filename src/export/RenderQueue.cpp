@@ -210,12 +210,44 @@ uint32_t RenderQueue::addJob(const ExportJobConfig& config,
 
 uint32_t RenderQueue::addJob(const ExportJobConfig& config,
                              const Project* project,
-                             const Timeline* timeline)
+                             const Timeline* timeline,
+                             std::shared_ptr<const RenderSnapshot> published)
 {
     const size_t cleaned = cleanupAbandonedStagedExports(
         config.outputPath.parent_path(), std::chrono::hours(24 * 7));
     if (cleaned > 0)
         spdlog::info("RenderQueue: removed {} abandoned staged export(s)", cleaned);
+
+    // Preferred: share the UI's published render snapshot. Its sequences are
+    // already immutable copies, so nothing is copied here.
+    if (published && timeline) {
+        size_t index = published->sequences.size();
+        for (size_t i = 0; i < published->sequences.size(); ++i) {
+            const auto& seq = published->sequences[i];
+            if (seq && seq->id() == timeline->id()) { index = i; break; }
+        }
+        if (index < published->sequences.size()) {
+            auto shared = std::make_shared<ExportRenderSnapshot>();
+            static_cast<RenderSnapshot&>(*shared) = *published;
+            shared->project.reset();
+            shared->timeline = published->sequences[index];
+            shared->sequenceIndex = index;
+            shared->editVersion = nextRenderSnapshotVersion();
+            setSnapshotExportRange(*shared, config, *shared->timeline);
+
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto job = std::make_shared<ExportJob>();
+            job->id     = m_nextJobId++;
+            job->config = config;
+            job->renderSnapshot = std::move(shared);
+            m_jobs.push_back(job);
+            spdlog::info("RenderQueue: Added job {} from the published render "
+                         "snapshot → {}", job->id, pathToUtf8(config.outputPath));
+            return job->id;
+        }
+        spdlog::warn("RenderQueue: published snapshot does not contain the "
+                     "export sequence; capturing the project instead");
+    }
     // Capture before taking the queue mutex: serialization is non-trivial and
     // addJob is a main-thread operation, where the live project is stable.
     // The serializer is deliberately used instead of independently cloning a

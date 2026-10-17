@@ -133,6 +133,16 @@ public:
         std::function<std::shared_ptr<ExportRenderSession>()>;
     void setExportRenderSessionFactory(ExportRenderSessionFactory factory);
 
+    /// Supplies the UI's latest render snapshot when a job is queued, so the
+    /// job shares it instead of copying the project (RenderQueue::addJob).
+    /// Unset (tests) = the project is captured by a save/load round-trip.
+    using RenderSnapshotProvider =
+        std::function<std::shared_ptr<const RenderSnapshot>()>;
+    void setRenderSnapshotProvider(RenderSnapshotProvider provider)
+    {
+        m_renderSnapshotProvider = std::move(provider);
+    }
+
     /// Optional: receives each finished full-res export frame for segment-cache
     /// write-through (§4.6).  Wired through to RenderQueue::setFrameStoreCallback.
     void setFrameStoreCallback(FrameStoreFn cb) {
@@ -375,6 +385,7 @@ private:
     ExportResultCallback m_exportFrameCallback;
     SnapshotFrameStoreFn m_frameStoreCallback;
     ExportRenderSessionFactory m_exportRenderSessionFactory;
+    RenderSnapshotProvider m_renderSnapshotProvider;
     std::shared_ptr<ExportRenderSession> m_exportRenderSession;
     ExportRenderExecutor* m_renderExecutor{nullptr};
 

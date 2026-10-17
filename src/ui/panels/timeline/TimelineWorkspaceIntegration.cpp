@@ -297,9 +297,20 @@ void TimelineWorkspace::publishSnapshotNow()
     }
 }
 
+std::shared_ptr<const RenderSnapshot> TimelineWorkspace::publishedSnapshot()
+{
+    if (m_destroying.load(std::memory_order_acquire)) return nullptr;
+    publishSnapshotNow();
+    return m_snapshotPublisher->latest();
+}
+
 void TimelineWorkspace::verifySnapshot()
 {
-    if (m_destroying.load(std::memory_order_acquire) || !m_timeline) return;
+    if (m_destroying.load(std::memory_order_acquire)) return;
+    // Free copies render/export threads have finished with, even when no
+    // edit triggers a publish (e.g. after an export job completes).
+    m_snapshotPublisher->collectRetired();
+    if (!m_timeline) return;
     if (m_playbackController && m_playbackController->isPlaying()) return;
 
     std::string detail;

@@ -61,6 +61,7 @@ namespace rt {
 
 struct RenderRequest;
 struct RenderResult;
+struct RenderSnapshot;
 
 enum class TimelineRefresh : uint8_t { None, Contents, Rebuild };
 
@@ -241,6 +242,10 @@ public:
     /// Publish pending model changes now, so a render requested from the UI
     /// thread sees the very latest edit.
     void publishSnapshotNow();
+    /// The render snapshot including every edit made so far (publishes
+    /// pending ones first). Export jobs share it instead of copying the
+    /// project. UI thread only.
+    [[nodiscard]] std::shared_ptr<const RenderSnapshot> publishedSnapshot();
     /// Apply all UI/cache consequences of a completed edit in a stable order.
     void applyEditImpact(const EditImpact& impact = {});
     /// A3: drop only LRU entries whose tick is in [fromTick, toTick].

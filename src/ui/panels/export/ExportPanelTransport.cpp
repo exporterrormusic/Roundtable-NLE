@@ -487,7 +487,9 @@ void ExportPanel::onAddToQueue()
     rememberExportDir(pathToUtf8(config.outputPath));
     // One full queue-time snapshot drives both video and audio even if the
     // user edits this sequence or opens another project before Start Queue.
-    uint32_t jobId = m_renderQueue->addJob(config, m_project, m_timeline);
+    uint32_t jobId = m_renderQueue->addJob(
+        config, m_project, m_timeline,
+        m_renderSnapshotProvider ? m_renderSnapshotProvider() : nullptr);
 
     // Show job in list; "Start Queue" arms now that a job is pending.
     setJobRowState(jobId, JobRowState::Queued);

@@ -60,11 +60,27 @@ void ExportRenderSession::ensureInitialized()
 #endif
 }
 
+namespace {
+
+/// Nested-sequence target inside an export snapshot: through its Project
+/// (serializer capture) or its own sequences (published snapshot).
+[[nodiscard]] const Timeline* snapshotSequence(const RenderSnapshot& snapshot,
+                                               size_t index)
+{
+    if (snapshot.project)
+        return index < snapshot.project->sequenceCount()
+            ? snapshot.project->sequence(index) : nullptr;
+    return snapshot.sequenceAt(index);
+}
+
+} // namespace
+
 void ExportRenderSession::bindSnapshot(
     const std::shared_ptr<const RenderSnapshot>& snapshot)
 {
     ensureInitialized();
-    if (!snapshot || !snapshot->project || !snapshot->timeline)
+    // A published snapshot has sequences but no Project; both kinds work.
+    if (!snapshot || !snapshot->timeline)
         return;
     if (m_projectSnapshot.get() == snapshot->project.get() &&
         m_timelineSnapshot.get() == snapshot->timeline.get())
@@ -79,6 +95,7 @@ void ExportRenderSession::bindSnapshot(
         const_cast<Project*>(m_projectSnapshot.get()));
     m_compositeService->setTimeline(
         const_cast<Timeline*>(m_timelineSnapshot.get()));
+    m_compositeService->bindRenderSnapshot(snapshot);
 #ifdef ROUNDTABLE_HAS_SPINE
     if (m_dependencies.mediaPool)
         m_compositeService->initAnimVideoCache(m_dependencies.mediaPool);
@@ -89,7 +106,7 @@ RenderPreflightResult ExportRenderSession::preflight(
     const std::shared_ptr<const RenderSnapshot>& snapshot)
 {
     RenderPreflightResult result;
-    if (!snapshot || !snapshot->project || !snapshot->timeline) {
+    if (!snapshot || !snapshot->timeline) {
         result.status = RenderResultStatus::Failed;
         result.warning = "export resource preflight requires a complete snapshot";
         return result;
@@ -239,7 +256,6 @@ RenderPreflightResult ExportRenderSession::preflight(
 #endif
     };
 
-    const Project& project = *snapshot->project;
     std::function<void(const Timeline*, int64_t, int64_t)> visitTimeline;
     visitTimeline = [&](const Timeline* timeline,
                         int64_t rangeStart, int64_t rangeEnd) {
@@ -270,7 +286,9 @@ RenderPreflightResult ExportRenderSession::preflight(
                     checkSpine(*spine);
                 else if (const auto* nested =
                              dynamic_cast<const SequenceClip*>(clip)) {
-                    if (nested->sequenceIndex() >= project.sequenceCount()) {
+                    const Timeline* inner =
+                        snapshotSequence(*snapshot, nested->sequenceIndex());
+                    if (!inner) {
                         ++failedCount;
                         addWarning("Nested sequence index is invalid: " +
                                    std::to_string(nested->sequenceIndex()));
@@ -283,8 +301,7 @@ RenderPreflightResult ExportRenderSession::preflight(
                             overlapStart - nested->timelineIn();
                         const int64_t nestedEnd = nested->sourceIn() +
                             overlapEnd - nested->timelineIn();
-                        visitTimeline(project.sequence(nested->sequenceIndex()),
-                                      nestedStart, nestedEnd);
+                        visitTimeline(inner, nestedStart, nestedEnd);
                     }
                 }
             }
@@ -324,8 +341,7 @@ RenderResult ExportRenderSession::renderFrame(
 {
     RenderResult result;
     result.timelineTick = tick;
-    if (!snapshot || !snapshot->project || !snapshot->timeline ||
-        outW == 0 || outH == 0) {
+    if (!snapshot || !snapshot->timeline || outW == 0 || outH == 0) {
         result.status = RenderResultStatus::Failed;
         result.diagnostics.status = result.status;
         result.diagnostics.warning =

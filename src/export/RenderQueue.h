@@ -33,11 +33,11 @@ struct CachedFrame;
 
 /// Immutable project graph captured when an export job is enqueued.
 ///
-/// `timeline` aliases the selected sequence inside `project` (and therefore
-/// shares its lifetime/control block) for full production snapshots.  The
-/// project may be null only for the legacy timeline-only addJob overload used
-/// by low-level tests/callers.  Video and audio must consume this same object;
-/// no queued job is allowed to re-snapshot later.
+/// Either `timeline` aliases the selected sequence inside a captured
+/// `project`, or (published snapshots) `project` is null and `sequences`
+/// holds every sequence for nested lookup.  The legacy timeline-only addJob
+/// overload leaves both empty.  Video and audio must consume this same
+/// object; no queued job is allowed to re-snapshot later.
 struct ExportRenderSnapshot final : RenderSnapshot
 {};
 
@@ -222,11 +222,16 @@ public:
     uint32_t addJob(const ExportJobConfig& config,
                     const Timeline* timeline = nullptr);
 
-    /// Production enqueue path.  Captures the complete project graph on the
-    /// caller/main thread and aliases `timeline` into that captured graph.
+    /// Production enqueue path.  When `published` (the UI's latest render
+    /// snapshot, SnapshotPublisher.h) contains `timeline`, the job shares
+    /// that snapshot's immutable sequences — no copy, and exactly what the
+    /// Program Monitor renders.  Otherwise the complete project graph is
+    /// captured on the caller/main thread by a serializer round-trip and
+    /// `timeline` is aliased into it.
     uint32_t addJob(const ExportJobConfig& config,
                     const Project* project,
-                    const Timeline* timeline);
+                    const Timeline* timeline,
+                    std::shared_ptr<const RenderSnapshot> published = nullptr);
 
     /// Remove a job (must be Queued or Completed/Failed/Cancelled).
     bool removeJob(uint32_t jobId);

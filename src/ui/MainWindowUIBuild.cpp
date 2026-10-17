@@ -827,6 +827,16 @@ void MainWindow::buildPanels()
             }
             return m_timelineWorkspace->createExportRenderSession();
         });
+    // Queued jobs share the Program Monitor's published render snapshot
+    // (includes every edit so far) instead of copying the whole project.
+    m_exportPanel->setRenderSnapshotProvider(
+        [this]() -> std::shared_ptr<const RenderSnapshot> {
+            if (m_destroying.load(std::memory_order_acquire) ||
+                !m_timelineWorkspace) {
+                return {};
+            }
+            return m_timelineWorkspace->publishedSnapshot();
+        });
     m_pageStack->addWidget(m_exportPanel);
 
     // ── Page 5: COMFYUI — green-screen takes → SCAIL driving clips ──────

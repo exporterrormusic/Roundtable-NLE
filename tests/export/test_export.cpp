@@ -15,6 +15,7 @@
 
 #include "cache/FrameCache.h"
 #include "project/Project.h"
+#include "playback/SnapshotPublisher.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/AudioClip.h"
@@ -1584,4 +1585,54 @@ TEST(SmartRenderAnalyzer, CodecToSourceNameMapping)
     EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::ProRes), "prores");
     EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::DNxHR), "dnxhd");
     EXPECT_STREQ(encoderCodecToSourceName(EncoderCodec::ImageSequence), "");
+}
+
+// Queuing with the UI's published render snapshot shares its immutable
+// sequences (no project copy) and picks the exported sequence by id; a
+// snapshot that lacks the sequence falls back to the save/load capture.
+TEST(ExportRenderQueue, PublishedSnapshotIsSharedNotCopied)
+{
+    RenderQueue queue;
+    ExportJobConfig cfg;
+    cfg.outputPath = "published_snapshot.mp4";
+    cfg.outputWidth = 1920;
+    cfg.outputHeight = 1080;
+
+    auto project = Project::createNew("Published Snapshot Project");
+    Timeline* exported = project->addSequence("Exported");
+    auto clip = std::make_unique<VideoClip>("C:/media/published.mov");
+    clip->setDuration(96000);
+    ASSERT_NE(exported->track(0)->addClip(std::move(clip)), nullptr);
+
+    SnapshotPublisher publisher;
+    publisher.bind(project.get(), project->sequence(0));
+    ASSERT_TRUE(publisher.publish());
+    const auto published = publisher.latest();
+    ASSERT_EQ(published->sequences.size(), 2u);
+
+    const uint32_t id = queue.addJob(cfg, project.get(), exported, published);
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    ASSERT_TRUE(job->snapshotCaptureError.empty()) << job->snapshotCaptureError;
+    const auto snapshot = job->renderSnapshot;
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_EQ(snapshot->project, nullptr);
+    EXPECT_EQ(snapshot->timeline, published->sequences[1]) << "shared, not copied";
+    EXPECT_EQ(snapshot->sequenceIndex, 1u);
+    EXPECT_EQ(snapshot->sequenceAt(0), published->sequences[0].get());
+    EXPECT_NE(snapshot->editVersion, 0u);   // own export version (per-service)
+    ASSERT_TRUE(snapshot->rangeStartTick.has_value());
+    ASSERT_TRUE(snapshot->rangeEndTick.has_value());
+
+    // Edits after queuing never reach the job.
+    exported->track(0)->clip(0)->setLabel("Edited after queuing");
+    EXPECT_NE(snapshot->timeline->track(0)->clip(0)->label(), "Edited after queuing");
+
+    // A snapshot without the exported sequence: capture the project instead.
+    Timeline* other = project->addSequence("Not Published");
+    const uint32_t fallbackId = queue.addJob(cfg, project.get(), other, published);
+    const auto fallback = queue.job(fallbackId);
+    ASSERT_NE(fallback, nullptr);
+    ASSERT_NE(fallback->renderSnapshot, nullptr);
+    EXPECT_TRUE(fallback->renderSnapshot->isFullProject());
 }
