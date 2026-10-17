@@ -507,7 +507,9 @@ std::unique_ptr<Timeline> Timeline::cloneForSnapshot() const
 
 void Timeline::restoreFrom(const Timeline& snapshot)
 {
-    auto copy = snapshot.clone();
+    // Exact copy: clip/track ids must not change (links, transitions and
+    // render caches refer to them). clone() would mint new ids.
+    auto copy = snapshot.cloneForSnapshot();
     m_name = std::move(copy->m_name);
     m_settings = std::move(copy->m_settings);
     m_tracks = std::move(copy->m_tracks);

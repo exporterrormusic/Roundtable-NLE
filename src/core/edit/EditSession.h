@@ -99,6 +99,12 @@ public:
     /// not used). Description comes from the command.
     bool execute(Timeline& sequence, std::unique_ptr<Command> cmd);
 
+    /// One recorded edit that makes `live` equal `target` in place (a staged
+    /// copy built with Timeline::cloneForSnapshot and then edited): clips and
+    /// tracks present in both keep their objects and ids; removed ones are
+    /// kept alive by the step. Returns true when a step was recorded.
+    bool assignSequence(std::string description, Timeline& live, const Timeline& target);
+
     /// Take over an already-run legacy command into the open gesture: its
     /// held clips/tracks become the step's parked objects and the command is
     /// kept alive with the step. No-op (command dropped) when none is open.

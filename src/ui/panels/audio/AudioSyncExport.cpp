@@ -19,6 +19,8 @@
 #include "PathUtils.h"
 #include "ai/ScriptMatcher.h"
 #include "spine/ShotPreset.h"
+#include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/AudioClip.h"
@@ -112,14 +114,23 @@ int AudioSync::exportToTimeline(Timeline* timeline)
     // mutated until every validation and placement step has succeeded. The
     // before/after snapshots then form one history entry.
     if (m_commandStack && !m_exportTransactionActive) {
-        auto before = timeline->clone();
-        auto staged = timeline->clone();
+        // Exact copies (cloneForSnapshot): the staged edit must keep every
+        // existing clip id, or links and transitions break when applied.
+        auto before = timeline->cloneForSnapshot();
+        auto staged = timeline->cloneForSnapshot();
         m_exportTransactionActive = true;
         const int result = exportToTimeline(staged.get());
         m_exportTransactionActive = false;
         if (result <= 0) return result;
 
-        auto after = staged->clone();
+        // Apply in place as one recorded step: existing clips keep their
+        // objects, removed ones are kept alive by the step.
+        if (EditSession* edits = m_commandStack->editSession()) {
+            edits->assignSequence("Audio Sync Export", *timeline, *staged);
+            return result;
+        }
+
+        auto after = staged->cloneForSnapshot();
         timeline->restoreFrom(*staged);
         auto beforeShared = std::shared_ptr<Timeline>(std::move(before));
         auto afterShared = std::shared_ptr<Timeline>(std::move(after));

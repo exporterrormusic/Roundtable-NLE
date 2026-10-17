@@ -161,6 +161,27 @@ void EditSession::cancel()
     notifyChanged(delta.sequenceId);
 }
 
+bool EditSession::assignSequence(std::string description, Timeline& live,
+                                 const Timeline& target)
+{
+    const bool outer = beginGesture(std::move(description), live);
+    ModelDelta toTarget = diffSequence(live, target);
+    applyDelta(live, toTarget, DeltaSide::After);
+    // Objects that left the timeline belong to the recorded step.
+    if (m_open) {
+        for (auto& [id, clip] : toTarget.parkedClips)
+            m_open->held.clips.push_back(std::move(clip));
+        for (auto& [id, track] : toTarget.parkedTracks)
+            m_open->held.tracks.push_back(std::move(track));
+        for (auto& clip : toTarget.clipGraveyard)
+            m_open->held.clips.push_back(std::move(clip));
+        for (auto& track : toTarget.trackGraveyard)
+            m_open->held.tracks.push_back(std::move(track));
+    }
+    const bool recorded = commit();
+    return outer && recorded;
+}
+
 void EditSession::absorb(std::unique_ptr<Command> cmd)
 {
     if (!cmd) return;

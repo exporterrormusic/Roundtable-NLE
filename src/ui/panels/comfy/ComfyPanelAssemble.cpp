@@ -14,6 +14,7 @@
 #include "PathUtils.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "edit/EditSession.h"
 #include "decode/VideoDecoder.h"
 #include "effects/ChromaKey.h"
 #include "panels/audio/AudioSync.h"
@@ -135,8 +136,9 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
     }
 
     // ── Staged build (nothing visible changes until it all succeeded) ────
-    auto before = timeline->clone();
-    auto staged = timeline->clone();
+    // Exact copies: the staged build must keep every existing clip id.
+    auto before = timeline->cloneForSnapshot();
+    auto staged = timeline->cloneForSnapshot();
     Timeline& tl = *staged;
 
     // Start after everything already on the sequence.
@@ -269,15 +271,21 @@ int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QS
         tl.addMarker(m.time, m.label, 0xFF40A0FF);
 
     // ── Apply as one undo step ───────────────────────────────────────────
-    auto after = staged->clone();
-    timeline->restoreFrom(*staged);
-    if (stack) {
-        auto beforeShared = std::shared_ptr<Timeline>(std::move(before));
-        auto afterShared = std::shared_ptr<Timeline>(std::move(after));
-        stack->pushWithoutExecute(std::make_unique<LambdaCommand>(
-            "Assemble SCAIL shots",
-            [timeline, afterShared]() { timeline->restoreFrom(*afterShared); },
-            [timeline, beforeShared]() { timeline->restoreFrom(*beforeShared); }));
+    // In place through the edit session: existing clips keep their
+    // objects and ids; removed ones are kept alive by the step.
+    if (EditSession* edits = stack ? stack->editSession() : nullptr) {
+        edits->assignSequence("Assemble SCAIL shots", *timeline, *staged);
+    } else {
+        auto after = staged->cloneForSnapshot();
+        timeline->restoreFrom(*staged);
+        if (stack) {
+            auto beforeShared = std::shared_ptr<Timeline>(std::move(before));
+            auto afterShared = std::shared_ptr<Timeline>(std::move(after));
+            stack->pushWithoutExecute(std::make_unique<LambdaCommand>(
+                "Assemble SCAIL shots",
+                [timeline, afterShared]() { timeline->restoreFrom(*afterShared); },
+                [timeline, beforeShared]() { timeline->restoreFrom(*beforeShared); }));
+        }
     }
 
     if (!missing.isEmpty() && error)

@@ -451,6 +451,49 @@ TEST(EditSession, ExecuteTimelineEditFallsBackToActiveSequence)
     EXPECT_EQ(f.clip(f.graphicId), graphic);
 }
 
+// AudioSync export / ComfyUI assemble build their result on a staged copy and
+// apply it in place: kept clips keep objects and ids, and it undoes exactly.
+TEST(EditSession, AssignSequenceAppliesStagedCopyInPlace)
+{
+    Fixture f;
+    Clip* video = f.clip(f.videoId);
+    Clip* image = f.clip(f.imageId);
+    const uint64_t before = f.hash();
+
+    auto staged = f.tl.cloneForSnapshot();
+    Track* stagedV1 = staged->track(f.v1);
+    stagedV1->clip(stagedV1->findClipIndexById(f.videoId))->setLabel("Exported");
+    (void)stagedV1->removeClipById(f.imageId);
+    auto added = std::make_unique<AudioClip>();
+    added->setTimelineIn(30 * kSec);
+    added->setDuration(kSec);
+    const uint64_t addedId = staged->track(f.a1)->addClip(std::move(added))->id();
+    const uint64_t target = hashTimelineState(*staged);
+
+    ASSERT_TRUE(f.session.assignSequence("Export", f.tl, *staged));
+    EXPECT_EQ(f.hash(), target);
+    EXPECT_EQ(f.clip(f.videoId), video) << "kept clip keeps its object";
+    EXPECT_EQ(video->label(), "Exported");
+    EXPECT_EQ(f.clip(f.imageId), nullptr);
+    EXPECT_EQ(image->id(), f.imageId) << "removed clip kept alive by the step";
+    EXPECT_NE(f.clip(addedId), nullptr);
+    EXPECT_EQ(f.stack.undoCount(), 1u);
+
+    ASSERT_TRUE(f.stack.undo());
+    EXPECT_EQ(f.hash(), before);
+    EXPECT_EQ(f.clip(f.imageId), image);
+}
+
+TEST(EditSession, RestoreFromKeepsClipIds)
+{
+    Fixture f;
+    const auto snapshot = f.tl.cloneForSnapshot();
+    f.clip(f.videoId)->setBlendMode(6);
+    f.tl.restoreFrom(*snapshot);
+    EXPECT_NE(f.clip(f.videoId), nullptr) << "ids survive a restore";
+    EXPECT_EQ(f.hash(), hashTimelineState(*snapshot));
+}
+
 TEST(EditSession, GestureCostFor1000Clips)
 {
     Timeline tl;
