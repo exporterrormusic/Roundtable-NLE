@@ -31,6 +31,7 @@
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -218,42 +219,19 @@ private:
     Texture m_storageTextures[2];
     int     m_currentOutput{0}; // which storage texture holds the final result
 
-    // Pipelines (one per effect type).  All handles below (pipelines,
-    // pipeline layouts, descriptor-set layouts) are BORROWED from m_shared,
-    // which owns and destroys them once the last processor releases it.
+    // Pipelines. All handles below (pipelines, pipeline layouts,
+    // descriptor-set layouts) are BORROWED from m_shared, which owns and
+    // destroys them once the last processor releases it.
     std::shared_ptr<EffectPipelineSet> m_shared;
-    VkPipeline       m_colorCorrectPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_blurPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_sharpenPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_glowPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_chromaKeyPipeline{VK_NULL_HANDLE};       // legacy (unused)
+    /// One per effect type, from its table entry's shader (EffectRegistry).
+    std::array<VkPipeline, static_cast<size_t>(EffectType::Count)> m_effectPipelines{};
+    // Effects with a dispatch of their own besides the table's pipeline.
+    VkPipeline       m_blurPipeline{VK_NULL_HANDLE};                // two separable passes
     VkPipeline       m_ultraKeyMattePipeline{VK_NULL_HANDLE};    // Pass 1: matte generation (legacy)
     VkPipeline       m_ultraKeyCleanupPipeline{VK_NULL_HANDLE};  // Pass 2: matte cleanup (legacy)
     VkPipeline       m_ultraKeyFinalizePipeline{VK_NULL_HANDLE}; // Pass 3: spill + CC + output (legacy)
     VkPipeline       m_ultraKeyCombinedPipeline{VK_NULL_HANDLE}; // Combined single-pass (with cleanup)
     VkPipeline       m_ultraKeyLightPipeline{VK_NULL_HANDLE};    // Light single-pass (no cleanup, fast path)
-    VkPipeline       m_transform2dPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_vignettePipeline{VK_NULL_HANDLE};
-    VkPipeline       m_lutPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_letterboxPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_colorGradingPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_tintPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_otsPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_flipPipeline{VK_NULL_HANDLE};
-    // Glitch building blocks
-    VkPipeline       m_scanlinesPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_blockGlitchPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_chromaticSplitPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_turbulentDisplacePipeline{VK_NULL_HANDLE};
-    VkPipeline       m_posterizePipeline{VK_NULL_HANDLE};
-    VkPipeline       m_grainPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_signalTearPipeline{VK_NULL_HANDLE};
-    // Beat-reactive effects
-    VkPipeline       m_beatZoomPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_beatFlashPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_beatShakePipeline{VK_NULL_HANDLE};
-    VkPipeline       m_beatChromaPipeline{VK_NULL_HANDLE};
-    VkPipeline       m_beatDropPipeline{VK_NULL_HANDLE};
     // Effect-mask mix (original/effected blend by rasterized mask alpha)
     VkPipeline       m_maskMixPipeline{VK_NULL_HANDLE};
     VkPipelineLayout m_maskMixPipelineLayout{VK_NULL_HANDLE};

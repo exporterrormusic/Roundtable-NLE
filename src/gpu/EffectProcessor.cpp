@@ -17,6 +17,7 @@
 #include <volk.h>
 #include "EffectProcessor.h"
 #include "effects/LUT.h"
+#include "effects/EffectRegistry.h"
 #include "GpuContext.h"
 #include "GpuScheduler.h"
 
@@ -95,20 +96,28 @@ static fs::path findShader(const char* name)
 namespace {
 constexpr const char* kLutShader     = "lut.comp.spv";
 constexpr const char* kMaskMixShader = "mask_mix.comp.spv";
-// Shaders using the ordinary 2-binding layout.
-constexpr const char* kMainShaders[] = {
-    "color_correct.comp.spv", "blur.comp.spv", "sharpen.comp.spv",
-    "glow.comp.spv", "chroma_key.comp.spv", "ultra_key_matte.comp.spv",
-    "ultra_key_cleanup.comp.spv", "ultra_key_finalize.comp.spv",
-    "ultra_key_combined.comp.spv", "ultra_key_light.comp.spv",
-    "transform2d.comp.spv", "vignette.comp.spv", "letterbox.comp.spv",
-    "lumetri_color.comp.spv", "tint.comp.spv", "ots.comp.spv",
-    "flip.comp.spv", "scanlines.comp.spv", "block_glitch.comp.spv",
-    "chromatic_split.comp.spv", "turbulent_displace.comp.spv",
-    "posterize.comp.spv", "grain.comp.spv", "signal_tear.comp.spv",
-    "beat_zoom.comp.spv", "beat_flash.comp.spv", "beat_shake.comp.spv",
-    "beat_chroma.comp.spv", "beat_drop.comp.spv",
+// Ultra Key's own passes (the table names only its legacy chroma_key shader).
+constexpr const char* kUltraKeyShaders[] = {
+    "ultra_key_matte.comp.spv", "ultra_key_cleanup.comp.spv",
+    "ultra_key_finalize.comp.spv", "ultra_key_combined.comp.spv",
+    "ultra_key_light.comp.spv",
 };
+
+/// Shaders using the ordinary 2-binding layout: every effect's from the
+/// table (LUT has its own layout) plus Ultra Key's passes.
+std::vector<const char*> mainShaders()
+{
+    std::vector<const char*> names;
+    for (const auto& def : allEffectDefs()) {
+        if (!def.shader || std::strcmp(def.shader, kLutShader) == 0) continue;
+        const bool seen = std::any_of(names.begin(), names.end(), [&](const char* n) {
+            return std::strcmp(n, def.shader) == 0;
+        });
+        if (!seen) names.push_back(def.shader);
+    }
+    for (const char* name : kUltraKeyShaders) names.push_back(name);
+    return names;
+}
 } // namespace
 
 struct EffectPipelineSet
@@ -235,7 +244,7 @@ private:
             else
                 pipelines.emplace(spvName, p);
         };
-        for (const char* name : kMainShaders)
+        for (const char* name : mainShaders())
             load(name, pipelineLayout);
         load(kLutShader, lutPipelineLayout);
         load(kMaskMixShader, maskMixPipelineLayout);
@@ -348,24 +357,13 @@ void EffectProcessor::shutdown(GpuTeardownMode mode)
     m_shared.reset();
 
     // Pipelines
-    m_colorCorrectPipeline = VK_NULL_HANDLE;
+    m_effectPipelines.fill(VK_NULL_HANDLE);
     m_blurPipeline         = VK_NULL_HANDLE;
-    m_sharpenPipeline      = VK_NULL_HANDLE;
-    m_glowPipeline         = VK_NULL_HANDLE;
-    m_chromaKeyPipeline    = VK_NULL_HANDLE;
     m_ultraKeyMattePipeline     = VK_NULL_HANDLE;
     m_ultraKeyCleanupPipeline   = VK_NULL_HANDLE;
     m_ultraKeyFinalizePipeline  = VK_NULL_HANDLE;
     m_ultraKeyCombinedPipeline  = VK_NULL_HANDLE;
     m_ultraKeyLightPipeline     = VK_NULL_HANDLE;
-    m_transform2dPipeline  = VK_NULL_HANDLE;
-    m_vignettePipeline      = VK_NULL_HANDLE;
-    m_lutPipeline            = VK_NULL_HANDLE;
-    m_letterboxPipeline      = VK_NULL_HANDLE;
-    m_colorGradingPipeline   = VK_NULL_HANDLE;
-    m_tintPipeline           = VK_NULL_HANDLE;
-    m_otsPipeline            = VK_NULL_HANDLE;
-    m_flipPipeline           = VK_NULL_HANDLE;
     m_maskMixPipeline        = VK_NULL_HANDLE;
     m_maskMixPipelineLayout  = VK_NULL_HANDLE;
     m_lutPipelineLayout      = VK_NULL_HANDLE;
@@ -1192,37 +1190,15 @@ bool EffectProcessor::createPipelines()
     m_maskMixPipelineLayout = s.maskMixPipelineLayout;
     auto loadPipeline = [&](const char* spvName) { return s.get(spvName); };
 
-    m_colorCorrectPipeline = loadPipeline("color_correct.comp.spv");
-    m_blurPipeline         = loadPipeline("blur.comp.spv");
-    m_sharpenPipeline      = loadPipeline("sharpen.comp.spv");
-    m_glowPipeline         = loadPipeline("glow.comp.spv");
-    m_chromaKeyPipeline    = loadPipeline("chroma_key.comp.spv");
+    for (const auto& def : allEffectDefs())
+        if (def.shader)
+            m_effectPipelines[static_cast<size_t>(def.type)] = loadPipeline(def.shader);
+    m_blurPipeline              = loadPipeline("blur.comp.spv");
     m_ultraKeyMattePipeline     = loadPipeline("ultra_key_matte.comp.spv");
     m_ultraKeyCleanupPipeline   = loadPipeline("ultra_key_cleanup.comp.spv");
     m_ultraKeyFinalizePipeline  = loadPipeline("ultra_key_finalize.comp.spv");
     m_ultraKeyCombinedPipeline  = loadPipeline("ultra_key_combined.comp.spv");
     m_ultraKeyLightPipeline     = loadPipeline("ultra_key_light.comp.spv");
-    m_transform2dPipeline  = loadPipeline("transform2d.comp.spv");
-    m_vignettePipeline    = loadPipeline("vignette.comp.spv");
-    // LUT uses binding 2 for the 3D texture (lutPipelineLayout).
-    m_lutPipeline         = loadPipeline(kLutShader);
-    m_letterboxPipeline   = loadPipeline("letterbox.comp.spv");
-    m_colorGradingPipeline = loadPipeline("lumetri_color.comp.spv");
-    m_tintPipeline         = loadPipeline("tint.comp.spv");
-    m_otsPipeline         = loadPipeline("ots.comp.spv");
-    m_flipPipeline        = loadPipeline("flip.comp.spv");
-    m_scanlinesPipeline         = loadPipeline("scanlines.comp.spv");
-    m_blockGlitchPipeline       = loadPipeline("block_glitch.comp.spv");
-    m_chromaticSplitPipeline    = loadPipeline("chromatic_split.comp.spv");
-    m_turbulentDisplacePipeline = loadPipeline("turbulent_displace.comp.spv");
-    m_posterizePipeline         = loadPipeline("posterize.comp.spv");
-    m_grainPipeline             = loadPipeline("grain.comp.spv");
-    m_signalTearPipeline        = loadPipeline("signal_tear.comp.spv");
-    m_beatZoomPipeline          = loadPipeline("beat_zoom.comp.spv");
-    m_beatFlashPipeline         = loadPipeline("beat_flash.comp.spv");
-    m_beatShakePipeline         = loadPipeline("beat_shake.comp.spv");
-    m_beatChromaPipeline        = loadPipeline("beat_chroma.comp.spv");
-    m_beatDropPipeline          = loadPipeline("beat_drop.comp.spv");
 
     // Effect-mask mix — 3-binding LUT descriptor layout (maskMixPipelineLayout).
     m_maskMixPipeline = loadPipeline(kMaskMixShader);
@@ -1231,9 +1207,9 @@ bool EffectProcessor::createPipelines()
                      "effect masks will be ignored");
 
     spdlog::debug("EffectProcessor: pipelines created (colorCorrect={}, blur={}, lumetri={})",
-                 m_colorCorrectPipeline != VK_NULL_HANDLE,
+                 getPipeline(EffectType::ColorCorrect) != VK_NULL_HANDLE,
                  m_blurPipeline != VK_NULL_HANDLE,
-                 m_colorGradingPipeline != VK_NULL_HANDLE);
+                 getPipeline(EffectType::ColorGrading) != VK_NULL_HANDLE);
     return true;
 }
 
@@ -1397,38 +1373,8 @@ int EffectProcessor::dispatchGaussianBlur(
 
 VkPipeline EffectProcessor::getPipeline(EffectType type) const
 {
-    switch (type) {
-    case EffectType::ColorCorrect: return m_colorCorrectPipeline;
-    case EffectType::Blur:         return m_blurPipeline;
-    case EffectType::Sharpen:      return m_sharpenPipeline;
-    case EffectType::Glow:         return m_glowPipeline;
-    case EffectType::ChromaKey:    return m_chromaKeyPipeline;
-    case EffectType::Transform2D:  return m_transform2dPipeline;
-    case EffectType::Vignette:      return m_vignettePipeline;
-    case EffectType::LUT:            return m_lutPipeline;
-    case EffectType::Letterbox:      return m_letterboxPipeline;
-    case EffectType::ColorGrading:   return m_colorGradingPipeline;
-    case EffectType::LumetriColor:   return m_colorGradingPipeline;
-    case EffectType::Tint:           return m_tintPipeline;
-    case EffectType::OtsLeft:        return m_otsPipeline;
-    case EffectType::OtsRight:       return m_otsPipeline;
-    case EffectType::OtsIntro:       return m_otsPipeline;
-    case EffectType::FlipHorizontal: return m_flipPipeline;
-    case EffectType::FlipVertical:   return m_flipPipeline;
-    case EffectType::Scanlines:         return m_scanlinesPipeline;
-    case EffectType::BlockGlitch:       return m_blockGlitchPipeline;
-    case EffectType::ChromaticSplit:    return m_chromaticSplitPipeline;
-    case EffectType::TurbulentDisplace: return m_turbulentDisplacePipeline;
-    case EffectType::Posterize:         return m_posterizePipeline;
-    case EffectType::Grain:             return m_grainPipeline;
-    case EffectType::SignalTear:        return m_signalTearPipeline;
-    case EffectType::BeatZoom:          return m_beatZoomPipeline;
-    case EffectType::BeatFlash:         return m_beatFlashPipeline;
-    case EffectType::BeatShake:         return m_beatShakePipeline;
-    case EffectType::BeatChroma:        return m_beatChromaPipeline;
-    case EffectType::BeatDrop:          return m_beatDropPipeline;
-    default:                       return VK_NULL_HANDLE;
-    }
+    const auto i = static_cast<size_t>(type);
+    return i < m_effectPipelines.size() ? m_effectPipelines[i] : VK_NULL_HANDLE;
 }
 
 // ═════════════════════════════════════════════════════════════════════════
@@ -1484,7 +1430,7 @@ void EffectProcessor::copyImage(VkCommandBuffer cmd, int sourceIdx, int targetId
         identity[0] = 1.0f;  // brightness = 1 (neutral)
         identity[1] = 1.0f;  // contrast = 1 (neutral)
         identity[2] = 1.0f;  // saturation = 1 (neutral)
-        dispatchPass(cmd, m_colorCorrectPipeline, m_curSourceSet, identity);
+        dispatchPass(cmd, getPipeline(EffectType::ColorCorrect), m_curSourceSet, identity);
     } else if (sourceIdx == targetIdx) {
         // Same source and target, no copy needed.
         return;

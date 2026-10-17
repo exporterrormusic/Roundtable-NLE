@@ -13,6 +13,7 @@
 #include "timeline/ClipMutation.h"
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "effects/EffectRegistry.h"
 #include "audiofx/FxChain.h"
 #include "command/CommandStack.h"
 #include "edit/EditSession.h"
@@ -33,6 +34,7 @@
 #include <QMessageBox>
 #include <QCoreApplication>
 
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -371,7 +373,8 @@ void EffectsPanel::populateBrowser()
     // Folder icon for categories (using the style's standard folder pixmap)
     QIcon folderIcon = style()->standardIcon(QStyle::SP_DirIcon);
 
-    // Premiere Pro categories — matching the screenshot exactly
+    // Premiere Pro categories. The effects in each come from the effect
+    // table (EffectRegistry.cpp), in its order; the rest are filled below.
     struct Category {
         const char* name;
         std::vector<EffectType> types;
@@ -379,30 +382,21 @@ void EffectsPanel::populateBrowser()
     std::vector<Category> categories = {
         { "Presets",            {} },
         { "Color Presets",      {} },
-        { "Audio Effects",     { EffectType::FillLeftWithRight,
-                                 EffectType::FillRightWithLeft } },
-        { "Audio Transitions", {} },
-        { "Video Effects",     { EffectType::ColorCorrect, EffectType::Blur,
-                                 EffectType::Sharpen, EffectType::Glow,
-                                 EffectType::ChromaKey, EffectType::Transform2D,
-                                 EffectType::Vignette, EffectType::LUT,
-                                 EffectType::Letterbox, EffectType::ColorGrading,
-                                 EffectType::Tint,
-                                 EffectType::OtsLeft, EffectType::OtsRight,
-                                 EffectType::OtsIntro,
-                                 EffectType::FlipHorizontal,
-                                 EffectType::FlipVertical } },
-        { "Glitch",            { EffectType::Scanlines, EffectType::BlockGlitch,
-                                 EffectType::ChromaticSplit, EffectType::TurbulentDisplace,
-                                 EffectType::Posterize, EffectType::Grain,
-                                 EffectType::SignalTear } },
-        { "Glitch Presets",    {} },   // populated separately below (multi-effect macros)
-        { "Beat / Music",      { EffectType::BeatZoom, EffectType::BeatFlash,
-                                 EffectType::BeatShake, EffectType::BeatChroma,
-                                 EffectType::BeatDrop } },
-        { "Video Transitions", {} },   // populated separately below
-        { "Legacy",            {} },
+        { "Audio Effects",      {} },
+        { "Audio Transitions",  {} },
+        { "Video Effects",      {} },
+        { "Glitch",             {} },
+        { "Glitch Presets",     {} },   // populated separately below (multi-effect macros)
+        { "Beat / Music",       {} },
+        { "Video Transitions",  {} },   // populated separately below
+        { "Legacy",             {} },
     };
+    for (const auto& def : allEffectDefs()) {
+        if (!def.category || def.has(EffectFlag::Hidden)) continue;
+        for (auto& cat : categories)
+            if (std::strcmp(cat.name, def.category) == 0)
+                cat.types.push_back(def.type);
+    }
 
     for (auto& cat : categories) {
         auto* catItem = new QTreeWidgetItem(m_browserTree);

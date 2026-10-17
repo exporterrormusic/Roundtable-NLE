@@ -12,6 +12,8 @@
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/ColorGradingPanel.h"
+#include "panels/effects/EffectsPanel.h"
+#include "effects/EffectRegistry.h"
 #include "effects/LUT.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/KeyframeEditor.h"
@@ -46,7 +48,10 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QWheelEvent>
+
+#include <map>
 #include <QTest>
 #include <QTimer>
 
@@ -2325,6 +2330,37 @@ TEST(KeyframeEditor, TangentDragUndoRedoRestoresExactHandle)
     ASSERT_TRUE(stack.redo());
     EXPECT_FLOAT_EQ(clip.positionX().keyframe(0).bezierOutX, changedX);
     EXPECT_FLOAT_EQ(clip.positionX().keyframe(0).bezierOutY, changedY);
+}
+
+// The Effects browser lists every offered effect once, under its table
+// category; hidden ones (legacy Lumetri) never appear.
+TEST(EffectsPanel, BrowserListsEveryRegisteredEffectOnce)
+{
+    rt::EffectsPanel panel;
+    auto* tree = panel.findChild<QTreeWidget*>(QStringLiteral("EffectBrowserTree"));
+    ASSERT_NE(tree, nullptr);
+
+    std::map<int, QString> listedUnder;
+    for (int c = 0; c < tree->topLevelItemCount(); ++c) {
+        auto* category = tree->topLevelItem(c);
+        if (category->text(0).contains(QStringLiteral("Preset")))
+            continue;   // multi-effect macros reuse the effect types
+        for (int i = 0; i < category->childCount(); ++i) {
+            const QVariant type = category->child(i)->data(0, Qt::UserRole);
+            if (!type.isValid()) continue;
+            EXPECT_TRUE(listedUnder.emplace(type.toInt(), category->text(0)).second)
+                << "listed twice: " << type.toInt();
+        }
+    }
+    for (const auto& def : rt::allEffectDefs()) {
+        const auto it = listedUnder.find(static_cast<int>(def.type));
+        if (!def.category || def.has(rt::EffectFlag::Hidden)) {
+            EXPECT_EQ(it, listedUnder.end()) << def.key << " should not be listed";
+            continue;
+        }
+        ASSERT_NE(it, listedUnder.end()) << def.key << " is missing";
+        EXPECT_EQ(it->second, QString::fromUtf8(def.category)) << def.key;
+    }
 }
 
 TEST(EffectControlsPanel, TintUsesPremiereStyleColorAndAmountControls)
