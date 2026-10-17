@@ -134,6 +134,7 @@ add_library(roundtable_core STATIC
 
     # Effects
     effects/EffectStack.cpp
+    effects/EffectRegistry.cpp
     effects/CpuComposite.cpp
     effects/ColorCorrect.cpp
     effects/ChromaKey.cpp

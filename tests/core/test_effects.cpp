@@ -18,13 +18,18 @@
 #include "effects/Tint.h"
 #include "effects/ColorGrading.h"
 #include "effects/LUT.h"
+#include "effects/EffectRegistry.h"
 #include "command/CommandStack.h"
 #include "command/commands/EffectCommands.h"
 
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <set>
+#include <string>
 
 using namespace rt;
 
@@ -802,4 +807,77 @@ TEST(LUTTest, SnapshotCarriesTheLoadedCubeAndReloadsGetNewIds)
 
     std::filesystem::remove(identity);
     std::filesystem::remove(half);
+}
+
+// ─── Effect registry: every effect defined once ─────────────────────────────
+
+TEST(EffectRegistry, EveryTypeHasOneDefinitionWithAUniqueKey)
+{
+    std::set<std::string> keys;
+    size_t listed = 0;
+    for (int t = 0; t < static_cast<int>(rt::EffectType::Count); ++t) {
+        const auto type = static_cast<rt::EffectType>(t);
+        const auto& def = rt::effectDef(type);
+        EXPECT_EQ(def.type, type) << "type " << t << " has no definition";
+        EXPECT_TRUE(keys.insert(def.key).second) << "duplicate key " << def.key;
+        ++listed;
+    }
+    EXPECT_EQ(rt::allEffectDefs().size(), listed);
+}
+
+TEST(EffectRegistry, DefaultsLieInRangeAndGroupsAreWellFormed)
+{
+    for (const auto& def : rt::allEffectDefs()) {
+        SCOPED_TRACE(def.key);
+        EXPECT_EQ(def.has(rt::EffectFlag::Audio), def.shader == nullptr);
+        for (size_t i = 0; i < def.params.size(); ++i) {
+            const auto& p = def.params[i];
+            SCOPED_TRACE(p.name);
+            EXPECT_LE(p.min, p.max);
+            EXPECT_GE(p.def, p.min);
+            EXPECT_LE(p.def, p.max);
+            if (p.kind == rt::ParamKind::Choice)
+                EXPECT_EQ(static_cast<size_t>(p.max) + 1, p.choices.size());
+            if (p.kind == rt::ParamKind::ColorR) {
+                ASSERT_LT(i + 2, def.params.size());
+                EXPECT_EQ(def.params[i + 1].kind, rt::ParamKind::ColorG);
+                EXPECT_EQ(def.params[i + 2].kind, rt::ParamKind::ColorB);
+                EXPECT_NE(p.group, nullptr);
+            }
+        }
+    }
+}
+
+// A created effect carries exactly the table's parameters, in order, and
+// the table keeps the names and flags the rest of the code uses.
+TEST(EffectRegistry, CreatedEffectsMatchTheirDefinition)
+{
+    for (int t = 0; t < static_cast<int>(rt::EffectType::Count); ++t) {
+        const auto type = static_cast<rt::EffectType>(t);
+        const auto& def = rt::effectDef(type);
+        SCOPED_TRACE(def.key);
+        EXPECT_STREQ(rt::effectTypeName(type), def.name);
+        EXPECT_EQ(rt::isAudioEffect(type), def.has(rt::EffectFlag::Audio));
+        EXPECT_EQ(rt::isProceduralTimeEffect(type),
+                  def.has(rt::EffectFlag::ProceduralTime));
+        EXPECT_EQ(rt::isBeatReactEffect(type), def.has(rt::EffectFlag::BeatReact));
+
+        auto fx = rt::createEffect(type);
+        ASSERT_NE(fx, nullptr);
+        // Ots defaults come from the user's JSON presets; compare the rest.
+        const bool otsPreset = type == rt::EffectType::OtsLeft ||
+                               type == rt::EffectType::OtsRight ||
+                               type == rt::EffectType::OtsIntro;
+        ASSERT_EQ(fx->paramCount(), def.params.size());
+        for (size_t i = 0; i < def.params.size(); ++i) {
+            const auto& p = def.params[i];
+            SCOPED_TRACE(p.name);
+            EXPECT_EQ(fx->param(i).name, p.name);
+            EXPECT_FLOAT_EQ(fx->param(i).minVal, p.min);
+            EXPECT_FLOAT_EQ(fx->param(i).maxVal, p.max);
+            if (!otsPreset)
+                EXPECT_FLOAT_EQ(fx->param(i).track.evaluate(0), p.def);
+            EXPECT_EQ(fx->param(i).track.keyframeCount(), 0u);
+        }
+    }
 }
