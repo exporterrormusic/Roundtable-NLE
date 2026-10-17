@@ -293,8 +293,12 @@ void VideoDecoder::fillFrameInfo(DecodedFrame& outFrame, AVFrame* frame)
 {
     outFrame.width = static_cast<uint32_t>(frame->width);
     outFrame.height = static_cast<uint32_t>(frame->height);
-    outFrame.pts = frame->pts;
-    outFrame.timestamp = ptsToSeconds(frame->pts);
+    // Decoders with B-frames (MPEG-4 Part 2, some H.264) can leave pts unset;
+    // FFmpeg's best-effort timestamp is the picture's time then, as in the
+    // seek paths above.
+    outFrame.pts = frame->pts != AV_NOPTS_VALUE ? frame->pts
+                                                : frame->best_effort_timestamp;
+    outFrame.timestamp = ptsToSeconds(outFrame.pts);
     outFrame.frameIndex = m_currentFrame++;
     outFrame.isKeyframe = (frame->flags & AV_FRAME_FLAG_KEY) != 0;
     outFrame.avFrame = frame;
@@ -345,6 +349,13 @@ bool VideoDecoder::transferHardwareFrame(const DecodedFrame& hwFrame,
     }
 
     fillFrameInfo(cpuFrame, m_hwFrame);
+    // The transfer copies pixels only: the picture's timing lives on the
+    // hardware frame, and this is the same picture, not the next one.
+    --m_currentFrame;
+    cpuFrame.pts        = hwFrame.pts;
+    cpuFrame.timestamp  = hwFrame.timestamp;
+    cpuFrame.frameIndex = hwFrame.frameIndex;
+    cpuFrame.isKeyframe = hwFrame.isKeyframe;
     cpuFrame.isHardware = false;
     return true;
 }

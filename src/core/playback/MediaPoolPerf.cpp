@@ -29,6 +29,8 @@ void MediaPool::PerfMetrics::reset()
     gpuResidentDecoded.store(0, std::memory_order_relaxed);
     cpuConvertDecoded.store(0, std::memory_order_relaxed);
     zeroCopyDecoded.store(0, std::memory_order_relaxed);
+    labelReseeks.store(0, std::memory_order_relaxed);
+    labelMismatches.store(0, std::memory_order_relaxed);
 }
 
 // ─── prefetchStats ──────────────────────────────────────────────────────────
@@ -84,6 +86,15 @@ void MediaPool::logPerfReport()
     spdlog::info("  Prefetch scheduled:  {} tasks", sched);
     spdlog::info("  Prefetch delivered:  {} frames", prefetch);
     spdlog::info("  Avg decode time:     {} us", avgUs);
+    // Cumulative (never reset by this report): any non-zero value means a
+    // decode path produced a picture other than the one it was asked for.
+    const auto labelReseeks = m_perf.labelReseeks.load(std::memory_order_relaxed);
+    const auto labelMismatches = m_perf.labelMismatches.load(std::memory_order_relaxed);
+    if (labelReseeks > 0 || labelMismatches > 0) {
+        spdlog::warn("[FRAME-LABEL] since start: {} sequential decodes re-seeked, "
+                     "{} files with unreliable timestamps",
+                     labelReseeks, labelMismatches);
+    }
     spdlog::info("  FrameCache: {} entries, {:.0f}/{:.0f} MB, hit={:.1f}%",
                  cacheStats.frameCount,
                  cacheStats.memoryUsed / 1048576.0,

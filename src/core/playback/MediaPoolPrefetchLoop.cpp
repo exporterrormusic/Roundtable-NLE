@@ -10,6 +10,7 @@
 #include "MediaPoolPrefetchInternal.h"
 #include "PathUtils.h"
 #include "decode/ConvertDecodedFrame.h"
+#include "decode/FrameLabel.h"
 #include "cache/FrameContentBounds.h"
 
 #include <spdlog/spdlog.h>
@@ -163,6 +164,12 @@ void MediaPool::loopPreDecodeWorker(
     } else {
         decoder.seek(0.0, SeekMode::Precise);
     }
+    // Pictures are labelled f by counting from a precise seek. Each one is
+    // checked against its timestamp (see decodePrefetchFrame): off right
+    // after a seek means this file's timestamps can't be checked; off later
+    // means the count slipped, so re-seek to f.
+    bool timestampsUnreliable = info.isVFR || frameCount <= 1 || !(info.fps > 0.0);
+    bool justSeeked = true;
 
     // Caller-owned sws cache slot for the shared conversion core (freed at
     // the end of this function).
@@ -184,12 +191,14 @@ void MediaPool::loopPreDecodeWorker(
         // Re-seek on wraparound transition.
         if (fi > 0 && f == 0 && startFrame > 0) {
             decoder.seek(0.0, SeekMode::Precise);
+            justSeeked = true;
         }
 
         if (m_cache->contains(handle, f, tier)) {
             ++skipped_count;
             DecodedFrame discard;
             decoder.decodeNext(discard);
+            justSeeked = false;
             continue;
         }
 
@@ -206,6 +215,35 @@ void MediaPool::loopPreDecodeWorker(
             continue;
         }
         consecutive_failures = 0;
+
+        if (!timestampsUnreliable && raw.pts != kNoPts &&
+            !timestampMatchesFrame(raw.timestamp, f, info.fps)) {
+            bool reseekFailed = false;
+            if (!justSeeked) {
+                m_perf.labelReseeks.fetch_add(1, std::memory_order_relaxed);
+                spdlog::warn("[FRAME-LABEL] Loop pre-decode handle={}: frame {} "
+                             "gave a picture at {:.4f}s - re-seeking",
+                             handle, f, raw.timestamp);
+                reseekFailed =
+                    !decoder.seek(static_cast<double>(f) / info.fps, SeekMode::Precise) ||
+                    !decoder.decodeNext(raw);
+            }
+            if (reseekFailed) {
+                ++skipped_count;
+                justSeeked = false;
+                continue;
+            }
+            if (raw.pts != kNoPts &&
+                !timestampMatchesFrame(raw.timestamp, f, info.fps)) {
+                timestampsUnreliable = true;
+                m_perf.labelMismatches.fetch_add(1, std::memory_order_relaxed);
+                spdlog::warn("[FRAME-LABEL] Loop pre-decode handle={} '{}': seek to "
+                             "frame {} gave a picture at {:.4f}s - not checking "
+                             "this file's timestamps",
+                             handle, pathToUtf8(path.filename()), f, raw.timestamp);
+            }
+        }
+        justSeeked = false;
 
         if (raw.isHardware) {
             DecodedFrame cpuFrame;

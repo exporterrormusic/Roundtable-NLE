@@ -209,6 +209,13 @@ struct PrefetchDecoderState
     /// Seeks this frame-threaded decoder has made; past a few (a reversed
     /// clip seeks every frame) it reopens slice-threaded for good.
     int                            frameThreadedSeeks{0};
+    /// This file's picture timestamps don't map onto frame numbers (a start
+    /// offset, a gap): a precise seek landed off its target. decodePrefetchFrame
+    /// stops checking labels against timestamps for it.
+    bool                           timestampsUnreliable{false};
+    /// The next decode must seek: the last sequential picture's timestamp
+    /// disagreed with its label (see decodePrefetchFrame).
+    bool                           forceReseek{false};
 };
 
 /// One serialized on-demand decoder for a media handle. Exact export and
@@ -444,6 +451,12 @@ public:
         // transferHardwareFrame CPU bounce.  Sum (gpuResidentDecoded +
         // zeroCopyDecoded) = all GPU-resident decodes in the window.
         std::atomic<uint64_t> zeroCopyDecoded{0};
+        // A sequential decode whose picture timestamp disagreed with the
+        // requested frame; it was re-decoded through a precise seek.
+        std::atomic<uint64_t> labelReseeks{0};
+        // A precise seek that landed off its target: that file's timestamps
+        // are not checked any more (timestampsUnreliable).
+        std::atomic<uint64_t> labelMismatches{0};
 
         void reset();
     };

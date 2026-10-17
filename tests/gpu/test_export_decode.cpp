@@ -188,6 +188,41 @@ TEST_F(ExportDecodeTest, BackwardJumpsLandExactly)
         EXPECT_EQ(frameIndexOf(exact(target).get()), target) << "forward again " << target;
 }
 
+TEST_F(ExportDecodeTest, EveryPictureTimestampMatchesItsLabel)
+{
+    // In order, forward skips and backward jumps: each picture's own
+    // timestamp agrees with the frame it is labelled, and a clean CFR file
+    // with B-frames never trips the label check (no re-seek, no latch).
+    std::vector<int> sequence;
+    for (int i = 0; i < 50; ++i) sequence.push_back(i);
+    for (int i = 50; i < 140; i += 3) sequence.push_back(i);
+    for (int i : {20, 21, 22, 95, 96, 7}) sequence.push_back(i);
+    for (int target : sequence) {
+        auto frame = exact(target);
+        ASSERT_TRUE(frame) << "frame " << target;
+        EXPECT_EQ(frame->frameNumber, target);
+        EXPECT_NEAR(frame->timestamp * kFps, target, 0.01) << "frame " << target;
+    }
+    EXPECT_EQ(m_pool->m_perf.labelReseeks.load(), 0u);
+    EXPECT_EQ(m_pool->m_perf.labelMismatches.load(), 0u);
+}
+
+TEST_F(ExportDecodeTest, ScrubDecoderLabelsMatchPictures)
+{
+    // The scrub decoder decodes on from its last picture (delta 1 and short
+    // forward jumps) — the path the label check guards.
+    for (int target = 0; target < 40; ++target) {
+        auto frame = m_pool->getFrame(m_handle, target, ResolutionTier::Full,
+                                      /*scrubMode=*/true);
+        ASSERT_TRUE(frame) << "frame " << target;
+        if (frame->frameNumber != target) continue;  // a nearby cached frame
+        EXPECT_EQ(frameIndexOf(frame.get()), target);
+        EXPECT_NEAR(frame->timestamp * kFps, target, 0.01) << "frame " << target;
+    }
+    EXPECT_EQ(m_pool->m_perf.labelReseeks.load(), 0u);
+    EXPECT_EQ(m_pool->m_perf.labelMismatches.load(), 0u);
+}
+
 TEST_F(ExportDecodeTest, ReleasedDecodersReopen)
 {
     EXPECT_EQ(frameIndexOf(exact(30).get()), 30);

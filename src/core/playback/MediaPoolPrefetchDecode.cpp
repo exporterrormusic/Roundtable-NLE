@@ -11,12 +11,14 @@
 #include "MediaPoolPrefetchGpu.h"     // tryConvertDecodedToCacheGpu
 #include "cache/FrameCache.h"
 #include "decode/ConvertDecodedFrame.h"
+#include "decode/FrameLabel.h"
 #include "PathUtils.h"
 
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <utility>
 
 namespace rt {
 
@@ -42,6 +44,15 @@ void releaseStillDecoder(PrefetchDecoderState& state, const PrefetchTask& task)
                  pathToUtf8(task.filePath.filename()), task.handle);
 }
 
+/// Whether this decode's picture should be checked against its label.
+bool shouldCheckLabel(const PrefetchDecoderState& state, const PrefetchTask& task,
+                      const DecodedFrame& picture)
+{
+    return !state.timestampsUnreliable && !task.info.isVFR &&
+           task.info.frameCount > 1 && task.info.duration > 0.0 &&
+           picture.pts != kNoPts;
+}
+
 } // namespace
 
 std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
@@ -65,7 +76,8 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
         (task.info.duration <= 0.0 || task.info.frameCount <= 1);
     bool needSeek = !freshSingleFrame;
     bool singleFrameStep = false;  // only these measure the hw decoder
-    if (state.lastDecodedFrame >= 0) {
+    const bool forceReseek = std::exchange(state.forceReseek, false);
+    if (state.lastDecodedFrame >= 0 && !forceReseek) {
         int64_t delta = task.frameNumber - state.lastDecodedFrame;
         if (delta == 1) {
             needSeek = false;
@@ -123,6 +135,20 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
             return nullptr;
         }
         state.lastDecodedFrame = task.frameNumber;
+        // A precise seek is what defines frame N. Landing off the target
+        // means this file's timestamps don't map onto frame numbers (a start
+        // offset, a gap), so stop checking them rather than seek every frame.
+        if (shouldCheckLabel(state, task, fwd) &&
+            !timestampMatchesFrame(fwd.timestamp, task.frameNumber, task.fps)) {
+            state.timestampsUnreliable = true;
+            m_perf.labelMismatches.fetch_add(1, std::memory_order_relaxed);
+            spdlog::warn("[FRAME-LABEL] handle={} '{}': seek to frame {} gave a "
+                         "picture at {:.4f}s (frame {}) - not checking this "
+                         "file's timestamps",
+                         task.handle, pathToUtf8(task.filePath.filename()),
+                         task.frameNumber, fwd.timestamp,
+                         frameFromTimestamp(fwd.timestamp, task.fps));
+        }
 
         auto perfDecodeT1a = std::chrono::high_resolution_clock::now();
         // UPGRADE_PLAN Phase 4: try GPU-resident path first; fall back to
@@ -151,6 +177,25 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
     if (!decoder.decodeNext(decoded)) {
         state.lastDecodedFrame = -1;
         return nullptr;
+    }
+    // Decoding on from the last picture assumes the stream yields exactly
+    // the pictures in between. When the picture says otherwise, decode this
+    // frame again through a precise seek (once: the seek path never comes
+    // back here) instead of caching the wrong picture under its number.
+    if (shouldCheckLabel(state, task, decoded) &&
+        !timestampMatchesFrame(decoded.timestamp, task.frameNumber, task.fps)) {
+        m_perf.labelReseeks.fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<int> s_reseekLog{0};
+        const int n = ++s_reseekLog;
+        if (n <= 20 || n % 100 == 0) {
+            spdlog::warn("[FRAME-LABEL] handle={} '{}': decoding on to frame {} "
+                         "gave a picture at {:.4f}s (frame {}) - re-seeking",
+                         task.handle, pathToUtf8(task.filePath.filename()),
+                         task.frameNumber, decoded.timestamp,
+                         frameFromTimestamp(decoded.timestamp, task.fps));
+        }
+        state.forceReseek = true;
+        return decodePrefetchFrame(state, task, wgs);
     }
     state.lastDecodedFrame = task.frameNumber;
 
