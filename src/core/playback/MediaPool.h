@@ -150,6 +150,43 @@ private:
     std::vector<std::vector<uint8_t>> m_pool;
 };
 
+/// What a frame request may wait for, and what it may accept in place of
+/// the frame it asked for (MediaPool::requestFrame).
+enum class FramePolicy : uint8_t
+{
+    /// Export: decode inline until the exact frame exists. Never a neighbour,
+    /// never a loop pre-decoded cache entry.
+    ExactBlocking,
+    /// Paused monitor: never blocks. Queues the exact frame and may return a
+    /// cached nearby/last-good stand-in meanwhile (result.exact == false).
+    ExactOrStandIn,
+    /// Temporal endpoints: an exact cache hit or nothing; never blocks.
+    ExactCacheOnly,
+    /// Scrubbing: cached exact or nearby frame, else a quick Quarter-tier
+    /// inline decode on the scrub decoder.
+    Scrub,
+    /// Playback: never blocks; nearby and last-good frames allowed.
+    BestEffort,
+};
+
+struct FrameRequest
+{
+    MediaHandle    handle{0};
+    int64_t        frame{0};
+    ResolutionTier tier{ResolutionTier::Full};
+    FramePolicy    policy{FramePolicy::BestEffort};
+};
+
+struct FrameResult
+{
+    std::shared_ptr<CachedFrame> frame;
+    /// frame is the requested source frame (after the clamp to the media's
+    /// range). Its tier can still differ: playback accepts a sharper tier.
+    bool    exact{false};
+    /// The source frame the request was answered for, after the clamp.
+    int64_t resolvedFrame{0};
+};
+
 /// Task for the background prefetch thread.
 struct PrefetchTask
 {
@@ -330,6 +367,11 @@ public:
     void setOnMediaOpened(std::function<void(std::filesystem::path)> cb);
 
     // ── Frame access ────────────────────────────────────────────────────
+
+    /// The one way a renderer asks for a source frame: the policy says what
+    /// it may wait for and accept instead; the result says whether it got the
+    /// frame it asked for. The calls below are its building blocks.
+    [[nodiscard]] FrameResult requestFrame(const FrameRequest& request);
 
     /// Get a decoded frame from cache, or decode on demand.
     /// Returns nullptr on failure.
@@ -567,6 +609,10 @@ private:
     /// for the scrub-path caller (MediaPoolFrame.cpp) that has no worker.
     /// Defined nullable for forward-compatibility; the dispatch helper
     /// short-circuits to the CPU path on null + feature-flag-off.
+    std::shared_ptr<CachedFrame> fetchForPolicy(
+        MediaHandle handle, int64_t frameNumber, ResolutionTier tier,
+        FramePolicy policy, bool singleFrameMedia);
+
     std::shared_ptr<CachedFrame> decodePrefetchFrame(
         PrefetchDecoderState& state, const PrefetchTask& task,
         WorkerGpuState* wgs = nullptr);

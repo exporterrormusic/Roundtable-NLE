@@ -80,6 +80,7 @@ add_library(roundtable_core STATIC
     playback/MediaPoolPrefetchConvert.cpp
     playback/MediaPoolPrefetchConvertGpu.cpp
     playback/MediaPoolPrefetchDecode.cpp
+    playback/MediaPoolRequest.cpp
     cache/PrefetchTexturePool.cpp
     decode/VideoDecoder.cpp
     decode/VideoDecoderInit.cpp

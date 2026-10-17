@@ -137,6 +137,7 @@ add_roundtable_test(test_hang_watchdog        LIBS roundtable_core)
 # GPU tests — need a real Vulkan device, so NOT in the headless CI "core" run.
 add_roundtable_test(test_decoder       LIBS roundtable_gpu roundtable_core GROUP gpu)
 add_roundtable_test(test_export_decode LIBS roundtable_gpu roundtable_core GROUP gpu)
+add_roundtable_test(test_frame_request LIBS roundtable_gpu roundtable_core GROUP gpu)
 add_roundtable_test(test_gpu_spine     LIBS roundtable_gpu roundtable_core GROUP gpu)
 add_roundtable_test(test_compositor    LIBS roundtable_gpu roundtable_core GROUP gpu)
 add_roundtable_test(test_viewport      LIBS roundtable_gpu roundtable_core GROUP gpu)
