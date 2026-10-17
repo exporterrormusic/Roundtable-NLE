@@ -8,6 +8,7 @@
 #include "ShortcutManager.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/commands/TransitionCmds.h"
 #include "MainWindow.h"
 #include "playback/PlaybackController.h"
@@ -197,7 +198,7 @@ void ShortcutController::registerKeyboardShortcuts()
             auto cmd = EditOperations::pasteInsert(
                 *m_ws->timeline(), m_ws->timelinePanel()->clipboard(), pasteTick);
             if (cmd) {
-                m_ws->commandStack()->execute(std::move(cmd));
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                 // Sync playhead from the model (the command moves it to end
                 // of inserted content as part of its undoable state).
@@ -263,7 +264,7 @@ void ShortcutController::registerKeyboardShortcuts()
             const int64_t pasteTick = m_ws->playbackController() ? m_ws->playbackController()->currentTick() : 0;
             auto cmd = m_ws->timelinePanel()->makePasteCommand(pasteTick);
             if (cmd) {
-                m_ws->commandStack()->execute(std::move(cmd));
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                 // Sync playhead from the model (the command moves it to end
                 // of pasted content as part of its undoable state).
@@ -291,7 +292,7 @@ void ShortcutController::registerKeyboardShortcuts()
             m_ws->timelinePanel()->selection(), cb);
         if (cmd) {
             m_ws->timelinePanel()->selection().clear();
-            m_ws->commandStack()->execute(std::move(cmd));
+            executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
             m_ws->timelinePanel()->refreshTrackContents();
             m_ws->invalidateAudioSources();
             m_ws->invalidateCompositeCache();
@@ -356,7 +357,7 @@ void ShortcutController::registerKeyboardShortcuts()
             m_ws->timelinePanel()->selection());
         if (cmd) {
             m_ws->timelinePanel()->selection().clear();
-            m_ws->commandStack()->execute(std::move(cmd));
+            executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
             m_ws->timelinePanel()->refreshTrackContents();
             m_ws->invalidateAudioSources();
             m_ws->invalidateCompositeCache();
@@ -419,7 +420,7 @@ void ShortcutController::registerKeyboardShortcuts()
 
         auto cmd = std::make_unique<AddTransitionCommand>(
             track, clipIdx, clipIdx, trans);
-        m_ws->commandStack()->execute(std::move(cmd));
+        executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
 
         m_ws->invalidateCompositeCache();
         // A cross-dissolve on an audio track bakes its crossfade into the

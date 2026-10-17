@@ -7,6 +7,7 @@
 
 #include "timeline/AudioClip.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include "audiofx/FxChain.h"
@@ -141,7 +142,7 @@ void AudioFxSection::commitEdit(const QString& name,
     auto undo = [ac, before, refresh]() { ac->audioFx() = before->clone(); refresh(); };
 
     if (m_commandStack)
-        m_commandStack->execute(std::make_unique<LambdaCommand>(name.toStdString(), redo, undo));
+        executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(name.toStdString(), redo, undo));
     else
         redo();
 }

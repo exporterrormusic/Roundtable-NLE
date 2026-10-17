@@ -193,8 +193,10 @@ void executeTimelineEdit(CommandStack* stack, Timeline* timeline,
                          std::unique_ptr<Command> cmd)
 {
     if (!cmd || !stack) return;
-    if (EditSession* edits = stack->editSession(); edits && timeline)
-        edits->execute(*timeline, std::move(cmd));
+    EditSession* edits = stack->editSession();
+    Timeline* target = timeline ? timeline : (edits ? edits->activeSequence() : nullptr);
+    if (edits && target)
+        edits->execute(*target, std::move(cmd));
     else
         stack->execute(std::move(cmd));
 }

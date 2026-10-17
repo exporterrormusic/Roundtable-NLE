@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "edit/EditSession.h"
 #include "timeline/Keyframe.h"
 
 namespace rt {
@@ -198,6 +199,8 @@ private:
     // ── Data ────────────────────────────────────────────────────────────
     Clip*                       m_clip{nullptr};
     CommandStack*               m_commandStack{nullptr};
+    EditGesture                 m_dragEdit;   // one undo step per key/tangent drag
+    void beginDragEdit(const char* description);
     std::vector<CurveEntry>     m_curves;
     std::set<SelectedKey>       m_selection;
 

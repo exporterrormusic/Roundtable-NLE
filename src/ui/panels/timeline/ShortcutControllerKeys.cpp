@@ -18,6 +18,7 @@
 #include "widgets/KeyboardFocusUtils.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/CompoundCommand.h"
 #include "command/commands/ClipCommands.h"
 #include "command/commands/MarkerCommands.h"
@@ -288,7 +289,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                         gap.startTick, gap.endTick);
                     if (cmd) {
                         m_ws->timelinePanel()->clearGapSelection();
-                        m_ws->commandStack()->execute(std::move(cmd));
+                        executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                         m_ws->applyEditImpact();
                     }
                 }
@@ -304,7 +305,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                     && transIndex < track->transitionCount()) {
                     auto cmd = std::make_unique<RemoveTransitionCommand>(track, transIndex);
                     m_ws->timelinePanel()->clearTransitionSelection();
-                    m_ws->commandStack()->execute(std::move(cmd));
+                    executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                     m_ws->applyEditImpact();
                     event->accept(); return;
                 }
@@ -314,7 +315,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 m_ws->timelinePanel()->selection());
             if (cmd) {
                 m_ws->timelinePanel()->selection().clear();
-                m_ws->commandStack()->execute(std::move(cmd));
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                 // Refresh the timeline UI so deleted clips disappear immediately
                 // Clear panels that were showing the now-deleted clip
                 m_ws->selection().clip = nullptr;
@@ -411,7 +412,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             }
 
             if (cmd) {
-                m_ws->commandStack()->execute(std::move(cmd));
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                 // After a split, the original clip becomes the LEFT half (it
                 // now ENDS at the playhead) and a new clip is the RIGHT half
@@ -451,7 +452,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             int64_t tick = m_ws->playbackController()->currentTick();
             auto cmd = EditOperations::splitAllAtPlayhead(*m_ws->timeline(), tick);
             if (cmd) {
-                m_ws->commandStack()->execute(std::move(cmd));
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                 m_ws->applyEditImpact();
             }
         }
@@ -546,7 +547,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     if (noMod && key == Qt::Key_M) {
         if (m_ws->timeline() && m_ws->playbackController() && m_ws->commandStack()) {
             int64_t tick = m_ws->playbackController()->currentTick();
-            m_ws->commandStack()->execute(
+            executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), 
                 std::make_unique<AddMarkerCommand>(m_ws->timeline(), tick, "Marker"));
             if (m_ws->timelinePanel()) m_ws->timelinePanel()->update();
         }
@@ -590,7 +591,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             if (inPt >= 0 && outPt >= 0 && outPt > inPt) {
                 auto cmd = EditOperations::liftInOut(*m_ws->timeline(), inPt, outPt);
                 if (cmd) {
-                    m_ws->commandStack()->execute(std::move(cmd));
+                    executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                     m_ws->applyEditImpact();
                 }
             }
@@ -606,7 +607,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
             if (inPt >= 0 && outPt >= 0 && outPt > inPt) {
                 auto cmd = EditOperations::extractInOut(*m_ws->timeline(), inPt, outPt);
                 if (cmd) {
-                    m_ws->commandStack()->execute(std::move(cmd));
+                    executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                     m_ws->applyEditImpact();
                 }
             }
@@ -619,7 +620,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
         if (m_ws->timeline() && m_ws->commandStack()) {
             auto cmd = EditOperations::closeAllGaps(*m_ws->timeline());
             if (cmd) {
-                m_ws->commandStack()->execute(std::move(cmd));
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                 m_ws->applyEditImpact();
             }
         }
@@ -677,7 +678,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                     auto cmd = EditOperations::rippleTrim(
                         *m_ws->timeline(), ti, c->id(), ClipEdge::Head, tick);
                     if (cmd) {
-                        m_ws->commandStack()->execute(std::move(cmd));
+                        executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                         m_ws->applyEditImpact();
                     }
                     break;
@@ -699,7 +700,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                     auto cmd = EditOperations::rippleTrim(
                         *m_ws->timeline(), ti, c->id(), ClipEdge::Tail, tick);
                     if (cmd) {
-                        m_ws->commandStack()->execute(std::move(cmd));
+                        executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
                         m_ws->applyEditImpact();
                     }
                     break;

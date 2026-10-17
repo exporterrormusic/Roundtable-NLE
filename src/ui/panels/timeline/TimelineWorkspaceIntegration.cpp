@@ -24,6 +24,7 @@
 #include "panels/timeline/TimelinePanel.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "audio/AudioPlaybackService.h"
 #include "playback/MediaPool.h"
@@ -133,6 +134,8 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     if (!timeline)
         m_snapshotProject = nullptr;
     rebindSnapshotPublisher();
+    if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
+        edits->setActiveSequence(timeline);
     if (m_compositeService) {
         m_compositeService->setTimeline(timeline);
         m_compositeService->setMediaPool(m_mediaPool);

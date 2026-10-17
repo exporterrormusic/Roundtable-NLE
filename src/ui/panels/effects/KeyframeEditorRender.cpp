@@ -11,6 +11,7 @@
 #include "timeline/Keyframe.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/KeyframeCmds.h"
 
@@ -479,6 +480,7 @@ void KeyframeEditor::mousePressEvent(QMouseEvent* event)
     if (hit.isTangentIn || hit.isTangentOut ||
         hit.isVelocityIn || hit.isVelocityOut) {
         m_draggingTangent = true;
+        beginDragEdit("Adjust Keyframe Tangent");
         m_tangentIsIn     = (hit.isTangentIn || hit.isVelocityIn);
         m_velocityDrag    = (hit.isVelocityIn || hit.isVelocityOut);
         m_dragCurveIdx    = hit.curveIndex;
@@ -509,6 +511,7 @@ void KeyframeEditor::mousePressEvent(QMouseEvent* event)
         m_selection.insert(sk);
 
         m_dragging     = true;
+        beginDragEdit("Move Keyframe");
         m_dragCurveIdx = hit.curveIndex;
         m_dragKeyIdx   = hit.keyIndex;
         m_dragStartPos = pos;
@@ -726,7 +729,7 @@ void KeyframeEditor::mouseMoveEvent(QMouseEvent* event)
         }
 
         if (m_commandStack) {
-            m_commandStack->execute(
+            executeTimelineEdit(m_commandStack, nullptr, 
                 std::make_unique<MoveKeyframeCommand>(track, oldTime, newTime, newVal));
             // Find the moved keyframe's new index
             for (int ki = 0; ki < static_cast<int>(track->keyframeCount()); ++ki) {
@@ -766,6 +769,16 @@ void KeyframeEditor::mouseMoveEvent(QMouseEvent* event)
         setCursor(Qt::ArrowCursor);
 }
 
+void KeyframeEditor::beginDragEdit(const char* description)
+{
+    // Every mouse move executes a keyframe command; one gesture makes the
+    // drag a single undo step (EditSession.h).
+    if (m_dragEdit.active() || !m_commandStack) return;
+    EditSession* edits = m_commandStack->editSession();
+    if (edits && edits->activeSequence())
+        m_dragEdit = EditGesture(*edits, description, *edits->activeSequence());
+}
+
 void KeyframeEditor::mouseReleaseEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::MiddleButton) {
@@ -776,6 +789,7 @@ void KeyframeEditor::mouseReleaseEvent(QMouseEvent* event)
 
     if (m_dragging) {
         m_dragging = false;
+        m_dragEdit.commit();   // the whole drag is one undo step
         event->accept();
         return;
     }
@@ -809,6 +823,7 @@ void KeyframeEditor::mouseReleaseEvent(QMouseEvent* event)
         }
         m_tangentTrack = nullptr;
         m_hasTangentBefore = false;
+        m_dragEdit.commit();
         event->accept();
         return;
     }

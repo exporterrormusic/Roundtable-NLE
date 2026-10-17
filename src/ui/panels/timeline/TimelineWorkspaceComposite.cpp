@@ -12,6 +12,8 @@
 #include "playback/PlaybackController.h"
 #include "playback/EngineContracts.h"
 #include "playback/SnapshotPublisher.h"
+#include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "timeline/Timeline.h"
 
 #include <QCoreApplication>
@@ -316,6 +318,8 @@ void TimelineWorkspace::shutdownCompositeServices()
     if (m_programMonitor) m_programMonitor->setBeforeRefreshHook({});
     m_snapshotProject = nullptr;
     m_snapshotPublisher->bind(nullptr, nullptr);
+    if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
+        edits->setActiveSequence(nullptr);
 }
 
 } // namespace rt

@@ -11,6 +11,7 @@
 #include "timeline/Clip.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/KeyframeCmds.h"
 #include "command/commands/EffectCommands.h"
@@ -606,7 +607,7 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
                         }
                     };
                     if (m_commandStack) {
-                        m_commandStack->execute(std::make_unique<LambdaCommand>(
+                        executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                             "Set Keyframe Interpolation",
                             [applyMode, mode]() { applyMode(mode); },
                             [applyMode, oldMode]() { applyMode(oldMode); }));
@@ -1452,7 +1453,7 @@ void KeyframeTimeline::pasteKeyframes()
         };
         auto addedSnap = std::make_shared<std::vector<PasteUndo>>();
         Clip* clip = m_clip;
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<LambdaCommand>(
                 "Paste Keyframes",
                 [entries, pasteTime, addedSnap, clip]() {
@@ -1573,7 +1574,7 @@ void KeyframeTimeline::pasteKeyframes()
             }
         };
         if (m_commandStack) {
-            m_commandStack->execute(std::make_unique<LambdaCommand>(
+            executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                 "Paste Mask Path Keyframes",
                 [maskStates, applyStates]() { applyStates(*maskStates, true); },
                 [maskStates, applyStates]() { applyStates(*maskStates, false); }));

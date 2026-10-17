@@ -15,6 +15,7 @@
 #include "effects/EffectStack.h"
 #include "audiofx/FxChain.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/commands/EffectCommands.h"
 #include "timeline/Transition.h"
 
@@ -621,7 +622,7 @@ void EffectsPanel::onAddClicked()
         auto preset = static_cast<GlitchPreset>(item->data(0, kGlitchPresetRole).toInt());
         if (m_commandStack) {
             if (auto cmd = makeAddGlitchPresetCommand(&stack, preset))
-                m_commandStack->execute(std::move(cmd));
+                executeTimelineEdit(m_commandStack, nullptr, std::move(cmd));
         } else {
             for (auto& fx : buildGlitchPreset(preset))
                 stack.addEffect(std::move(fx));
@@ -635,7 +636,7 @@ void EffectsPanel::onAddClicked()
     auto type = static_cast<EffectType>(item->data(0, Qt::UserRole).toInt());
 
     if (m_commandStack) {
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<AddEffectCommand>(&stack, type));
     } else {
         stack.addEffect(createEffect(type));
@@ -655,7 +656,7 @@ void EffectsPanel::onRemoveClicked()
     if (static_cast<size_t>(row) >= stack.effectCount()) return;
 
     if (m_commandStack) {
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<RemoveEffectCommand>(&stack, static_cast<size_t>(row)));
     } else {
         (void)stack.removeEffect(static_cast<size_t>(row));
@@ -676,7 +677,7 @@ void EffectsPanel::onMoveUpClicked()
     size_t to   = from - 1;
 
     if (m_commandStack) {
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<MoveEffectCommand>(&stack, from, to));
     } else {
         stack.moveEffect(from, to);
@@ -699,7 +700,7 @@ void EffectsPanel::onMoveDownClicked()
     size_t to = from + 1;
 
     if (m_commandStack) {
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<MoveEffectCommand>(&stack, from, to));
     } else {
         stack.moveEffect(from, to);
@@ -761,7 +762,7 @@ void EffectsPanel::onBrowserContextMenu(const QPoint& pos)
             if (effect) {
                 auto& stack = m_clip->effects();
                 if (m_commandStack) {
-                    m_commandStack->execute(
+                    executeTimelineEdit(m_commandStack, nullptr, 
                         std::make_unique<AddEffectCommand>(
                             &stack, std::move(effect), stack.effectCount()));
                 } else {

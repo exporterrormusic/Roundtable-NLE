@@ -18,6 +18,7 @@
 #include "viewport/Viewport.h"
 #include "viewport/TransformOverlayWidget.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -1633,7 +1634,7 @@ void OverlayController::wireOverlayToolSignals()
                         }
                         return nullptr;
                     };
-                    m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
+                    executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::make_unique<LambdaCommand>(
                         "Edit Caption Text",
                         [resolve, newVal, newStyles, newParagraphStyles,
                          capRefresh]() {
@@ -1736,7 +1737,7 @@ void OverlayController::wireOverlayToolSignals()
                     }
                     return nullptr;
                 };
-                m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::make_unique<LambdaCommand>(
                     "Edit Text",
                     [resolve, newVal, newStyles, newParagraphStyles, refresh]() {
                         if (auto* t = resolve()) {

@@ -17,6 +17,7 @@
 #include "timeline/KeyframeTrack.h"
 #include "timeline/OpacityMask.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"
 #include "command/commands/KeyframeCmds.h"
@@ -297,7 +298,7 @@ void EffectControlsPanel::buildPropertyTree()
                     m_commandStack->beginMacro("Enable Keyframing");
                 float val = trk->evaluate(t);
                 if (m_commandStack) {
-                    m_commandStack->execute(
+                    executeTimelineEdit(m_commandStack, nullptr, 
                         std::make_unique<AddKeyframeCommand>(trk, t, val));
                 } else {
                     trk->addKeyframe(t, val);
@@ -305,7 +306,7 @@ void EffectControlsPanel::buildPropertyTree()
                 if (companion) {
                     float cVal = companion->evaluate(t);
                     if (m_commandStack) {
-                        m_commandStack->execute(
+                        executeTimelineEdit(m_commandStack, nullptr, 
                             std::make_unique<AddKeyframeCommand>(companion, t, cVal));
                     } else {
                         companion->addKeyframe(t, cVal);
@@ -650,7 +651,7 @@ void EffectControlsPanel::buildPropertyTree()
             };
 
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     "Blend Mode",
                     [applyMode, index]() { applyMode(index); },
                     [applyMode, oldMode]() { applyMode(oldMode); }));
@@ -758,7 +759,7 @@ void EffectControlsPanel::buildPropertyTree()
             uint64_t fxId = fx.id();
             connect(fxLabel, &QToolButton::toggled, this, [this, fxId, titleLabel, tc](bool checked) {
                 if (!m_clip || !m_commandStack) return;
-                m_commandStack->execute(
+                executeTimelineEdit(m_commandStack, nullptr, 
                     std::make_unique<SetEffectEnabledCommand>(&m_clip->effects(), fxId, checked));
                 // Dim the title when disabled
                 titleLabel->setStyleSheet(QStringLiteral(

@@ -12,6 +12,7 @@
 #include "timeline/Keyframe.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/commands/KeyframeCmds.h"
 
 #include <QPainter>
@@ -301,7 +302,7 @@ void KeyframeEditor::addKeyframe(int curveIndex, int64_t time, float value)
     if (!track) return;
 
     if (m_commandStack) {
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<AddKeyframeCommand>(track, time, value, InterpMode::Linear));
     } else {
         track->addKeyframe(time, value, InterpMode::Linear);
@@ -330,7 +331,7 @@ void KeyframeEditor::deleteSelectedKeyframes()
             continue;
         auto t = track->keyframe(sk.keyIndex).time;
         if (m_commandStack)
-            m_commandStack->execute(std::make_unique<RemoveKeyframeCommand>(track, t));
+            executeTimelineEdit(m_commandStack, nullptr, std::make_unique<RemoveKeyframeCommand>(track, t));
         else
             track->removeKeyframeAtTime(t);
     }
@@ -357,7 +358,7 @@ void KeyframeEditor::setInterpolation(int interpMode)
             continue;
         const auto t = track->keyframe(sk.keyIndex).time;
         if (m_commandStack)
-            m_commandStack->execute(std::make_unique<SetKeyframeInterpCommand>(track, t, mode));
+            executeTimelineEdit(m_commandStack, nullptr, std::make_unique<SetKeyframeInterpCommand>(track, t, mode));
         else
             track->keyframe(sk.keyIndex).interp = mode;
     }
@@ -413,7 +414,7 @@ void KeyframeEditor::pasteKeyframes(int64_t time)
         pasted.time += time;
 
         if (m_commandStack)
-            m_commandStack->execute(
+            executeTimelineEdit(m_commandStack, nullptr, 
                 std::make_unique<AddKeyframeCommand>(track, pasted));
         else
             track->restoreKeyframe(pasted);

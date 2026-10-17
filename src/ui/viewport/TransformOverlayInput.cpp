@@ -174,7 +174,7 @@ void TransformOverlayWidget::handleMousePress(QMouseEvent* event)
                 connect(a, &QAction::triggered, this, [this, kfTime, mode]() {
                     if (!m_motionX || !m_motionY) return;
                     if (m_motionCmdStack) {
-                        m_motionCmdStack->execute(
+                        executeTimelineEdit(m_motionCmdStack, nullptr, 
                             std::make_unique<SetKeyframeSpatialInterpCommand>(
                                 m_motionX, m_motionY, kfTime, mode));
                     } else {

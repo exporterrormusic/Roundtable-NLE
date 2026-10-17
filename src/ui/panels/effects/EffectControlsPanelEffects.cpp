@@ -17,6 +17,7 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"
 #include "command/commands/KeyframeCmds.h"
@@ -559,7 +560,7 @@ bool EffectControlsPanel::assignMask(quint64 fromEffectId, uint64_t maskId,
             place(toEffectId, fromEffectId, wasUnassigned, fromIndex);
         });
     if (m_commandStack)
-        m_commandStack->execute(std::move(command));
+        executeTimelineEdit(m_commandStack, nullptr, std::move(command));
     else
         command->execute();
 
@@ -722,7 +723,7 @@ bool EffectControlsPanel::deleteMask(quint64 effectId, uint64_t maskId)
     };
 
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
             "Delete Mask",
             [resolveList, maskId]() {
                 auto* masks = resolveList();
@@ -790,7 +791,7 @@ void EffectControlsPanel::addMask(uint8_t shapeType, quint64 effectId)
     size_t insertIdx = maskList->size();
 
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
             "Add Mask",
             [clip, effectId, stableMaskId, savedMask]() {
                 Clip* c = clip;
@@ -1083,7 +1084,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
             KeyframeTrack<float> after = before;
             after.addKeyframe(time, before.evaluate(time));
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     "Add Mask Keyframe",
                     [resolveTrack, after]() {
                         if (auto* value = resolveTrack()) *value = after;
@@ -1108,7 +1109,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
             KeyframeTrack<float> after = before;
             after.removeKeyframeAtTime(time);
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     "Delete Mask Keyframe",
                     [resolveTrack, after]() {
                         if (auto* value = resolveTrack()) *value = after;
@@ -1174,7 +1175,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                                          : maskScalarTrack(*it, which);
             };
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     enabled ? "Animate Mask Property"
                             : "Stop Animating Mask Property",
                     [resolve, after]() {
@@ -1206,7 +1207,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                 after.setDefaultValue(factory);
 
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     "Reset Mask Property",
                     [resolveTrack, after]() {
                         if (auto* track = resolveTrack()) *track = after;
@@ -1431,7 +1432,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                     return nullptr;
                 };
                 if (m_commandStack) {
-                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                         on ? "Animate Mask Path" : "Stop Animating Mask Path",
                         [resolveList, stableMaskId, after]() {
                             auto* masks = resolveList();
@@ -1490,7 +1491,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                     return nullptr;
                 };
                 if (m_commandStack) {
-                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                         "Toggle Mask Path Keyframe",
                         [resolveList, stableMaskId, after]() {
                             auto* masks = resolveList();
@@ -1618,7 +1619,7 @@ void EffectControlsPanel::buildMaskUI(std::vector<OpacityMask>& maskList,
                     return nullptr;
                 };
                 if (m_commandStack) {
-                    m_commandStack->execute(std::make_unique<LambdaCommand>(
+                    executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                         "Mask Inverted",
                         [resolveList, stableMaskId, newVal]() {
                             auto* masks = resolveList();
@@ -2147,7 +2148,7 @@ void EffectControlsPanel::buildTintUI(Effect& fx, size_t effectIdx, int& rowIdx)
             };
 
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     "Set Tint Color",
                     [applyTracks, after]() { applyTracks(after); },
                     [applyTracks, before]() { applyTracks(before); }));

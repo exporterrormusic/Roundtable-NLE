@@ -61,6 +61,7 @@ void TimelineWorkspace::setCommandStack(CommandStack* stack)
     }
     // Each recorded edit (and its undo/redo) names the sequence it changed.
     if (EditSession* edits = stack ? stack->editSession() : nullptr) {
+        edits->setActiveSequence(m_timeline);
         edits->setCommitListener([this](uint64_t sequenceId) {
             markSnapshotDirty(!m_timeline || m_timeline->id() != sequenceId);
         });

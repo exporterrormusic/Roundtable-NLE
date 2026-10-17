@@ -22,6 +22,7 @@
 #include "timeline/GraphicClip.h"
 #include "playback/PlaybackController.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"
 #include "command/commands/KeyframeCmds.h"
@@ -436,7 +437,7 @@ void EffectControlsPanel::removeAllKeyframes()
     };
 
     if (m_commandStack)
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
             "Remove All Keyframes", doRemove, undoRemove));
     else
         doRemove();
@@ -1183,7 +1184,7 @@ void EffectControlsPanel::resetPropertyRow(PropertyRow* row)
                 else if (auto* sc = dynamic_cast<SpineClip*>(clip)) sc->setCrop(l, r, t, b);
             };
             if (m_commandStack) {
-                m_commandStack->execute(std::make_unique<LambdaCommand>(
+                executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
                     QStringLiteral("Reset %1").arg(row->propertyName()).toStdString(),
                     [setCrop, nL, nR, nT, nB, panel]() {
                         setCrop(nL, nR, nT, nB);
@@ -1251,7 +1252,7 @@ void EffectControlsPanel::resetPropertyRow(PropertyRow* row)
     };
 
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(
             QStringLiteral("Reset %1").arg(row->propertyName()).toStdString(),
             doReset, undoReset));
     } else {
@@ -1340,7 +1341,7 @@ void EffectControlsPanel::onAddKeyframe(KeyframeTrack<float>* track, int64_t tim
     auto addOne = [this, time](KeyframeTrack<float>* trk) {
         float v = trk->evaluate(time);
         if (m_commandStack)
-            m_commandStack->execute(
+            executeTimelineEdit(m_commandStack, nullptr, 
                 std::make_unique<AddKeyframeCommand>(trk, time, v));
         else
             trk->addKeyframe(time, v);
@@ -1385,7 +1386,7 @@ void EffectControlsPanel::onDeleteKeyframe(KeyframeTrack<float>* track, int64_t 
     if (compound) m_commandStack->beginMacro("Remove Keyframe");
     auto removeOne = [this, time](KeyframeTrack<float>* trk) {
         if (m_commandStack)
-            m_commandStack->execute(
+            executeTimelineEdit(m_commandStack, nullptr, 
                 std::make_unique<RemoveKeyframeCommand>(trk, time));
         else
             trk->removeKeyframeAtTime(time);
@@ -1438,7 +1439,7 @@ void EffectControlsPanel::deleteEffect(size_t index)
     if (!m_clip || (m_track && m_track->isLocked())
         || index >= m_clip->effects().effectCount()) return;
     if (m_commandStack) {
-        m_commandStack->execute(
+        executeTimelineEdit(m_commandStack, nullptr, 
             std::make_unique<RemoveEffectCommand>(&m_clip->effects(), index));
     }
     m_selectedEffectIndex = -1;
@@ -1596,7 +1597,7 @@ void EffectControlsPanel::pasteEffect()
     }
 
     auto cloned = m_copiedEffect->cloneWithMasks();
-    m_commandStack->execute(
+    executeTimelineEdit(m_commandStack, nullptr, 
         std::make_unique<AddEffectCommand>(
             &m_clip->effects(), std::move(cloned),
             m_clip->effects().effectCount()));

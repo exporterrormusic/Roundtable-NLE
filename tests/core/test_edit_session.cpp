@@ -429,6 +429,28 @@ TEST(EditSession, CancelBringsBackTheSameDeletedObject)
     EXPECT_EQ(f.clip(f.imageId), image);
 }
 
+TEST(EditSession, ExecuteTimelineEditFallsBackToActiveSequence)
+{
+    Fixture f;
+    const uint64_t before = f.hash();
+    // No active sequence: the plain stack runs it (legacy undo).
+    executeTimelineEdit(&f.stack, nullptr,
+        EditOperations::moveClip(f.tl, f.v1, f.graphicId, 6 * kSec));
+    ASSERT_TRUE(f.stack.undo());
+    EXPECT_EQ(f.hash(), before);
+    f.stack.clear();
+
+    // With one: recorded as a delta step, undone in place.
+    f.session.setActiveSequence(&f.tl);
+    Clip* graphic = f.clip(f.graphicId);
+    executeTimelineEdit(&f.stack, nullptr,
+        EditOperations::moveClip(f.tl, f.v1, f.graphicId, 6 * kSec));
+    ASSERT_EQ(f.stack.undoCount(), 1u);
+    ASSERT_TRUE(f.stack.undo());
+    EXPECT_EQ(f.hash(), before);
+    EXPECT_EQ(f.clip(f.graphicId), graphic);
+}
+
 TEST(EditSession, GestureCostFor1000Clips)
 {
     Timeline tl;

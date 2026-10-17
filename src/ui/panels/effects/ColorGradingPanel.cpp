@@ -17,6 +17,7 @@
 #include "Theme.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/EffectCommands.h"
 #include "effects/Effect.h"
@@ -1065,7 +1066,7 @@ void ColorGradingPanel::runLutCommand(std::unique_ptr<Command> command)
     auto wrapped = std::make_unique<LambdaCommand>(action->description(),
         [action, notify]() { action->execute(); notify(); },
         [action, notify]() { action->undo(); notify(); });
-    if (m_commandStack) m_commandStack->execute(std::move(wrapped));
+    if (m_commandStack) executeTimelineEdit(m_commandStack, nullptr, std::move(wrapped));
     else wrapped->execute();
 }
 

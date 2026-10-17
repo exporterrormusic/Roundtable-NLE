@@ -11,6 +11,7 @@
 #include "timeline/Clip.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/KeyframeCmds.h"
 #include "command/commands/EffectCommands.h"
@@ -363,7 +364,7 @@ void EffectControlsPanel::dropEvent(QDropEvent* event)
             ->data(QStringLiteral("application/x-roundtable-glitch-preset")).toInt(&ok);
         if (!ok) return;
         if (auto cmd = makeAddGlitchPresetCommand(&stack, static_cast<GlitchPreset>(presetId))) {
-            m_commandStack->execute(std::move(cmd));
+            executeTimelineEdit(m_commandStack, nullptr, std::move(cmd));
             refresh();
             emit propertyChanged();
         }
@@ -380,7 +381,7 @@ void EffectControlsPanel::dropEvent(QDropEvent* event)
 
     auto type = static_cast<EffectType>(effectType);
 
-    m_commandStack->execute(
+    executeTimelineEdit(m_commandStack, nullptr, 
         std::make_unique<AddEffectCommand>(&stack, type));
 
     refresh();

@@ -38,6 +38,7 @@
 #include "viewport/TransformOverlayWidget.h"
 
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/CompoundCommand.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/ClipCommands.h"
@@ -1181,7 +1182,7 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
         textCompound->addExecuted(std::move(clipCmd));
         recordAppliedEdit(std::move(textCompound));
     } else if (m_ws->commandStack()) {
-        m_ws->commandStack()->execute(
+        executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), 
             std::make_unique<AddClipCommand>(targetTrack, std::move(gc)));
     } else {
         targetTrack->addClip(std::move(gc));

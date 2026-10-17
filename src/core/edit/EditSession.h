@@ -54,6 +54,12 @@ public:
     /// Told after each recorded step and each undo/redo of one.
     void setCommitListener(CommitListener listener) { m_listener = std::move(listener); }
 
+    /// The sequence open in the timeline (set by the workspace, cleared before
+    /// a project is torn down). executeTimelineEdit falls back to it for
+    /// panels that edit the selected clip without holding a Timeline*.
+    void setActiveSequence(Timeline* sequence) noexcept { m_active = sequence; }
+    [[nodiscard]] Timeline* activeSequence() const noexcept { return m_active; }
+
     // ── Gestures ────────────────────────────────────────────────────────
     /// Start recording edits to `sequence`. Returns false when this joined an
     /// already-open gesture (only the outer one records).
@@ -107,14 +113,16 @@ private:
     CommandStack&         m_stack;
     std::unique_ptr<Open> m_open;
     uint64_t              m_nextGeneration{1};
+    Timeline*             m_active{nullptr};
     SequenceResolver      m_resolver;
     CommitListener        m_listener;
 };
 
 /// Run a timeline-only command: recorded from before/after copies when the
-/// stack has an edit session and `timeline` is known (joining an open
-/// gesture), otherwise CommandStack::execute as before. Panels whose commands
-/// also change non-timeline state must keep calling the stack directly.
+/// stack has an edit session (joining an open gesture), otherwise
+/// CommandStack::execute as before. `timeline` may be null to mean the
+/// session's active sequence. Panels whose commands also change non-timeline
+/// state must keep calling the stack directly.
 void executeTimelineEdit(CommandStack* stack, Timeline* timeline,
                          std::unique_ptr<Command> cmd);
 
