@@ -30,7 +30,9 @@
 #include <memory>
 #include <vector>
 
+#include "edit/EditSession.h"
 #include "timeline/GraphicLayer.h"
+#include "widgets/EditBracketHost.h"
 
 namespace rt {
 
@@ -43,13 +45,17 @@ class CommandStack;
 class Timeline;
 class ScrubbySpinBox;
 
-class GraphicsEditorPanel : public QWidget
+class GraphicsEditorPanel : public QWidget, public EditBracketHost
 {
  Q_OBJECT
 
 public:
  explicit GraphicsEditorPanel(QWidget* parent = nullptr);
  ~GraphicsEditorPanel() override = default;
+
+ // EditBracketHost: a scrub or typed value here is one undo step.
+ void beginWidgetEdit() override;
+ void endWidgetEdit() override;
 
  void setClip(Clip* clip, Track* track = nullptr);
  [[nodiscard]] Clip* clip() const noexcept { return m_clip; }
@@ -198,6 +204,7 @@ private:
  int m_selectedLayerIdx{-1};
  CommandStack* m_commandStack{nullptr};
  Timeline* m_timeline{nullptr};
+ EditGesture m_widgetEdit; // open between beginWidgetEdit/endWidgetEdit
  uint64_t m_clipId{0};
  bool m_updating{false};
  std::unique_ptr<GraphicLayer> m_copiedLayer; ///< Clipboard for layer copy/paste

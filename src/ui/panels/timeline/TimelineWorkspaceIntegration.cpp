@@ -611,15 +611,23 @@ void TimelineWorkspace::refreshAfterUndoRedo()
     }
 #endif
 
-    // If selected clip still exists, refresh property panels to reflect undo/redo
+    // If selected clip still exists, refresh property panels to reflect undo/redo.
+    // Recorded (EditSession) steps change clips in place without running any
+    // panel code, so every panel showing clip data re-reads it here.
     if (m_selection.clip) {
-        if (m_propertiesPanel) m_propertiesPanel->refreshEffects();
+        if (m_propertiesPanel) {
+            m_propertiesPanel->refresh();
+            m_propertiesPanel->refreshEffects();
+        }
         if (m_effectControlsPanel) m_effectControlsPanel->refresh();
     } else if (m_effectControlsPanel && m_effectControlsPanel->clip()) {
         // The panel still has a clip bound (e.g. selection was transiently
         // cleared by rebuildTracks) — refresh it so keyframe display is current.
         m_effectControlsPanel->refresh();
     }
+    if (m_GraphicsEditorPanel && m_GraphicsEditorPanel->clip())
+        m_GraphicsEditorPanel->refresh();
+    if (m_captionsPanel) m_captionsPanel->refresh();
 
     updateTransformOverlay();
     if (m_programMonitor) {

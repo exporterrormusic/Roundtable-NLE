@@ -8,6 +8,7 @@
 #include "timeline/Track.h"
 #include "timeline/Transition.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include <QComboBox>
@@ -132,7 +133,7 @@ void PropertiesPanel::applyTransitionType()
     auto* track = m_track;
     size_t idx = m_transitionIndex;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change transition type",
             [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
             [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
@@ -161,7 +162,7 @@ void PropertiesPanel::applyTransitionDuration()
     auto* track = m_track;
     size_t idx = m_transitionIndex;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change transition duration",
             [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
             [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
@@ -189,7 +190,7 @@ void PropertiesPanel::applyTransitionSoftness()
     auto* track = m_track;
     size_t idx = m_transitionIndex;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change transition softness",
             [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
             [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));
@@ -227,7 +228,7 @@ void PropertiesPanel::applyTransitionAlignment()
     auto* track = m_track;
     size_t idx = m_transitionIndex;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change transition alignment",
             [track, idx, newTr, this]() { track->setTransition(idx, newTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); },
             [track, idx, oldTr, this]() { track->setTransition(idx, oldTr, TrackMutationPolicy::BypassLock); populateFromTransition(); emit propertyChanged(); }));

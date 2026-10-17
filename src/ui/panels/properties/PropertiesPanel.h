@@ -54,6 +54,9 @@
 #include <string>
 #include <vector>
 
+#include "edit/EditSession.h"
+#include "widgets/EditBracketHost.h"
+
 class QGroupBox;
 class QTimer;
 class QFontComboBox;
@@ -81,13 +84,18 @@ class Timeline;
 class Track;
 
 /// Properties Panel — context-sensitive clip property editor.
-class PropertiesPanel : public QWidget
+class PropertiesPanel : public QWidget, public EditBracketHost
 {
     Q_OBJECT
 
 public:
     explicit PropertiesPanel(QWidget* parent = nullptr);
     ~PropertiesPanel() override;
+
+    // ── EditBracketHost: a scrub or typed value in this panel is recorded
+    //    as one undo step (EditSession.h) ─────────────────────────────────
+    void beginWidgetEdit() override;
+    void endWidgetEdit() override;
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override;
@@ -478,6 +486,7 @@ private:
     ModelManager*      m_modelManager{nullptr};
     ShotPresetManager* m_shotManager{nullptr};
     Timeline*          m_timeline{nullptr};
+    EditGesture        m_widgetEdit;   // open between beginWidgetEdit/endWidgetEdit
     uint64_t           m_clipId{0};
     bool               m_updating{false};
     bool               m_monitorTextEditing{false};

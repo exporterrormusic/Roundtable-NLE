@@ -14,6 +14,7 @@
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include <QComboBox>
@@ -33,7 +34,7 @@ void PropertiesPanel::applyAudioVolume()
     float newVal = static_cast<float>(m_audioVolumeSpin->value());
     float oldVal = ac->volume().evaluate(0);
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change audio volume",
             [ac, newVal, this]() { ac->volume().addKeyframe(0, newVal); populateFromClip(); emit propertyChanged(); },
             [ac, oldVal, this]() { ac->volume().addKeyframe(0, oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -50,7 +51,7 @@ void PropertiesPanel::applyAudioPan()
     float newVal = static_cast<float>(m_panSpin->value());
     float oldVal = ac->pan().evaluate(0);
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change audio pan",
             [ac, newVal, this]() { ac->pan().addKeyframe(0, newVal); populateFromClip(); emit propertyChanged(); },
             [ac, oldVal, this]() { ac->pan().addKeyframe(0, oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -68,7 +69,7 @@ void PropertiesPanel::applyAudioFadeIn()
     int64_t oldVal = ac->fadeInDuration();
     if (newVal == oldVal) return;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change fade in",
             [ac, newVal, this]() { ac->setFadeInDuration(newVal); populateFromClip(); emit propertyChanged(); },
             [ac, oldVal, this]() { ac->setFadeInDuration(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -86,7 +87,7 @@ void PropertiesPanel::applyAudioFadeOut()
     int64_t oldVal = ac->fadeOutDuration();
     if (newVal == oldVal) return;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change fade out",
             [ac, newVal, this]() { ac->setFadeOutDuration(newVal); populateFromClip(); emit propertyChanged(); },
             [ac, oldVal, this]() { ac->setFadeOutDuration(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -109,7 +110,7 @@ void PropertiesPanel::applyAudioStream()
     // propertyChanged rebuilds the audio sources (new cache key -> new stream);
     // audioStreamChanged tells the timeline to re-decode this clip's waveform.
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change audio stream",
             [ac, newVal, clipId, this]() { ac->setAudioStreamIndex(newVal); populateFromClip(); emit propertyChanged(); emit audioStreamChanged(clipId); },
             [ac, oldVal, clipId, this]() { ac->setAudioStreamIndex(oldVal); populateFromClip(); emit propertyChanged(); emit audioStreamChanged(clipId); }));

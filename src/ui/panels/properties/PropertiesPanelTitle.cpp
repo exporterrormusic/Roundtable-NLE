@@ -14,6 +14,7 @@
 #include "timeline/Clip.h"
 #include "timeline/TitleClip.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include <QFormLayout>
@@ -37,7 +38,7 @@ void PropertiesPanel::applyTitleText()
     if (newVal == tc->text()) return;
     auto oldVal = tc->text();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change title text",
             [tc, newVal, this]() { tc->setText(newVal); populateFromClip(); emit propertyChanged(); },
             [tc, oldVal, this]() { tc->setText(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -55,7 +56,7 @@ void PropertiesPanel::applyTitleFontFamily()
     if (newVal == tc->fontFamily()) return;
     auto oldVal = tc->fontFamily();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change font family",
             [tc, newVal, this]() { tc->setFontFamily(newVal); populateFromClip(); emit propertyChanged(); },
             [tc, oldVal, this]() { tc->setFontFamily(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -73,7 +74,7 @@ void PropertiesPanel::applyTitleFontSize()
     if (newVal == tc->fontSize()) return;
     float oldVal = tc->fontSize();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change font size",
             [tc, newVal, this]() { tc->setFontSize(newVal); populateFromClip(); emit propertyChanged(); },
             [tc, oldVal, this]() { tc->setFontSize(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -91,7 +92,7 @@ void PropertiesPanel::applyTitleBold()
     if (newVal == tc->isBold()) return;
     bool oldVal = tc->isBold();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Toggle bold",
             [tc, newVal, this]() { tc->setBold(newVal); populateFromClip(); emit propertyChanged(); },
             [tc, oldVal, this]() { tc->setBold(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -109,7 +110,7 @@ void PropertiesPanel::applyTitleItalic()
     if (newVal == tc->isItalic()) return;
     bool oldVal = tc->isItalic();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Toggle italic",
             [tc, newVal, this]() { tc->setItalic(newVal); populateFromClip(); emit propertyChanged(); },
             [tc, oldVal, this]() { tc->setItalic(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -127,7 +128,7 @@ void PropertiesPanel::applyTitleAlign()
     if (newVal == tc->alignment()) return;
     auto oldVal = tc->alignment();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change text alignment",
             [tc, newVal, this]() { tc->setAlignment(newVal); populateFromClip(); emit propertyChanged(); },
             [tc, oldVal, this]() { tc->setAlignment(oldVal); populateFromClip(); emit propertyChanged(); }));

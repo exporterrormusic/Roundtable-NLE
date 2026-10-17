@@ -15,6 +15,7 @@
 #include "timeline/Clip.h"
 #include "timeline/PngPuppetClip.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include <QCheckBox>
@@ -196,7 +197,7 @@ void PropertiesPanel::applyPuppetTalking()
     if (newVal == pc->isTalking()) return;
     const bool oldVal = pc->isTalking();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Toggle talking",
             [pc, newVal, this]() {
                 pc->setTalking(newVal);
@@ -259,7 +260,7 @@ void PropertiesPanel::applyPuppetOutfit()
     };
 
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change puppet outfit",
             [applyState, newVarStd, newFacesStd]() { applyState(newVarStd, newFacesStd); },
             [applyState, oldVar, oldFaces]()       { applyState(oldVar, oldFaces); }));
@@ -310,7 +311,7 @@ void PropertiesPanel::applyPuppetAction()
     };
 
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change puppet action",
             [applyState, newVarStd, newFacesStd]() { applyState(newVarStd, newFacesStd); },
             [applyState, oldVar, oldFaces]()       { applyState(oldVar, oldFaces); }));
@@ -327,7 +328,7 @@ void PropertiesPanel::applyPuppetFloat(
     if (!canMutateBoundClip() || !m_puppetClip) return;
     auto* pc = m_puppetClip;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             cmdName,
             [pc, setter, newVal, this]() {
                 setter(pc, newVal);

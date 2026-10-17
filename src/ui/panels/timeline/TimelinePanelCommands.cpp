@@ -98,10 +98,7 @@ void TimelinePanel::executeCommand(std::unique_ptr<Command> cmd)
     if (cmd && m_commandStack) {
         // Recorded from before/after copies (EditSession.h); inside a drag's
         // gesture it simply joins that one undo step.
-        if (EditSession* edits = editSession(); edits && m_timeline)
-            edits->execute(*m_timeline, std::move(cmd));
-        else
-            m_commandStack->execute(std::move(cmd));
+        executeTimelineEdit(m_commandStack, m_timeline, std::move(cmd));
         // Refresh all track widgets to reflect the change immediately
         onScrollChanged();
         // Notify workspace so ProgramMonitor re-composites

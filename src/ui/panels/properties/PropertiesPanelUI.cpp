@@ -21,6 +21,7 @@
 #include "timeline/Transition.h"
 #include "spine/ShotPreset.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/ClipCommands.h"
 #include "effects/Effect.h"
@@ -545,7 +546,7 @@ void PropertiesPanel::setupTransformSection(QWidget* container)
             emit propertyChanged();
             return;
         }
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             vertical ? "Flip Vertical" : "Flip Horizontal",
             [clip, vertical, after, this]() {
                 (vertical ? clip->scaleY() : clip->scaleX()) = after;

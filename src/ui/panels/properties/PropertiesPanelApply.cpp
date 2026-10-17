@@ -27,6 +27,7 @@
 #include "spine/ShotPreset.h"
 #include "spine/ModelManager.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "command/commands/ClipCommands.h"
 #include "effects/Effect.h"
@@ -285,7 +286,7 @@ void PropertiesPanel::refreshEffects()
             if (effectIdx >= st.effectCount()) return;
             auto& fx = st.effect(effectIdx);
             if (m_commandStack) {
-                m_commandStack->execute(
+                executeTimelineEdit(m_commandStack, m_timeline, 
                     std::make_unique<SetEffectEnabledCommand>(&st, fx.id(), checked));
             } else {
                 fx.setEnabled(checked);
@@ -306,7 +307,7 @@ void PropertiesPanel::refreshEffects()
             auto& st = m_clip->effects();
             if (effectIdx >= st.effectCount()) return;
             if (m_commandStack) {
-                m_commandStack->execute(
+                executeTimelineEdit(m_commandStack, m_timeline, 
                     std::make_unique<RemoveEffectCommand>(&st, effectIdx));
             } else {
                 (void)st.removeEffect(effectIdx);
@@ -1047,7 +1048,7 @@ void PropertiesPanel::applyLabel()
     auto oldLabel = m_clip->label();
     auto* clip = m_clip;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change label",
             [clip, newLabel, this]() { clip->setLabel(newLabel); populateFromClip(); emit propertyChanged(); },
             [clip, oldLabel, this]() { clip->setLabel(oldLabel); populateFromClip(); emit propertyChanged(); }));
@@ -1066,7 +1067,7 @@ void PropertiesPanel::applyEnabled()
     bool oldVal = m_clip->isEnabled();
     auto* clip = m_clip;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Toggle enabled",
             [clip, newVal, this]() { clip->setEnabled(newVal); populateFromClip(); emit propertyChanged(); },
             [clip, oldVal, this]() { clip->setEnabled(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -1103,7 +1104,7 @@ void PropertiesPanel::applySpeed()
 
     auto* clip = m_clip;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change speed",
             [clip, newVal, newDur, this]() { clip->setSpeed(newVal); clip->setDuration(newDur); populateFromClip(); emit propertyChanged(); },
             [clip, oldVal, oldDur, this]() { clip->setSpeed(oldVal); clip->setDuration(oldDur); populateFromClip(); emit propertyChanged(); }));

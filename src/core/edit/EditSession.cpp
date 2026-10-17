@@ -153,6 +153,16 @@ bool EditSession::execute(Timeline& sequence, std::unique_ptr<Command> cmd)
     return outer && recorded;
 }
 
+void executeTimelineEdit(CommandStack* stack, Timeline* timeline,
+                         std::unique_ptr<Command> cmd)
+{
+    if (!cmd || !stack) return;
+    if (EditSession* edits = stack->editSession(); edits && timeline)
+        edits->execute(*timeline, std::move(cmd));
+    else
+        stack->execute(std::move(cmd));
+}
+
 Timeline* EditSession::resolve(uint64_t sequenceId) const
 {
     return m_resolver ? m_resolver(sequenceId) : nullptr;

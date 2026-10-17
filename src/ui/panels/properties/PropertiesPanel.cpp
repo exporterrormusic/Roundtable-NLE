@@ -453,8 +453,24 @@ void PropertiesPanel::setTransition(Track* track, size_t transitionIndex)
 
 void PropertiesPanel::setTimeline(Timeline* timeline) noexcept
 {
-    if (m_timeline != timeline) clearClip();
+    if (m_timeline != timeline) {
+        m_widgetEdit.commit();   // outgoing sequence is still alive here
+        clearClip();
+    }
     m_timeline = timeline;
+}
+
+void PropertiesPanel::beginWidgetEdit()
+{
+    if (m_widgetEdit.active() || !m_timeline || !m_commandStack) return;
+    if (EditSession* edits = m_commandStack->editSession())
+        m_widgetEdit = EditGesture(*edits, "Properties", *m_timeline);
+}
+
+void PropertiesPanel::endWidgetEdit()
+{
+    // The widget's commit (absorbed or joined) names the step.
+    m_widgetEdit.commit();
 }
 
 bool PropertiesPanel::resolveBoundClip() noexcept

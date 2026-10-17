@@ -416,8 +416,23 @@ void GraphicsEditorPanel::setClip(Clip* clip, Track* track)
 
 void GraphicsEditorPanel::setTimeline(Timeline* timeline) noexcept
 {
- if (m_timeline != timeline) clearClip();
+ if (m_timeline != timeline) {
+ m_widgetEdit.commit(); // outgoing sequence is still alive here
+ clearClip();
+ }
  m_timeline = timeline;
+}
+
+void GraphicsEditorPanel::beginWidgetEdit()
+{
+ if (m_widgetEdit.active() || !m_timeline || !m_commandStack) return;
+ if (EditSession* edits = m_commandStack->editSession())
+ m_widgetEdit = EditGesture(*edits, "Essential Graphics", *m_timeline);
+}
+
+void GraphicsEditorPanel::endWidgetEdit()
+{
+ m_widgetEdit.commit();
 }
 
 bool GraphicsEditorPanel::resolveBoundClip() noexcept

@@ -16,6 +16,7 @@
 #include "edit/EditSession.h"
 #include "effects/Effect.h"
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/properties/PropertiesPanel.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "project/RenderStateHash.h"
 #include "timeline/Timeline.h"
@@ -24,6 +25,7 @@
 
 #include <QApplication>
 #include <QDialog>
+#include <QLineEdit>
 #include <QTimer>
 
 namespace {
@@ -130,4 +132,32 @@ TEST(EditGestures, EffectControlsWidgetEditIsOneNamedStep)
     panel.beginWidgetEdit();
     panel.endWidgetEdit();
     EXPECT_EQ(s.stack.undoCount(), 0u);
+}
+
+TEST(EditGestures, PropertiesEditRecordsExactUndo)
+{
+    Session s;
+    rt::Track* v1 = s.timeline.addVideoTrack("V1");
+    auto clip = std::make_unique<rt::VideoClip>();
+    clip->setDuration(48000);
+    clip->setLabel("Before");
+    rt::Clip* c = v1->addClip(std::move(clip));
+
+    rt::PropertiesPanel panel;
+    panel.setCommandStack(&s.stack);
+    panel.setTimeline(&s.timeline);
+    panel.setClip(c, v1);
+
+    const uint64_t before = rt::hashTimelineState(s.timeline);
+    panel.labelEdit()->setText(QStringLiteral("After"));
+    emit panel.labelEdit()->editingFinished();
+    ASSERT_EQ(c->label(), "After");
+    ASSERT_EQ(s.stack.undoCount(), 1u);
+    EXPECT_EQ(s.stack.undoDescription(), "Change label");
+
+    ASSERT_TRUE(s.stack.undo());
+    EXPECT_EQ(c->label(), "Before");
+    EXPECT_EQ(rt::hashTimelineState(s.timeline), before);
+    ASSERT_TRUE(s.stack.redo());
+    EXPECT_EQ(c->label(), "After");
 }

@@ -17,6 +17,7 @@
 #include "timeline/GraphicClip.h"
 #include "timeline/GraphicLayer.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "QtHelpers.h"
 
@@ -93,7 +94,7 @@ void PropertiesPanel::applyCaptionText()
     const auto newStyles = remapTextStyleRuns(oldVal, newVal, oldStyles);
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Edit caption text",
             [cc, newVal, newStyles, self]() { cc->setText(newVal); cc->setStyleRuns(newStyles); self->populateFromCaption(); emit self->propertyChanged(); },
             [cc, oldVal, oldStyles, self]() { cc->setText(oldVal); cc->setStyleRuns(oldStyles); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -109,7 +110,7 @@ void PropertiesPanel::applyCaptionSpeaker()
     std::string oldVal = cc->speaker();
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Edit caption speaker",
             [cc, newVal, self]() { cc->setSpeaker(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [cc, oldVal, self]() { cc->setSpeaker(oldVal); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -130,7 +131,7 @@ void PropertiesPanel::applyCaptionFontFamily()
     if (!changed) return;
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption font",
             [olds, newVal, self]() { for (auto& p : olds) p.first->setFontFamily(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setFontFamily(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -149,7 +150,7 @@ void PropertiesPanel::applyCaptionFontSize()
     if (!changed) return;
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption font size",
             [olds, newVal, self]() { for (auto& p : olds) p.first->setFontSize(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setFontSize(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -168,7 +169,7 @@ void PropertiesPanel::applyCaptionPosition()
     if (!changed) return;
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption position",
             [olds, newVal, self]() { for (auto& p : olds) p.first->setPosition(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setPosition(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -188,7 +189,7 @@ void PropertiesPanel::applyCaptionTextColor()
     for (auto* cc : targets) olds.emplace_back(cc, cc->textColor());
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption text color",
             [olds, packed, self]() { for (auto& p : olds) p.first->setTextColor(packed); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setTextColor(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -209,7 +210,7 @@ void PropertiesPanel::applyCaptionBgColor()
     for (auto* cc : targets) olds.emplace_back(cc, cc->bgColor());
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption background color",
             [olds, packed, self]() { for (auto& p : olds) p.first->setBgColor(packed); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setBgColor(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -229,7 +230,7 @@ void PropertiesPanel::applyCaptionBold()
     if (!changed) return;
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption bold",
             [olds, newVal, self]() { for (auto& p : olds) p.first->setBold(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setBold(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -249,7 +250,7 @@ void PropertiesPanel::applyCaptionOutlineWidth()
     if (!changed) return;
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption outline",
             [olds, newVal, self]() { for (auto& p : olds) p.first->setOutlineWidth(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setOutlineWidth(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -268,7 +269,7 @@ void PropertiesPanel::applyCaptionOutlineColor()
     for (auto* cc : targets) olds.emplace_back(cc, cc->outlineColor());
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption outline color",
             [olds, packed, self]() { for (auto& p : olds) p.first->setOutlineColor(packed); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setOutlineColor(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -288,7 +289,7 @@ void PropertiesPanel::applyCaptionShowSpeaker()
     if (!changed) return;
     auto* self = this;
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change caption speaker burn-in",
             [olds, newVal, self]() { for (auto& p : olds) p.first->setShowSpeaker(newVal); self->populateFromCaption(); emit self->propertyChanged(); },
             [olds, self]()         { for (auto& p : olds) p.first->setShowSpeaker(p.second); self->populateFromCaption(); emit self->propertyChanged(); }));
@@ -614,7 +615,7 @@ void PropertiesPanel::applyTextPreset(int index)
             for (auto& o : *olds) o.cc->setCaptionStyle(o.style);
             self->populateFromCaption(); emit self->propertyChanged();
         };
-        if (m_commandStack) m_commandStack->execute(std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
+        if (m_commandStack) executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
         else doIt();
     }
     else if (m_clip->clipType() == ClipType::Title) {
@@ -635,7 +636,7 @@ void PropertiesPanel::applyTextPreset(int index)
             tc->setBold(old->bold); tc->setItalic(old->ital); tc->setAlignment(old->align);
             self->populateFromClip(); emit self->propertyChanged();
         };
-        if (m_commandStack) m_commandStack->execute(std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
+        if (m_commandStack) executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
         else doIt();
     }
     else if (m_clip->clipType() == ClipType::Graphic) {
@@ -680,7 +681,7 @@ void PropertiesPanel::applyTextPreset(int index)
             tl->assignStateFrom(*old);
             self->populateFromClip(); emit self->propertyChanged();
         };
-        if (m_commandStack) m_commandStack->execute(std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
+        if (m_commandStack) executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>("Apply text preset", doIt, undoIt));
         else doIt();
     }
 

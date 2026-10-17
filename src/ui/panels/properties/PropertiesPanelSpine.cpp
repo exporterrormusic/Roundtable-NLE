@@ -20,6 +20,7 @@
 #include "timeline/ClipMutation.h"
 #include "spine/ModelManager.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include <QComboBox>
@@ -43,7 +44,7 @@ void PropertiesPanel::applySpineCharacter()
     auto oldLabel = sc->label();
     auto newLabel = newVal + " - " + sc->animationName();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change character",
             [sc, newVal, newLabel, this]() { sc->setCharacterName(newVal); sc->setLabel(newLabel); populateFromClip(); emit propertyChanged(); },
             [sc, oldVal, oldLabel, this]() { sc->setCharacterName(oldVal); sc->setLabel(oldLabel); populateFromClip(); emit propertyChanged(); }));
@@ -75,7 +76,7 @@ void PropertiesPanel::applySpineOutfit()
         const std::string newTalk = paths.talk;
         std::string newMedia = vc->isTalking() ? newTalk : newMute;
         if (m_commandStack) {
-            m_commandStack->execute(std::make_unique<LambdaCommand>(
+            executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
                 "Change outfit",
                 [vc, newOutfit, newMute, newTalk, newMedia, this]() {
                     vc->setOutfit(newOutfit);
@@ -109,7 +110,7 @@ void PropertiesPanel::applySpineOutfit()
     if (newVal == sc->outfit()) return;
     auto oldVal = sc->outfit();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change outfit",
             [sc, newVal, this]() { sc->setOutfit(newVal); populateFromClip(); emit propertyChanged(); },
             [sc, oldVal, this]() { sc->setOutfit(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -127,7 +128,7 @@ void PropertiesPanel::applySpineStance()
     if (newVal == sc->stance()) return;
     auto oldVal = sc->stance();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change stance",
             [sc, newVal, this]() { sc->setStance(newVal); populateFromClip(); emit propertyChanged(); },
             [sc, oldVal, this]() { sc->setStance(oldVal); populateFromClip(); emit propertyChanged(); }));
@@ -192,7 +193,7 @@ void PropertiesPanel::executeCharacterEdits(const char* name, std::vector<Charac
         emit propertyChanged();
     };
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             name, [run]() { run(true); }, [run]() { run(false); }));
     } else {
         run(true);

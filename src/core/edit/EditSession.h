@@ -106,6 +106,13 @@ private:
     CommitListener        m_listener;
 };
 
+/// Run a timeline-only command: recorded from before/after copies when the
+/// stack has an edit session and `timeline` is known (joining an open
+/// gesture), otherwise CommandStack::execute as before. Panels whose commands
+/// also change non-timeline state must keep calling the stack directly.
+void executeTimelineEdit(CommandStack* stack, Timeline* timeline,
+                         std::unique_ptr<Command> cmd);
+
 /// RAII gesture: commits on commit(), cancels on cancel(), and cancels when
 /// destroyed while still open (an exception or early return mid-edit).
 class EditGesture

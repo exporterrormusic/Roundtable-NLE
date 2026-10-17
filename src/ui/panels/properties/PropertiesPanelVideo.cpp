@@ -12,6 +12,7 @@
 #include "timeline/Clip.h"
 #include "timeline/VideoClip.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
 #include <QFormLayout>
@@ -32,7 +33,7 @@ void PropertiesPanel::applyVideoVolume()
     if (newVal == vc->volume()) return;
     float oldVal = vc->volume();
     if (m_commandStack) {
-        m_commandStack->execute(std::make_unique<LambdaCommand>(
+        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
             "Change video volume",
             [vc, newVal, this]() { vc->setVolume(newVal); populateFromClip(); emit propertyChanged(); },
             [vc, oldVal, this]() { vc->setVolume(oldVal); populateFromClip(); emit propertyChanged(); }));

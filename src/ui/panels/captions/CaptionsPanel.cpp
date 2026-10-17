@@ -13,6 +13,7 @@
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
 #include "command/CommandStack.h"
+#include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 #include "ai/Transcriber.h"
 #include "QtHelpers.h"
@@ -956,7 +957,7 @@ void CaptionsPanel::onAddCaption()
 
  if (m_commandStack) {
  spdlog::info("CaptionsPanel: executing Add Caption command");
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Add Caption", doIt, undoIt));
  } else {
  spdlog::warn("CaptionsPanel: no CommandStack, executing directly");
@@ -1074,7 +1075,7 @@ void CaptionsPanel::onApplyStyleToAll()
  };
 
  if (m_commandStack) {
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Apply Caption Style to All", doIt, undoIt));
  } else {
  doIt();
@@ -1141,7 +1142,7 @@ void CaptionsPanel::onReplaceAll()
  };
 
  if (m_commandStack) {
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Replace in Captions", doIt, undoIt));
  } else {
  doIt();
@@ -1188,7 +1189,7 @@ void CaptionsPanel::onClearAll()
  };
 
  if (m_commandStack) {
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Clear All Captions", doIt, undoIt));
  } else {
  doIt();
@@ -1386,7 +1387,7 @@ void CaptionsPanel::onAddCaptionsToTimeline()
  };
 
  if (m_commandStack) {
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Add Caption Track", doIt, undoIt));
  } else {
  doIt();
@@ -1664,7 +1665,7 @@ void CaptionsPanel::onReflowCaptions()
  emit self->captionEdited();
  };
  if (m_commandStack)
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Reflow Captions", [apply] { apply(true); }, [apply] { apply(false); }));
  else apply(true);
 }
@@ -1717,7 +1718,7 @@ void CaptionsPanel::applyPreparedCues(const std::vector<PreparedCaptionCue>& cue
  };
 
  if (m_commandStack) {
- m_commandStack->execute(std::make_unique<LambdaCommand>(
+ executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
  "Transcribe to Captions", doIt, undoIt));
  } else {
  doIt();
