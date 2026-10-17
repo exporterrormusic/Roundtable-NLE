@@ -1,0 +1,82 @@
+#version 450
+// RGB → NV12 (BT.709, limited range) for the encoder.
+//
+// Reads the compositor's 8-bit output image and writes NV12 into a buffer:
+//   Y plane:  height rows of `stride` bytes, one luma sample per pixel;
+//   UV plane: height/2 rows of `stride` bytes, interleaved Cb,Cr per 2x2
+//             block, starting at byte offset stride * height.
+// stride is the width rounded up to 4 (a uint holds 4 bytes); columns past
+// the width repeat the last pixel. Each invocation converts a 4x2 block.
+//
+// Matches the CPU path (swscale BGRA → YUV with sws_setColorspaceDetails
+// BT.709, full-range RGB in, limited-range YUV out): FfmpegEncoderBase.
+// Alpha is ignored, as swscale ignores it for BGRA input.
+
+layout(local_size_x = 16, local_size_y = 8) in;
+
+layout(binding = 0, rgba8) uniform readonly image2D srcImage;
+layout(std430, binding = 1) writeonly buffer Nv12 { uint data[]; } dst;
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+    int stride;      // bytes per row of each plane, multiple of 4
+    int swizzledRB;  // the image holds BGRA bytes in its RGBA channels
+} pc;
+
+vec3 rgbAt(int x, int y)
+{
+    vec4 t = imageLoad(srcImage, ivec2(min(x, pc.width - 1), y));
+    return pc.swizzledRB != 0 ? t.bgr : t.rgb;
+}
+
+uint toByte(float v)
+{
+    return uint(clamp(floor(v + 0.5), 0.0, 255.0));
+}
+
+float lumaOf(vec3 c)
+{
+    return 16.0 + 219.0 * dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+void main()
+{
+    const int x0 = int(gl_GlobalInvocationID.x) * 4;
+    const int y0 = int(gl_GlobalInvocationID.y) * 2;
+    if (x0 >= pc.stride || y0 >= pc.height) return;
+
+    // Rows y0-1 .. y0+2 (clamped at the edges): the middle two are this
+    // block's luma rows; all four feed its chroma.
+    vec3 p[4][4];
+    for (int r = 0; r < 4; ++r) {
+        const int y = clamp(y0 - 1 + r, 0, pc.height - 1);
+        for (int i = 0; i < 4; ++i)
+            p[r][i] = rgbAt(x0 + i, y);
+    }
+
+    for (int r = 0; r < 2; ++r) {
+        uint word = 0u;
+        for (int i = 0; i < 4; ++i)
+            word |= toByte(lumaOf(p[r + 1][i])) << (8u * uint(i));
+        dst.data[((y0 + r) * pc.stride + x0) / 4] = word;
+    }
+
+    // Chroma: the two columns of each pair, the four rows weighted 1,3,3,1 —
+    // swscale's 2:1 bilinear vertical chroma filter, fitted from its output
+    // (test_rgb_to_nv12). The conversion is linear, so filtering RGB first
+    // equals filtering per-pixel Cb/Cr.
+    const vec4 rowWeight = vec4(1.0, 3.0, 3.0, 1.0) / 16.0;  // includes the column halving
+    uint word = 0u;
+    for (int pair = 0; pair < 2; ++pair) {
+        vec3 c = vec3(0.0);
+        for (int r = 0; r < 4; ++r)
+            c += rowWeight[r] * (p[r][2 * pair] + p[r][2 * pair + 1]);
+        const float cb = 128.0 + 224.0 * dot(c, vec3(-0.2126, -0.7152, 0.9278) / 1.8556);
+        const float cr = 128.0 + 224.0 * dot(c, vec3(0.7874, -0.7152, -0.0722) / 1.5748);
+        word |= toByte(cb) << (16u * uint(pair));
+        word |= toByte(cr) << (16u * uint(pair) + 8u);
+    }
+    const int uvOffset = pc.stride * pc.height;
+    dst.data[(uvOffset + (y0 / 2) * pc.stride + x0) / 4] = word;
+}

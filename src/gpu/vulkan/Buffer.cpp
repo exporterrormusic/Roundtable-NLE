@@ -136,6 +136,14 @@ bool Buffer::create(VmaAllocator allocator, VkDeviceSize size, BufferUsage usage
                                 VMA_ALLOCATION_CREATE_MAPPED_BIT;
         break;
 
+    case BufferUsage::StorageReadback:
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        break;
+
     case BufferUsage::IndirectDraw:
         bufferInfo.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |

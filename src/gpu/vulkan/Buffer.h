@@ -29,6 +29,7 @@ enum class BufferUsage : uint8_t
     Storage,         // Storage buffer (device-local, compute r/w)
     Staging,         // Staging buffer (host-visible, for upload transfers)
     Readback,        // Readback buffer (host-visible, for GPU→CPU download)
+    StorageReadback, // Readback buffer a compute shader writes directly (host-visible)
     IndirectDraw,    // Indirect draw commands
     VertexDynamic,   // Vertex buffer (host-visible, for per-frame CPU writes)
     IndexDynamic     // Index buffer (host-visible, for per-frame CPU writes)

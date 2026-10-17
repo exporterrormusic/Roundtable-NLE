@@ -32,6 +32,7 @@ add_library(roundtable_gpu STATIC
     Nv12ConverterConvert.cpp
     Nv12ConverterP010.cpp
     Nv12ConverterYuva444p12.cpp
+    RgbToNv12Converter.cpp
     GpuTextureCache.cpp
     VideoUploader.cpp
     ViewportLayout.cpp
