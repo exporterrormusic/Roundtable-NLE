@@ -46,7 +46,19 @@ namespace rt {
 
 void TimelineWorkspace::setCommandStack(CommandStack* stack)
 {
+    if (m_commandStack && m_historyListenerId)
+        m_commandStack->removeHistoryListener(m_historyListenerId);
+    m_historyListenerId = 0;
     m_commandStack = stack;
+    // Every undo/redo — whichever panel, shortcut or History jump drove it —
+    // and every recorded step must reach the render snapshot, even when the
+    // caller skips refreshAfterUndoRedo (AudioSync's own Ctrl+Z, History).
+    if (stack) {
+        m_historyListenerId = stack->addHistoryListener(
+            [this](CommandStack::HistoryEvent event) {
+                markSnapshotDirty(event != CommandStack::HistoryEvent::Recorded);
+            });
+    }
     // Each recorded edit (and its undo/redo) names the sequence it changed.
     if (EditSession* edits = stack ? stack->editSession() : nullptr) {
         edits->setCommitListener([this](uint64_t sequenceId) {

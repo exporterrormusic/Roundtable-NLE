@@ -430,6 +430,7 @@ private:
     QTimer* m_snapshotPublishTimer{nullptr};   // coalesces markSnapshotDirty()
     QTimer* m_snapshotVerifyTimer{nullptr};    // idle check for missed signals
     bool m_refreshFromSnapshotPublish{false};  // refresh issued by the publish itself
+    size_t m_historyListenerId{0};             // CommandStack history listener
     // The project the publisher may read. Set by setProject(), cleared by
     // setTimeline(nullptr): on a project switch setTimeline(new) runs before
     // setProject(new) while m_project still names the destroyed project.

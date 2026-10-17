@@ -50,6 +50,7 @@
 #include <memory>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Command.h"
@@ -117,6 +118,16 @@ public:
     using ChangeCallback = std::function<void()>;
     void setChangeCallback(ChangeCallback cb) { m_callback = std::move(cb); }
 
+    /// Additional observers of history changes, independent of the single
+    /// ChangeCallback slot (which the project controller owns). Fired after
+    /// a step is recorded, undone or redone (every caller: menu, History
+    /// panel jumps, panel shortcuts) and after clear().
+    enum class HistoryEvent : uint8_t { Recorded, Undone, Redone, Cleared };
+    using HistoryListener = std::function<void(HistoryEvent)>;
+    /// Returns an id for removeHistoryListener.
+    size_t addHistoryListener(HistoryListener listener);
+    void removeHistoryListener(size_t id);
+
     /// Maximum undo depth
     [[nodiscard]] size_t maxDepth() const noexcept { return m_maxDepth; }
     void setMaxDepth(size_t depth) noexcept { m_maxDepth = depth; }
@@ -166,6 +177,10 @@ private:
 
     void trimToMaxDepth();
     void notifyChange();
+    void notifyHistory(HistoryEvent event);
+
+    std::vector<std::pair<size_t, HistoryListener>> m_historyListeners;
+    size_t m_nextHistoryListenerId{1};
 };
 
 } // namespace rt

@@ -9,6 +9,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+
 namespace rt {
 
 CommandStack::CommandStack(size_t maxDepth)
@@ -68,6 +70,7 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
     {
         spdlog::trace("Merged command: {}", m_undoStack.back()->description());
         notifyChange();
+        notifyHistory(HistoryEvent::Recorded);
         return;
     }
 
@@ -75,6 +78,7 @@ void CommandStack::execute(std::unique_ptr<Command> cmd)
 
     trimToMaxDepth();
     notifyChange();
+    notifyHistory(HistoryEvent::Recorded);
 
     spdlog::trace("Executed command: {} (undo depth: {})",
                   m_undoStack.back()->description(), m_undoStack.size());
@@ -98,6 +102,7 @@ void CommandStack::pushWithoutExecute(std::unique_ptr<Command> cmd)
     m_redoStack.clear();
     trimToMaxDepth();
     notifyChange();
+    notifyHistory(HistoryEvent::Recorded);
 
     spdlog::trace("Pushed (no-exec) command: {} (undo depth: {})",
                   m_undoStack.back()->description(), m_undoStack.size());
@@ -123,6 +128,7 @@ bool CommandStack::undo()
 
     m_redoStack.push_back(std::move(cmd));
     notifyChange();
+    notifyHistory(HistoryEvent::Undone);
     return true;
 }
 
@@ -144,6 +150,7 @@ bool CommandStack::redo()
 
     m_undoStack.push_back(std::move(cmd));
     notifyChange();
+    notifyHistory(HistoryEvent::Redone);
     return true;
 }
 
@@ -186,6 +193,7 @@ void CommandStack::clear()
     m_redoStack.clear();
     m_mergeSealed = true;
     notifyChange();
+    notifyHistory(HistoryEvent::Cleared);
 }
 
 CommandStack::HistorySnapshot CommandStack::historySnapshot() const
@@ -243,6 +251,29 @@ void CommandStack::notifyChange()
     if (m_callback) m_callback();
 }
 
+size_t CommandStack::addHistoryListener(HistoryListener listener)
+{
+    const size_t id = m_nextHistoryListenerId++;
+    m_historyListeners.emplace_back(id, std::move(listener));
+    return id;
+}
+
+void CommandStack::removeHistoryListener(size_t id)
+{
+    m_historyListeners.erase(
+        std::remove_if(m_historyListeners.begin(), m_historyListeners.end(),
+                       [id](const auto& entry) { return entry.first == id; }),
+        m_historyListeners.end());
+}
+
+void CommandStack::notifyHistory(HistoryEvent event)
+{
+    // Copy: a listener may remove itself (or another) while being told.
+    const auto listeners = m_historyListeners;
+    for (const auto& [id, listener] : listeners)
+        if (listener) listener(event);
+}
+
 void CommandStack::beginMacro(std::string description)
 {
     if (m_macroDepth == 0) {
@@ -270,6 +301,7 @@ void CommandStack::endMacro()
         m_mergeSealed = true;
         trimToMaxDepth();
         notifyChange();
+        notifyHistory(HistoryEvent::Recorded);
 
         spdlog::trace("Pushed macro command: {} ({} children, undo depth: {})",
                       desc, count, m_undoStack.size());

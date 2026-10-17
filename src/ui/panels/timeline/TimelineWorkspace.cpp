@@ -221,9 +221,12 @@ TimelineWorkspace::~TimelineWorkspace()
     }
     if (m_snapshotPublishTimer) m_snapshotPublishTimer->stop();
     if (m_snapshotVerifyTimer) m_snapshotVerifyTimer->stop();
-    // The edit session outlives this widget; drop the listener that captures us.
+    // The edit session and stack outlive this widget; drop the listeners that
+    // capture us.
     if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
         edits->setCommitListener({});
+    if (m_commandStack && m_historyListenerId)
+        m_commandStack->removeHistoryListener(m_historyListenerId);
 
     // Cancel any in-flight background audio decode before destroying
     if (m_audioPlayback) {

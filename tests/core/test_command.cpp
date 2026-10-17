@@ -13,6 +13,7 @@
 #include "command/Command.h"
 #include "command/CommandStack.h"
 #include "command/CompoundCommand.h"
+#include "command/LambdaCommand.h"
 #include "command/commands/ClipCommands.h"
 #include "command/commands/TrackCommands.h"
 #include "command/commands/TransitionCmds.h"
@@ -1010,3 +1011,42 @@ TEST(CommandIntegration, CompoundDeleteSelectedClips)
     EXPECT_EQ(track.clipCount(), 3u);
 }
 
+
+// History listeners hear every way the history changes — including History
+// panel jumps and panel-local undo shortcuts, which skip the UI's own
+// after-undo refresh — and stop hearing once removed.
+TEST(CommandStackTest, HistoryListenersHearEveryChange)
+{
+    using Event = rt::CommandStack::HistoryEvent;
+    rt::CommandStack stack;
+    std::vector<Event> heard;
+    const size_t id = stack.addHistoryListener([&](Event e) { heard.push_back(e); });
+
+    int value = 0;
+    auto set = [&](int v) {
+        const int old = value;
+        return std::make_unique<rt::LambdaCommand>(
+            "Set", [&value, v] { value = v; }, [&value, old] { value = old; });
+    };
+    stack.execute(set(1));
+    stack.pushWithoutExecute(set(2));
+    stack.beginMacro("Group");
+    stack.execute(set(3));
+    EXPECT_EQ(heard.size(), 2u) << "buffered macro steps are not recorded yet";
+    stack.endMacro();
+    ASSERT_TRUE(stack.undo());
+    ASSERT_TRUE(stack.redo());
+    ASSERT_TRUE(stack.jumpToIndex(0));
+    stack.clear();
+
+    const std::vector<Event> expected = {
+        Event::Recorded, Event::Recorded, Event::Recorded,
+        Event::Undone, Event::Redone,
+        Event::Undone, Event::Undone, Event::Undone,
+        Event::Cleared};
+    EXPECT_EQ(heard, expected);
+
+    stack.removeHistoryListener(id);
+    stack.execute(set(4));
+    EXPECT_EQ(heard.size(), expected.size());
+}
