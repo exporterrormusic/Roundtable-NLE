@@ -9,6 +9,7 @@
 #include <volk.h>
 
 #include "CompositeEngine.h"
+#include "ExportStageTimes.h"
 #include "render_graph/GpuRenderGraph.h"
 #include "cache/CachePolicy.h"
 #include "StagingRing.h"
@@ -2038,11 +2039,13 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 // generous enough to survive a heavy frame, short enough to
                 // surface a wedged device instead of hanging the export.
                 constexpr uint64_t kReadbackWaitNs = 5'000'000'000ull;
+                ExportStageTimer waitTimer(exportStageTimes().readbackWaitUs);
                 if (!m_gpuSubmission->waitForCompletion(kReadbackWaitNs)) {
                     spdlog::warn("[RENDER_GRAPH] readback fence wait timed out — "
                                  "frame may contain partial/stale pixels");
                 }
             }
+            ExportStageTimer copyTimer(exportStageTimes().readbackCopyUs);
             compositor->mapAndCopyReadback(result->pixels);
         }
 

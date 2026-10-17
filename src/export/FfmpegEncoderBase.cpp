@@ -6,6 +6,7 @@
 #include "FfmpegEncoderBase.h"
 #include "Rgba16fPack.h"
 #include "decode/ThreadedSws.h"
+#include "ExportStageTimes.h"
 
 #include <spdlog/spdlog.h>
 
@@ -323,13 +324,17 @@ bool FfmpegEncoderBase::encodeFrame(const uint8_t* bgraPixels, int64_t frameInde
     // caller's BGRA buffer (config-sized).  m_frame may be taller if NVENC
     // aligned the dimensions — extra lines stay zero (black).
     int srcLines = std::min(static_cast<int>(m_config.height), m_frame->height);
-    const int convertedRows = srcLines == m_codecCtx->height
-        ? swsScaleWhole(m_swsCtx, srcSlice, srcStride,
-                        m_codecCtx->width, srcLines, AV_PIX_FMT_BGRA,
-                        m_frame->data, m_frame->linesize,
-                        m_frame->width, m_frame->height, m_frame->format)
-        : sws_scale(m_swsCtx, srcSlice, srcStride, 0, srcLines,
-                    m_frame->data, m_frame->linesize);
+    int convertedRows = 0;
+    {
+        ExportStageTimer timer(exportStageTimes().encodeConvertUs);
+        convertedRows = srcLines == m_codecCtx->height
+            ? swsScaleWhole(m_swsCtx, srcSlice, srcStride,
+                            m_codecCtx->width, srcLines, AV_PIX_FMT_BGRA,
+                            m_frame->data, m_frame->linesize,
+                            m_frame->width, m_frame->height, m_frame->format)
+            : sws_scale(m_swsCtx, srcSlice, srcStride, 0, srcLines,
+                        m_frame->data, m_frame->linesize);
+    }
     if (convertedRows != m_frame->height) {
         m_lastError = std::string(logName()) +
                       ": BGRA conversion returned an incomplete frame";
@@ -393,9 +398,12 @@ bool FfmpegEncoderBase::encodeFrame16f(const uint16_t* rgba16f, int srcStrideByt
         planes.a = reinterpret_cast<uint16_t*>(m_frame->data[3]);
         planes.aStride = m_frame->linesize[3];
     }
-    packRgba16fToYuv(rgba16f, srcStrideBytes,
-                     static_cast<int>(m_config.width), static_cast<int>(m_config.height),
-                     target, planes);
+    {
+        ExportStageTimer timer(exportStageTimes().encodeConvertUs);
+        packRgba16fToYuv(rgba16f, srcStrideBytes,
+                         static_cast<int>(m_config.width), static_cast<int>(m_config.height),
+                         target, planes);
+    }
 
     return finishFrame(frameIndex);
 }
@@ -423,7 +431,10 @@ bool FfmpegEncoderBase::finishFrame(int64_t frameIndex)
             av_frame_free(&hwFrame);
             return false;
         }
-        ret = av_hwframe_transfer_data(hwFrame, m_frame, 0);
+        {
+            ExportStageTimer timer(exportStageTimes().encodeUploadUs);
+            ret = av_hwframe_transfer_data(hwFrame, m_frame, 0);
+        }
         if (ret < 0) {
             m_lastError = std::string(logName()) + ": failed to upload frame to GPU";
             m_failed = true;
@@ -442,6 +453,7 @@ bool FfmpegEncoderBase::finishFrame(int64_t frameIndex)
 
 bool FfmpegEncoderBase::sendFrame(AVFrame* frame)
 {
+    ExportStageTimer timer(exportStageTimes().encodeSendUs);
     m_pendingPackets.clear();
     m_pktStore.clear();  // invalidates prior m_lastPacket/pending (already consumed)
     int ret = avcodec_send_frame(m_codecCtx, frame);

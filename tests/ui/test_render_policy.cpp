@@ -7,6 +7,8 @@
 #include "playback/PlaybackController.h"
 #include "playback/AVSyncClock.h"
 #include "panels/export/ExportRenderSession.h"
+#include "Encoder.h"
+#include "ExportStageTimes.h"
 #include "project/Project.h"
 #include "project/ProjectSerializer.h"
 #include "GpuContext.h"
@@ -26,6 +28,7 @@
 #include <string>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -630,6 +633,132 @@ TEST(RenderPolicyTest, OptionalFormatPlaybackProfile)
                   << " medianMs=" << costs[costs.size() / 2]
                   << " p95Ms=" << costs[costs.size() * 95 / 100]
                   << " maxMs=" << costs.back() << std::endl;
+    }
+    gpu.shutdown();
+}
+
+TEST(RenderPolicyTest, OptionalExportProfile)
+{
+    // One clip exported frame by frame through the export session and an
+    // H.264 encoder on one thread, with the time of each stage. Set
+    // ROUNDTABLE_EXPORT_PROFILE_FILE to a video file; optional
+    // ROUNDTABLE_EXPORT_PROFILE_CODEC=nvenc|x264 (default nvenc),
+    // ..._SIZE=1080|2160 (default 1080), ..._FRAMES (default 240).
+    const char* path = std::getenv("ROUNDTABLE_EXPORT_PROFILE_FILE");
+    if (!path) GTEST_SKIP() << "Set ROUNDTABLE_EXPORT_PROFILE_FILE for export profiling";
+    const auto envOr = [](const char* name, const char* fallback) {
+        const char* value = std::getenv(name);
+        return std::string(value ? value : fallback);
+    };
+    const bool nvenc = envOr("ROUNDTABLE_EXPORT_PROFILE_CODEC", "nvenc") == "nvenc";
+    const bool uhd = envOr("ROUNDTABLE_EXPORT_PROFILE_SIZE", "1080") == "2160";
+    const uint32_t outW = uhd ? 3840 : 1920;
+    const uint32_t outH = uhd ? 2160 : 1080;
+    const int64_t maxFrames = std::stoll(envOr("ROUNDTABLE_EXPORT_PROFILE_FRAMES", "240"));
+
+    auto& gpu = GpuContext::get();
+    ASSERT_TRUE(gpu.init());
+    {
+        auto cache = std::make_shared<FrameCache>(1024ull * 1024 * 1024);
+        MediaPool pool(cache);
+        pool.onGpuContextReady();
+        const MediaHandle probe = pool.open(std::string(path));
+        ASSERT_NE(probe, InvalidMedia);
+        const VideoStreamInfo info = *pool.getInfo(probe);
+        const double fps = info.fps > 0.0 ? info.fps : 30.0;
+        const int64_t durationTicks = static_cast<int64_t>(info.duration * 48000.0);
+        pool.setProjectFps(fps);
+
+        Project project;
+        Timeline& seq = *project.sequence(0);
+        seq.settings().setResolution(outW, outH);
+        seq.settings().setFrameRate(fps);
+        auto* track = seq.addVideoTrack("V1");
+        ASSERT_NE(track, nullptr);
+        auto clip = std::make_unique<VideoClip>(std::string(path));
+        clip->setTimelineIn(0);
+        clip->setDuration(durationTicks);
+        clip->setSourceFps(fps);
+        clip->setSourceDuration(durationTicks);
+        ASSERT_NE(track->addClip(std::move(clip)), nullptr);
+
+        SnapshotPublisher publisher;
+        publisher.bind(&project, &seq);
+        publisher.publish();
+        auto snapshot = std::make_shared<RenderSnapshot>(*publisher.latest());
+        snapshot->rangeStartTick = 0;
+        snapshot->rangeEndTick = durationTicks;
+
+        ExportRenderSession::Dependencies deps;
+        deps.mediaPool = &pool;
+        ExportRenderSession session(deps);
+        for (int attempt = 0; attempt < 400; ++attempt) {
+            const auto preflight = session.preflight(snapshot);
+            if (preflight.status == RenderResultStatus::Ready) break;
+            ASSERT_EQ(preflight.status, RenderResultStatus::Pending) << preflight.warning;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        EncoderConfig config;
+        config.width = outW;
+        config.height = outH;
+        config.fps = fps;
+        config.fpsNum = static_cast<int>(std::lround(fps * 1000.0));
+        config.fpsDen = 1000;
+        config.codec = EncoderCodec::H264;
+        config.hwAccel = nvenc ? HardwareAccel::NVENC : HardwareAccel::None;
+        config.preset = EncoderPreset::Fast;
+        auto encoder = Encoder::create(EncoderCodec::H264, config.hwAccel);
+        ASSERT_NE(encoder, nullptr);
+        ASSERT_TRUE(encoder->init(config)) << encoder->lastError();
+
+        using Clock = std::chrono::steady_clock;
+        const auto ms = [](Clock::duration d) {
+            return std::chrono::duration<double, std::milli>(d).count();
+        };
+        const int64_t frames = std::min<int64_t>(
+            maxFrames, static_cast<int64_t>(info.duration * fps) - 1);
+        exportStageTimes().reset();
+        double renderMs = 0.0, encodeMs = 0.0;
+        const auto start = Clock::now();
+        for (int64_t f = 0; f < frames; ++f) {
+            const int64_t tick = static_cast<int64_t>(std::llround(f * 48000.0 / fps));
+            const auto t0 = Clock::now();
+            const auto result = session.renderFrame(snapshot, tick, outW, outH,
+                                                    /*scrubMode=*/false,
+                                                    /*preserveAlpha=*/false);
+            ASSERT_TRUE(result.frame && result.frame->ensurePixels())
+                << "frame " << f << ": " << toString(result.status);
+            const auto t1 = Clock::now();
+            encoder->encodeFrame(result.frame->pixels.data(), f);
+            ASSERT_FALSE(encoder->hasFatalError()) << encoder->lastError();
+            const auto t2 = Clock::now();
+            renderMs += ms(t1 - t0);
+            encodeMs += ms(t2 - t1);
+        }
+        encoder->flush();
+        const double totalMs = ms(Clock::now() - start);
+        encoder->shutdown();
+        session.releaseMediaDecoders();
+
+        const auto& st = exportStageTimes();
+        const auto per = [&](const std::atomic<uint64_t>& us) {
+            return us.load() / 1000.0 / static_cast<double>(frames);
+        };
+        std::cout << "EXPORT_PROFILE file=" << std::filesystem::path(path).filename().string()
+                  << ' ' << info.codecName << ' ' << info.width << 'x' << info.height
+                  << " -> " << outW << 'x' << outH << (nvenc ? " nvenc" : " x264")
+                  << (encoder->isHardwareAccelerated() ? "(hw)" : "(sw)")
+                  << " frames=" << frames
+                  << " fps=" << frames * 1000.0 / totalMs << '\n'
+                  << "  per frame ms: render=" << renderMs / frames
+                  << " [decode=" << per(st.exactDecodeUs)
+                  << " gpuWait=" << per(st.readbackWaitUs)
+                  << " readback=" << per(st.readbackCopyUs) << "]"
+                  << " encode=" << encodeMs / frames
+                  << " [convert=" << per(st.encodeConvertUs)
+                  << " upload=" << per(st.encodeUploadUs)
+                  << " send=" << per(st.encodeSendUs) << "]" << std::endl;
     }
     gpu.shutdown();
 }

@@ -6,6 +6,7 @@
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
 #include "playback/FrameFallbackPolicy.h"
+#include "ExportStageTimes.h"
 
 #include <cstring>
 #include <algorithm>
@@ -476,7 +477,13 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // converter gave no speedup and made export's first frame read a stale
     // GPU texture (readback raced the convert).  Steady playback still gets
     // GPU-resident frames via the prefetch workers' per-worker path.
-    auto result = decodePrefetchFrame(scrubState, scrubTask);
+    std::shared_ptr<CachedFrame> result;
+    if (forceExact) {
+        ExportStageTimer timer(exportStageTimes().exactDecodeUs);
+        result = decodePrefetchFrame(scrubState, scrubTask);
+    } else {
+        result = decodePrefetchFrame(scrubState, scrubTask);
+    }
     if (forceExact)
         scrubSlot->lastExactFrame = result;
     // Don't publish export decodes into the shared caches — keep export
