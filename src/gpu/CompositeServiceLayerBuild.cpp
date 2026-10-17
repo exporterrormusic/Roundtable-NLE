@@ -820,6 +820,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 const int64_t frameNum = wantsTemporal
                     ? mapped.lowerFrame : mapped.frame;
                 temporalPrimaryFrameNum = frameNum;
+                bool primaryExact = false;
                 temporalSecondFrameNum = wantsTemporal
                     ? mapped.upperFrame : -1;
                 temporalPhase = wantsTemporal
@@ -860,18 +861,18 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     // open) — exactly the pattern suspected of being
                     // behind the 6 s LAYER-SLOW events.
                     auto rmfT0 = std::chrono::high_resolution_clock::now();
-                    frame = resolveMediaFrame(handle, frameNum, charVideoTier,
-                                              scrubMode,
-                                              policy.forceFullResolution,
-                                              /*exactCacheOnly=*/wantsTemporal,
-                                              stillMode);
+                    const FrameResult primary = resolveMediaFrame(
+                        handle, frameNum, charVideoTier, scrubMode,
+                        policy.forceFullResolution,
+                        /*exactCacheOnly=*/wantsTemporal, stillMode);
+                    frame = primary.frame;
+                    primaryExact = primary.exact;
                     // MediaPool may return a nearby/last-good frame to keep
                     // sequential playback smooth.  It is provisional input,
                     // not the render for this timeline tick.  In particular,
                     // adjustment effects must not turn it into a persistent
                     // composite-cache entry under the requested tick.
-                    sourceFallbackPending =
-                        frame && frame->frameNumber != frameNum;
+                    sourceFallbackPending = frame && !primary.exact;
                     const double rmfMs = msSince(rmfT0);
                     if (rmfMs > 30.0) {
                         spdlog::warn("[RESOLVE-SLOW] handle={} frame={} tier={} "
@@ -886,14 +887,14 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // miss; export's force-exact path resolves it synchronously.
                 // Never blend against resolveMediaFrame's stale fallback.
                 if (wantsTemporal) {
-                    temporalFrame = resolveMediaFrame(
+                    const FrameResult second = resolveMediaFrame(
                         handle, temporalSecondFrameNum, charVideoTier, scrubMode,
                         policy.forceFullResolution,
                         /*exactCacheOnly=*/true, stillMode);
+                    temporalFrame = second.frame;
                     const bool exactEndpointsReady =
-                        frame && frame->frameNumber == temporalPrimaryFrameNum &&
-                        temporalFrame &&
-                        temporalFrame->frameNumber == temporalSecondFrameNum &&
+                        frame && primaryExact &&
+                        temporalFrame && second.exact &&
                         frame->width == temporalFrame->width &&
                         frame->height == temporalFrame->height;
                     if (!exactEndpointsReady) {
@@ -904,11 +905,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                         // best-effort playback resolver for that one frame.
                         std::shared_ptr<CachedFrame> nearest;
                         if (mapped.frame == temporalPrimaryFrameNum && frame &&
-                            frame->frameNumber == mapped.frame) {
+                            primaryExact) {
                             nearest = frame;
                         } else if (mapped.frame == temporalSecondFrameNum &&
-                                   temporalFrame &&
-                                   temporalFrame->frameNumber == mapped.frame) {
+                                   temporalFrame && second.exact) {
                             nearest = temporalFrame;
                         }
                         if (!nearest) {
@@ -916,7 +916,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                                         charVideoTier, scrubMode,
                                                         policy.forceFullResolution,
                                                         /*exactCacheOnly=*/false,
-                                                        stillMode);
+                                                        stillMode).frame;
                         }
                         frame = std::move(nearest);
                         temporalFrame.reset();
@@ -942,7 +942,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 contentStableForStateCache = true;
                 frame = resolveMediaFrame(handle, 0, requestTier, scrubMode,
                                           policy.forceFullResolution,
-                                          /*exactCacheOnly=*/false, stillMode);
+                                          /*exactCacheOnly=*/false, stillMode).frame;
             }
             // ── TitleClip ───────────────────────────────────────────────
             else if (auto* titleClip = dynamic_cast<TitleClip*>(clip)) {

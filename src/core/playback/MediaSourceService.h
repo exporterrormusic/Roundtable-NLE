@@ -112,6 +112,8 @@ struct MediaFrameResult
     MediaCacheKey key;
     std::shared_ptr<CachedFrame> frame;
     bool blockingDecodeAllowed{false};
+    /// frame is the requested source frame, not a nearby stand-in.
+    bool exact{false};
 
     [[nodiscard]] explicit operator bool() const noexcept
     {
@@ -312,10 +314,16 @@ public:
             return result;
         }
 
+        // An exact request queues the exact frame and may show a stand-in
+        // until it lands (the Source Monitor polls); it never decodes on the
+        // UI thread. Playback and best-effort requests take any nearby frame.
         const auto options = frameOptionsFor(request);
-        result.frame = result.blockingDecodeAllowed
-            ? m_pool->getFrame(request.handle, request.frameNumber, options.tier, !options.exactDecode)
-            : m_pool->tryGetFrame(request.handle, request.frameNumber, options.tier);
+        const FrameResult frame = m_pool->requestFrame({
+            request.handle, request.frameNumber, options.tier,
+            result.blockingDecodeAllowed ? FramePolicy::ExactOrStandIn
+                                         : FramePolicy::BestEffort});
+        result.frame = frame.frame;
+        result.exact = frame.exact;
         return result;
     }
 

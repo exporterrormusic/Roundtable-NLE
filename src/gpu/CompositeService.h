@@ -710,11 +710,11 @@ private:
                                                 bool& gpuSpineUsedThisFrame);
 
     // Per-clip-type layer builders (extracted to reduce CompositeServiceLayerBuild.cpp)
-    std::shared_ptr<CachedFrame> resolveMediaFrame(MediaHandle handle, int64_t frameNumber,
-                                                    ResolutionTier tier, bool scrubMode,
-                                                    bool forceFullResolution,
-                                                    bool exactCacheOnly = false,
-                                                    bool stillMode = false) const;
+    FrameResult resolveMediaFrame(MediaHandle handle, int64_t frameNumber,
+                                  ResolutionTier tier, bool scrubMode,
+                                  bool forceFullResolution,
+                                  bool exactCacheOnly = false,
+                                  bool stillMode = false) const;
     // Lazily opens / search-resolves a VideoClip's media handle. skipClip=true
     // means the caller should skip the clip; a 0 return with skipClip=false
     // means an async open is still pending (proceed to sticky-frame fallback).

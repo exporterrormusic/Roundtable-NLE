@@ -370,7 +370,10 @@ public:
 
     /// The one way a renderer asks for a source frame: the policy says what
     /// it may wait for and accept instead; the result says whether it got the
-    /// frame it asked for. The calls below are its building blocks.
+    /// frame it asked for. The calls below are its building blocks; the
+    /// compositor and MediaSourceService use only requestFrame. Thumbnails,
+    /// AnimationVideoCache and the live-replace re-decode still call getFrame
+    /// directly for a plain blocking decode.
     [[nodiscard]] FrameResult requestFrame(const FrameRequest& request);
 
     /// Get a decoded frame from cache, or decode on demand.

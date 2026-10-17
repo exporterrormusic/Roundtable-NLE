@@ -858,13 +858,6 @@ try
         }
     }
 
-    auto fetchMediaFrame = [&](MediaHandle handle, int64_t frameNumber,
-                               ResolutionTier tier) -> std::shared_ptr<CachedFrame> {
-        if (!m_mediaPool)
-            return nullptr;
-        return m_mediaPool->tryGetFrame(handle, frameNumber, tier);
-    };
-
     // ── ONE-TIME STARTUP DIAGNOSTIC ──────────────────────────────────
     {
         static bool s_startupLogged = false;
