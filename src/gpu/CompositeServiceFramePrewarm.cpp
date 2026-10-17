@@ -18,6 +18,7 @@
 // Media / timeline
 #include "cache/FrameCache.h"
 #include "playback/MediaPool.h"
+#include "playback/SnapshotPublisher.h"
 #include "decode/VideoFrameMapping.h"
 #include "Constants.h"
 #include "timeline/AudioClip.h"
@@ -67,8 +68,13 @@ void CompositeService::prewarmPlaybackResources(int64_t tick, uint32_t outW, uin
     if (m_shutdown.load(std::memory_order_acquire))
         return;
 
+    // Capture the model now: the prewarm thread must never read the live
+    // timeline the UI thread is editing.
+    std::shared_ptr<const RenderSnapshot> snapshot =
+        m_snapshotPublisher ? m_snapshotPublisher->latest() : nullptr;
+
     std::lock_guard lock(m_prewarmMutex);
-    m_prewarmRequest = {tick, outW, outH};
+    m_prewarmRequest = {tick, outW, outH, std::move(snapshot)};
     m_prewarmPending = true;
     m_prewarmCv.notify_one();
 }
@@ -84,15 +90,22 @@ void CompositeService::prewarmThreadLoop()
             });
             if (m_destroying.load(std::memory_order_acquire))
                 break;
-            req = m_prewarmRequest;
+            req = std::move(m_prewarmRequest);
+            m_prewarmRequest = {};
             m_prewarmPending = false;
         }
+
+        // Live services hand over a snapshot; snapshot-bound (export)
+        // services keep their immutable m_timeline.
+        Timeline* timeline = m_snapshotPublisher
+            ? (req.snapshot ? const_cast<Timeline*>(req.snapshot->timeline.get()) : nullptr)
+            : m_timeline;
 
         // Run the actual prewarm work on this background thread.
         // Uses m_openMediaHandlesMutex (not m_compositeMutex) so it
         // never blocks compositeFrame() on the FrameProducer thread.
         try {
-            doPrewarmPlaybackResources(req.tick, req.outW, req.outH);
+            doPrewarmPlaybackResources(req.tick, req.outW, req.outH, timeline);
         } catch (const std::exception& e) {
             spdlog::error("[PREWARM] Exception in background prewarm: {}",
                           e.what());
@@ -102,11 +115,12 @@ void CompositeService::prewarmThreadLoop()
     }
 }
 
-void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH)
+void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH,
+                                                  Timeline* timeline)
 {
     if (m_shutdown.load(std::memory_order_acquire))
         return;
-    if (!m_timeline || !m_mediaPool || outW == 0 || outH == 0)
+    if (!timeline || !m_mediaPool || outW == 0 || outH == 0)
         return;
 
     // Prevent overlapping prewarm runs
@@ -144,8 +158,8 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
     std::vector<PrerollTarget> prerollTargets;
     prerollTargets.reserve(8);
 
-    for (size_t ti = m_timeline->trackCount(); ti > 0; --ti) {
-        auto* track = m_timeline->track(ti - 1);
+    for (size_t ti = timeline->trackCount(); ti > 0; --ti) {
+        auto* track = timeline->track(ti - 1);
         if (!track || track->type() != TrackType::Video || track->isMuted())
             continue;
 
@@ -278,8 +292,8 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
     // ── Seed m_lastActiveClipIds ────────────────────────────────────────
     {
         std::unordered_set<uint64_t> activeIds;
-        for (size_t ti = m_timeline->trackCount(); ti > 0; --ti) {
-            auto* track = m_timeline->track(ti - 1);
+        for (size_t ti = timeline->trackCount(); ti > 0; --ti) {
+            auto* track = timeline->track(ti - 1);
             if (!track || track->type() != TrackType::Video || track->isMuted())
                 continue;
             for (auto* clip : track->clipsAtTime(tick)) {
@@ -298,8 +312,8 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
     // ── Pre-open ALL media handles on ALL video tracks (background) ─────
     {
         std::vector<std::string> pathsToOpen;
-        for (size_t ti = m_timeline->trackCount(); ti > 0; --ti) {
-            auto* track = m_timeline->track(ti - 1);
+        for (size_t ti = timeline->trackCount(); ti > 0; --ti) {
+            auto* track = timeline->track(ti - 1);
             if (!track || track->type() != TrackType::Video || track->isMuted())
                 continue;
             for (size_t ci = 0; ci < track->clipCount(); ++ci) {
@@ -414,7 +428,7 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
     // prewarmUpcomingShots handles its own jump detection, so calling it
     // here when m_lastLookaheadTick is unset (or far away) bypasses the
     // 100 ms throttle and scans immediately.
-    prewarmUpcomingShots(tick);
+    prewarmUpcomingShots(tick, std::nullopt, timeline);
 }
 
 
@@ -435,7 +449,11 @@ void CompositeService::prewarmUpcomingShots(
 {
     if (m_shutdown.load(std::memory_order_acquire))
         return;
-    auto* const renderTimeline = timelineOverride ? timelineOverride : m_timeline;
+    // Live services always pass their snapshot's timeline; only a snapshot-
+    // bound (export) service may fall back to its immutable m_timeline.
+    auto* const renderTimeline = timelineOverride
+        ? timelineOverride
+        : (m_snapshotPublisher ? nullptr : m_timeline);
     if (!renderTimeline || !m_mediaPool) return;
 
     // Serialize against the OTHER caller: compositeFrame() (composite

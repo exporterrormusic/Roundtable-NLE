@@ -483,6 +483,21 @@ std::unique_ptr<Timeline> Timeline::clone() const
     return dup;
 }
 
+std::unique_ptr<Timeline> Timeline::cloneForSnapshot() const
+{
+    auto dup = std::make_unique<Timeline>();
+    dup->m_name     = m_name;
+    dup->m_settings = m_settings;
+    dup->m_tracks.reserve(m_tracks.size());
+    for (const auto& t : m_tracks)
+        dup->m_tracks.push_back(t->cloneForSnapshot());
+    dup->m_markers  = m_markers;
+    dup->m_playhead = m_playhead;
+    dup->m_inPoint  = m_inPoint;
+    dup->m_outPoint = m_outPoint;
+    return dup;
+}
+
 void Timeline::restoreFrom(const Timeline& snapshot)
 {
     auto copy = snapshot.clone();

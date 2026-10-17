@@ -139,6 +139,7 @@ void ProgramMonitor::refresh()
 
 void ProgramMonitor::requestRefresh()
 {
+    if (m_beforeRefresh) m_beforeRefresh();
     m_lastRenderedTick = -1; // Force re-render
     m_lastRenderedFrame = -1;
     m_lastDirectFrame.reset(); // Clear stale playback frame

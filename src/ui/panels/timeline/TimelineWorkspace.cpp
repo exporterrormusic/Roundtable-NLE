@@ -48,6 +48,7 @@
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "playback/PlaybackController.h"
+#include "playback/SnapshotPublisher.h"
 
 #include <QMouseEvent>
 #include <QTimer>
@@ -94,9 +95,32 @@ void TimelineWorkspace::setSourceTransportActive(bool active)
 TimelineWorkspace::TimelineWorkspace(QWidget* parent)
     : QWidget(parent)
     , m_audioPlayback(std::make_unique<AudioPlaybackService>())
+    , m_snapshotPublisher(std::make_unique<SnapshotPublisher>())
     , m_compositeService(std::make_unique<CompositeService>())
 {
     setObjectName("TimelineWorkspace");
+
+    // Render threads read published snapshots, never the live model.
+    m_compositeService->setSnapshotPublisher(m_snapshotPublisher.get());
+    m_snapshotPublishTimer = new QTimer(this);
+    m_snapshotPublishTimer->setSingleShot(true);
+    m_snapshotPublishTimer->setInterval(0);
+    connect(m_snapshotPublishTimer, &QTimer::timeout, this, [this] {
+        const bool wasDirty = m_snapshotPublisher->isDirty();
+        publishSnapshotNow();
+        // An edit that only invalidated the cache (no requestRefresh) is
+        // visible only after this publish: re-render the paused frame.
+        if (wasDirty && m_programMonitor && m_playbackController
+                && !m_playbackController->isPlaying()) {
+            m_refreshFromSnapshotPublish = true;
+            m_programMonitor->requestRefresh();
+            m_refreshFromSnapshotPublish = false;
+        }
+    });
+    m_snapshotVerifyTimer = new QTimer(this);
+    m_snapshotVerifyTimer->setInterval(1000);
+    connect(m_snapshotVerifyTimer, &QTimer::timeout, this, [this] { verifySnapshot(); });
+    m_snapshotVerifyTimer->start();
 
     // Live media file-swap watcher.  Collaborators are injected as accessor
     // functions because timeline/pool/bin are (re)set over our lifetime.
@@ -191,7 +215,10 @@ TimelineWorkspace::~TimelineWorkspace()
     if (m_programMonitor) {
         m_programMonitor->stopPolling();
         m_programMonitor->setCompositeCallback(nullptr);
+        m_programMonitor->setBeforeRefreshHook({});
     }
+    if (m_snapshotPublishTimer) m_snapshotPublishTimer->stop();
+    if (m_snapshotVerifyTimer) m_snapshotVerifyTimer->stop();
 
     // Cancel any in-flight background audio decode before destroying
     if (m_audioPlayback) {

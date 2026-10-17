@@ -81,6 +81,16 @@ struct RenderSnapshot
     /// an offline clip that lies wholly outside the requested output.
     std::optional<int64_t>          rangeStartTick;
     std::optional<int64_t>          rangeEndTick;
+    /// Live preview snapshots (SnapshotPublisher) carry the project's
+    /// sequences here, indexed like Project::sequence(i), instead of a
+    /// Project. Nested SequenceClips resolve through this when non-empty.
+    /// Unchanged sequences are shared between consecutive snapshots.
+    std::vector<std::shared_ptr<const Timeline>> sequences;
+
+    /// Nested-sequence lookup for snapshots that carry `sequences`.
+    [[nodiscard]] const Timeline* sequenceAt(size_t index) const noexcept {
+        return index < sequences.size() ? sequences[index].get() : nullptr;
+    }
 
     [[nodiscard]] bool hasTimeline() const noexcept { return timeline != nullptr; }
     [[nodiscard]] bool isFullProject() const noexcept {

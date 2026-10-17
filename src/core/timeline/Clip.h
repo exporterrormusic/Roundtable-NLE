@@ -298,6 +298,12 @@ public:
     [[nodiscard]] virtual std::unique_ptr<Clip> clone() const = 0;
 
 protected:
+    /// Copy every base-class field except type and id into `dst`. Each
+    /// subclass clone() calls this, so a field added here reaches every clip
+    /// type (hand-copied lists used to drift: masks, markers and pitch were
+    /// silently lost on Image/Graphic/Audio/... clones).
+    void copyBaseStateTo(Clip& dst) const;
+
     ClipType m_type;
     uint64_t m_id;
     std::string m_label;

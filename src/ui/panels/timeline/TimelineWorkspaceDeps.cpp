@@ -136,6 +136,8 @@ void TimelineWorkspace::setProject(Project* project)
         }
     }
     if (m_compositeService) m_compositeService->setProject(project);
+    m_snapshotProject = project;
+    rebindSnapshotPublisher();
     if (m_audioPlayback) m_audioPlayback->setProject(project);
     if (m_sourceMonitor) m_sourceMonitor->setSequenceProject(project);
     if (m_voiceGenerationService) m_voiceGenerationService->setProject(project);

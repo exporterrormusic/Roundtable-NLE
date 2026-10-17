@@ -110,6 +110,8 @@ void TimelineWorkspace::syncSequenceTabStateToProject()
 void TimelineWorkspace::refreshSequenceTabs()
 {
     if (!m_sequenceTabBar || !m_project) return;
+    // Sequences were added, removed, renamed or reordered.
+    markSnapshotDirty(/*allSequences=*/true);
 
     // Drop stale entries — indices that no longer exist because their
     // sequence was removed. Without this, the next sequence created at

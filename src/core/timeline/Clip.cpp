@@ -34,6 +34,47 @@ void Clip::reserveId(uint64_t usedId) noexcept
     }
 }
 
+void Clip::copyBaseStateTo(Clip& dst) const
+{
+    dst.m_label        = m_label;
+    dst.m_shotName     = m_shotName;
+    dst.m_layerId      = m_layerId;
+    dst.m_groupId      = m_groupId;
+    dst.m_linkId       = m_linkId;
+    dst.m_syncLine     = m_syncLine;
+    dst.m_color        = m_color;
+    dst.m_enabled      = m_enabled;
+    dst.m_offline      = m_offline;
+    dst.m_renderStatus = m_renderStatus;
+
+    dst.m_timelineIn        = m_timelineIn;
+    dst.m_duration          = m_duration;
+    dst.m_sourceIn          = m_sourceIn;
+    dst.m_speed             = m_speed;
+    dst.m_maintainPitch     = m_maintainPitch;
+    dst.m_timeInterpolation = m_timeInterpolation;
+    dst.m_speedRamp         = m_speedRamp;
+
+    dst.m_opacity      = m_opacity;
+    dst.m_posX         = m_posX;
+    dst.m_posY         = m_posY;
+    dst.m_scaleX       = m_scaleX;
+    dst.m_scaleY       = m_scaleY;
+    dst.m_rotation     = m_rotation;
+    dst.m_shutterAngle = m_shutterAngle;
+    dst.m_anchorX      = m_anchorX;
+    dst.m_anchorY      = m_anchorY;
+
+    dst.m_blendMode = m_blendMode;
+    if (!m_effects.isEmpty()) {
+        auto clonedEffects = m_effects.clone();
+        if (clonedEffects)
+            dst.m_effects = std::move(*clonedEffects);
+    }
+    dst.m_masks   = m_masks;
+    dst.m_markers = m_markers;
+}
+
 int Clip::migrateLegacyMasksToSourceLocal(uint32_t sequenceWidth,
                                           uint32_t sequenceHeight,
                                           uint32_t sourceWidth,

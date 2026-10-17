@@ -110,6 +110,11 @@ public:
     /// Deep-clone the entire timeline (tracks, clips, markers, playback state).
     /// Observers are NOT copied — the clone starts with no observers.
     [[nodiscard]] std::unique_ptr<Timeline> clone() const;
+    /// Exact copy for a render snapshot. Unlike clone() (duplicate-sequence
+    /// semantics: new clip ids, tracks re-inserted by type) this keeps clip
+    /// ids, track order and every track flag, so the copy renders and caches
+    /// identically to the original. No observers.
+    [[nodiscard]] std::unique_ptr<Timeline> cloneForSnapshot() const;
     /// Replace model state from a deep copy while preserving observers.
     /// Used by transactional compound edits and their undo/redo snapshots.
     void restoreFrom(const Timeline& snapshot);

@@ -118,6 +118,10 @@ public:
     /// poll timer tick.  Use this after edits that modify timeline data
     /// (split, trim, delete, property changes) to keep the UI responsive.
     void requestRefresh();
+    /// Runs at the start of every requestRefresh(), before the re-render is
+    /// requested. The workspace publishes the edited model's render snapshot
+    /// here so the refresh shows the edit.
+    void setBeforeRefreshHook(std::function<void()> hook) { m_beforeRefresh = std::move(hook); }
 
     /// Fully reset the Program Monitor's rendering state.
     /// Call this after workspace/dock layout changes to recover from a
@@ -326,6 +330,7 @@ private:
 
     // VRAM pressure monitoring
     VramQueryCallback m_vramQuery;
+    std::function<void()> m_beforeRefresh;
 
     /// Atomic flag set in the destructor BEFORE stopping pipeline threads.
     /// Checked by the present callback and presentFrame() to prevent

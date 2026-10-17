@@ -19,6 +19,7 @@
 #include "cache/SegmentRenderCache.h"
 #include "playback/FrameFallbackPolicy.h"
 #include "playback/MediaPool.h"
+#include "playback/SnapshotPublisher.h"
 #include "decode/VideoFrameMapping.h"
 #include "cache/CachePolicy.h"
 #include "project/RenderStateHash.h"
@@ -229,6 +230,49 @@ std::optional<ResolutionTier> resolutionTierFor(RenderQuality quality)
 
 } // namespace
 
+CompositeService::RenderExecutionContext CompositeService::makeLiveContext(
+    const RenderExecutionPolicy& policy) const
+{
+    RenderExecutionContext context;
+    context.policy = policy;
+    if (m_snapshotPublisher) {
+        // Never the live model: only the UI thread may read m_timeline.
+        context.liveSnapshot = m_snapshotPublisher->latest();
+        if (context.liveSnapshot) {
+            context.timeline =
+                const_cast<Timeline*>(context.liveSnapshot->timeline.get());
+            context.editVersion = context.liveSnapshot->editVersion;
+        }
+        return context;
+    }
+    context.timeline = m_timeline;
+    context.project = m_project;
+    return context;
+}
+
+Timeline* CompositeService::resolveSequence(const RenderExecutionContext& context,
+                                            size_t sequenceIndex)
+{
+    if (context.liveSnapshot)
+        return const_cast<Timeline*>(context.liveSnapshot->sequenceAt(sequenceIndex));
+    if (context.project && sequenceIndex < context.project->sequenceCount())
+        return context.project->sequence(sequenceIndex);
+    return nullptr;
+}
+
+uint64_t CompositeService::configHashFor(const RenderExecutionContext& context,
+                                         const Timeline& timeline, int64_t tick,
+                                         uint32_t renderFlags)
+{
+    if (context.liveSnapshot) {
+        const SequenceLookup lookup = [&context](size_t index) -> const Timeline* {
+            return context.liveSnapshot->sequenceAt(index);
+        };
+        return hashCompositeConfigAt(timeline, tick, lookup, renderFlags);
+    }
+    return hashCompositeConfigAt(timeline, tick, context.project, renderFlags);
+}
+
 std::shared_ptr<CachedFrame> CompositeService::compositeFrame(
     const RenderRequest& request, bool isNestedRecursion)
 {
@@ -257,17 +301,14 @@ RenderResult CompositeService::renderFrame(
                     "render output dimensions must be non-zero");
 
     RenderExecutionOutcome executionOutcome;
-    RenderExecutionContext context;
-    context.timeline = m_timeline;
-    context.project = m_project;
-    context.outcome = &executionOutcome;
-    context.diagnostics = &result.diagnostics;
-    context.policy = {
+    RenderExecutionContext context = makeLiveContext({
         request.preferGpuOutput,
         request.forceFullResolution,
         request.preserveAlpha,
         request.isRealtimePlaybackPass(),
-    };
+    });
+    context.outcome = &executionOutcome;
+    context.diagnostics = &result.diagnostics;
 
     if (request.snapshot && request.targetSequenceIndex) {
         spdlog::error("CompositeService: render request cannot select both a "
@@ -298,6 +339,12 @@ RenderResult CompositeService::renderFrame(
         context.project = const_cast<Project*>(request.snapshot->project.get());
         context.editVersion = request.snapshot->editVersion;
         context.immutableSnapshot = true;
+        context.liveSnapshot.reset();
+    } else if (request.targetSequenceIndex && context.liveSnapshot) {
+        context.timeline = resolveSequence(context, *request.targetSequenceIndex);
+        if (!context.timeline)
+            return fail(RenderResultStatus::Failed,
+                        "render request selected an unavailable sequence");
     } else if (request.targetSequenceIndex) {
         if (!m_project || *request.targetSequenceIndex >= m_project->sequenceCount()) {
             spdlog::error("CompositeService: live sequence target {} is invalid",
@@ -376,17 +423,13 @@ std::shared_ptr<CachedFrame> CompositeService::compositeFrame(int64_t tick, uint
                                                                 bool stillMode,
                                                                 std::optional<ResolutionTier> tierOverride)
 {
-    const RenderExecutionContext context{
-        m_timeline,
-        m_project,
-        {
-            m_gpuDisplayMode,
-            m_forceFullResolution.load(std::memory_order_relaxed),
-            m_exportAlpha.load(std::memory_order_relaxed),
-            !scrubMode && !stillMode &&
-                !m_forceFullResolution.load(std::memory_order_relaxed),
-        },
-    };
+    const RenderExecutionContext context = makeLiveContext({
+        m_gpuDisplayMode,
+        m_forceFullResolution.load(std::memory_order_relaxed),
+        m_exportAlpha.load(std::memory_order_relaxed),
+        !scrubMode && !stillMode &&
+            !m_forceFullResolution.load(std::memory_order_relaxed),
+    });
     return compositeFrameImpl(tick, outW, outH, scrubMode,
                               isNestedRecursion, stillMode, tierOverride,
                               context);
@@ -545,8 +588,8 @@ try
         const ResolutionTier tier = segmentTier;
         const uint32_t renderFlags = policy.preserveAlpha
             ? RenderStatePreserveAlpha : RenderStateNone;
-        const uint64_t cfgHash = hashCompositeConfigAt(
-            *renderTimeline, segmentTick, renderProject, renderFlags);
+        const uint64_t cfgHash = configHashFor(
+            context, *renderTimeline, segmentTick, renderFlags);
         auto cached = m_segmentRenderCache->get(segmentTick, tier, cfgHash);
         if (!cached) {
             // The (tick,tier,hash) key isn't present — the common, expected
@@ -862,9 +905,17 @@ try
     // track here made playback cost grow with total project size. Immutable
     // render snapshots retain their captured editVersion. Persistent segment
     // cache entries still use the complete render-state hash above.
+    // A published live snapshot contributes its editVersion too: an edit
+    // bumps the generation immediately but publishes one event-loop turn
+    // later, and a frame rendered from the older snapshot in between must
+    // not be cached under the new generation.
+    const uint64_t liveGeneration =
+        m_liveCacheGeneration.load(std::memory_order_acquire);
     const uint64_t compositeVersion = context.immutableSnapshot
         ? context.editVersion
-        : m_liveCacheGeneration.load(std::memory_order_acquire);
+        : (context.liveSnapshot
+               ? (context.editVersion * 0x9E3779B97F4A7C15ull) ^ liveGeneration
+               : liveGeneration);
     const CompositeCacheKey compositeCacheKey{
         renderTimeline,
         compositeVersion,
@@ -984,7 +1035,7 @@ try
         // (matches the depth=2 cap on compositeFrame recursion).  Without
         // this the nested sequence's first frame on a fresh shot shows
         // black instead of waiting up to 16 ms for inner decoders.
-        if (renderProject) {
+        if (renderProject || context.liveSnapshot) {
             for (size_t ti = 0; ti < renderTimeline->trackCount(); ++ti) {
                 auto* trk = renderTimeline->track(ti);
                 if (!trk || trk->type() != TrackType::Video || trk->isMuted())
@@ -993,9 +1044,7 @@ try
                     if (!c || !c->isEnabled()) continue;
                     auto* seqClip = dynamic_cast<SequenceClip*>(c);
                     if (!seqClip) continue;
-                    if (seqClip->sequenceIndex() >= renderProject->sequenceCount())
-                        continue;
-                    auto* innerTl = renderProject->sequence(seqClip->sequenceIndex());
+                    auto* innerTl = resolveSequence(context, seqClip->sequenceIndex());
                     if (!innerTl || innerTl == renderTimeline) continue;
                     // Mirror the render path's innerTick mapping
                     // (localTick + sourceIn, clamped non-negative).

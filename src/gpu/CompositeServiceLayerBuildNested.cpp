@@ -27,11 +27,10 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
 {
     std::shared_ptr<CachedFrame> frame;
 
-    if (!(context.project && context.timeline &&
-          seqClip->sequenceIndex() < context.project->sequenceCount()))
+    if (!context.timeline)
         return frame;
 
-    auto* innerTimeline = context.project->sequence(seqClip->sequenceIndex());
+    auto* innerTimeline = resolveSequence(context, seqClip->sequenceIndex());
     if (!innerTimeline || innerTimeline == context.timeline)
         return frame;
 

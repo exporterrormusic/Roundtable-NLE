@@ -161,6 +161,11 @@ public:
     /// Duration of this track (end of last clip)
     [[nodiscard]] int64_t duration() const noexcept;
 
+    /// Exact copy for a render snapshot: every flag, every clip with its
+    /// ORIGINAL id, transitions unchanged.  Render caches are keyed by clip
+    /// id, so a snapshot must not mint new ids the way paste/duplicate do.
+    [[nodiscard]] std::unique_ptr<Track> cloneForSnapshot() const;
+
 private:
     [[nodiscard]] bool mutationAllowed(TrackMutationPolicy policy) const noexcept
     {

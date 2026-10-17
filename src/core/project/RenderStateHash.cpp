@@ -53,11 +53,11 @@ constexpr int kMaxNestDepth = 16;
 }
 
 // Append the full compositing config governing `tick` of `timeline` into `w`.
-// Recurses into active nested sequences when `project` is supplied; `ancestors`
+// Recurses into active nested sequences when `sequences` is supplied; `ancestors`
 // is the stack of timelines already being hashed up the recursion, used to break
 // reference cycles (a sequence that nests itself, directly or transitively).
 void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t tick,
-                           const Project* project, int depth,
+                           const SequenceLookup* sequences, int depth,
                            std::vector<const Timeline*>& ancestors)
 {
     // ── Sequence settings that affect pixels ────────────────────────────
@@ -98,12 +98,10 @@ void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t ti
             // this composite.  Map the outer tick exactly as the compositor:
             // localTick = tick - timelineIn, innerTick = localTick + sourceIn
             // (see CompositeServiceLayerBuildNested::buildSequenceClipFrame).
-            if (project && c->clipType() == ClipType::Sequence && depth < kMaxNestDepth) {
+            if (sequences && *sequences && c->clipType() == ClipType::Sequence
+                    && depth < kMaxNestDepth) {
                 const auto* seqClip = static_cast<const SequenceClip*>(c);
-                const Timeline* inner =
-                    seqClip->sequenceIndex() < project->sequenceCount()
-                        ? project->sequence(seqClip->sequenceIndex())
-                        : nullptr;
+                const Timeline* inner = (*sequences)(seqClip->sequenceIndex());
                 // Cycle guard: skip if `inner` is already on the ancestor stack
                 // (including the timeline we're currently hashing).
                 bool onStack = (inner == &timeline);
@@ -114,7 +112,7 @@ void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t ti
                     if (innerTick < 0) innerTick = 0;
                     w.writeU8(0x03);                      // nested-config marker
                     ancestors.push_back(&timeline);
-                    appendCompositeConfig(w, *inner, innerTick, project,
+                    appendCompositeConfig(w, *inner, innerTick, sequences,
                                           depth + 1, ancestors);
                     ancestors.pop_back();
                 }
@@ -140,13 +138,66 @@ void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t ti
 uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
                                const Project* project, uint32_t renderFlags)
 {
+    if (!project)
+        return hashCompositeConfigAt(timeline, tick, SequenceLookup{}, renderFlags);
+    const SequenceLookup lookup = [project](size_t index) -> const Timeline* {
+        return index < project->sequenceCount() ? project->sequence(index) : nullptr;
+    };
+    return hashCompositeConfigAt(timeline, tick, lookup, renderFlags);
+}
+
+uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
+                               const SequenceLookup& sequences, uint32_t renderFlags)
+{
     BinaryWriter w;
     w.writeU32(kHashVersion);
     w.writeU32(renderFlags);
 
     std::vector<const Timeline*> ancestors;
-    appendCompositeConfig(w, timeline, tick, project, /*depth=*/0, ancestors);
+    appendCompositeConfig(w, timeline, tick, &sequences, /*depth=*/0, ancestors);
 
+    return fnv1a(w.data().data(), w.data().size());
+}
+
+uint64_t hashTimelineState(const Timeline& timeline)
+{
+    BinaryWriter w;
+    const Settings& s = timeline.settings();
+    w.writeU32(s.resolution().width);
+    w.writeU32(s.resolution().height);
+    w.writeF64(s.frameRate());
+    w.writeU8(static_cast<uint8_t>(s.colorSpace()));
+
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        const Track* tr = timeline.track(ti);
+        if (!tr) continue;
+        w.writeU8(0x10);
+        w.writeU8(static_cast<uint8_t>(tr->type()));
+        w.writeU8(static_cast<uint8_t>((tr->isMuted() ? 1 : 0)
+                                     | (tr->isSoloed() ? 2 : 0)
+                                     | (tr->isDivider() ? 4 : 0)
+                                     | (tr->isCaptionTrack() ? 8 : 0)
+                                     | (tr->isPermanentDivider() ? 16 : 0)));
+        w.writeF32(tr->volume());
+        w.writeF32(tr->pan());
+        for (size_t ci = 0; ci < tr->clipCount(); ++ci) {
+            const Clip* c = tr->clip(ci);
+            if (!c) continue;
+            w.writeU8(0x01);
+            writeClip(w, *c);
+        }
+        for (const Transition& t : tr->transitions()) {
+            w.writeU8(0x02);
+            w.writeU8(static_cast<uint8_t>(t.type));
+            w.writeI64(t.duration);
+            w.writeI64(t.offset);
+            w.writeI64(t.editPointTick);
+            w.writeU64(t.leftClipId);
+            w.writeU64(t.rightClipId);
+            w.writeF32(t.param1);
+            w.writeF32(t.param2);
+        }
+    }
     return fnv1a(w.data().data(), w.data().size());
 }
 

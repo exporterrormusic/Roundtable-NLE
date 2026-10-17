@@ -213,5 +213,37 @@ int64_t Track::duration() const noexcept
     return maxEnd;
 }
 
+// ── Snapshot copy ───────────────────────────────────────────────────────────
+
+std::unique_ptr<Track> Track::cloneForSnapshot() const
+{
+    auto dup = std::make_unique<Track>(m_type, m_name);
+    // Copy fields directly: the setters enforce edit rules (setLocked clears
+    // targeting, setTargeted refuses locked tracks) that must not reshape an
+    // already-valid state.
+    dup->m_locked             = m_locked;
+    dup->m_muted              = m_muted;
+    dup->m_soloed             = m_soloed;
+    dup->m_targeted           = m_targeted;
+    dup->m_collapsed          = m_collapsed;
+    dup->m_syncLocked         = m_syncLocked;
+    dup->m_isDivider          = m_isDivider;
+    dup->m_isPermanentDivider = m_isPermanentDivider;
+    dup->m_isCaption          = m_isCaption;
+    dup->m_height             = m_height;
+    dup->m_color              = m_color;
+    dup->m_volume             = m_volume;
+    dup->m_pan                = m_pan;
+
+    dup->m_clips.reserve(m_clips.size());
+    for (const auto& c : m_clips) {
+        auto copy = c->clone();
+        copy->setId(c->id());
+        dup->m_clips.push_back(std::move(copy));
+    }
+    dup->m_transitions = m_transitions;
+    return dup;
+}
+
 } // namespace rt
 

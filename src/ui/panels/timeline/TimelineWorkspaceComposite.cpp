@@ -7,12 +7,15 @@
 #include "Constants.h"
 #include "Settings.h"
 #include "cache/FrameCache.h"
+#include "panels/monitors/ProgramMonitor.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "playback/PlaybackController.h"
 #include "playback/EngineContracts.h"
+#include "playback/SnapshotPublisher.h"
 #include "timeline/Timeline.h"
 
 #include <QCoreApplication>
+#include <QThread>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -73,6 +76,10 @@ std::shared_ptr<CachedFrame> TimelineWorkspace::compositeFrame(
 
 RenderResult TimelineWorkspace::renderFrame(const RenderRequest& request)
 {
+    // A render requested from the UI thread (Export Frame, export preview)
+    // must include an edit made earlier in this same event-loop turn.
+    if (QThread::currentThread() == thread() && m_snapshotPublisher->isDirty())
+        publishSnapshotNow();
     if (m_compositeService)
         return m_compositeService->renderFrame(request);
 
@@ -300,6 +307,15 @@ void TimelineWorkspace::shutdownCompositeServices()
 {
     if (m_compositeService)
         m_compositeService->shutdown();
+
+    // MainWindow destroys the Project before Qt deletes this widget, and the
+    // child-deletion cascade can still fire requestRefresh(). Stop publishing
+    // and forget the model now so nothing can copy a freed sequence.
+    if (m_snapshotPublishTimer) m_snapshotPublishTimer->stop();
+    if (m_snapshotVerifyTimer) m_snapshotVerifyTimer->stop();
+    if (m_programMonitor) m_programMonitor->setBeforeRefreshHook({});
+    m_snapshotProject = nullptr;
+    m_snapshotPublisher->bind(nullptr, nullptr);
 }
 
 } // namespace rt

@@ -97,6 +97,7 @@ class Project;
 class RenderGpuResources;
 class SegmentRenderCache;
 class SequenceClip;
+class SnapshotPublisher;
 class ShotPresetManager;
 class Texture;
 class Timeline;
@@ -199,6 +200,10 @@ public:
     void setModelManager(ModelManager* m) { m_modelManager = m; }
     void setProject(Project* p) { m_project = p; }
     void setShotPresetManager(ShotPresetManager* m) { m_shotPresetManager = m; }
+    /// Live preview service: render-thread work reads the publisher's latest
+    /// snapshot instead of the live m_timeline/m_project, which only the UI
+    /// thread may touch. Snapshot-bound (export) services leave this unset.
+    void setSnapshotPublisher(const SnapshotPublisher* p) noexcept { m_snapshotPublisher = p; }
 
     // ── Core compositing ────────────────────────────────────────────────
     /// Composite a frame for the given tick.
@@ -656,7 +661,22 @@ private:
         bool immutableSnapshot{false};
         RenderExecutionOutcome* outcome{nullptr};
         FrameDiagnostics* diagnostics{nullptr};
+        /// Published live-preview snapshot backing `timeline` (held for the
+        /// whole render). Nested sequences resolve through it, not `project`.
+        std::shared_ptr<const RenderSnapshot> liveSnapshot{};
     };
+
+    /// Context for a live-service render: the latest published snapshot when
+    /// a publisher is attached, else the bound m_timeline/m_project.
+    [[nodiscard]] RenderExecutionContext makeLiveContext(
+        const RenderExecutionPolicy& policy) const;
+    /// Nested SequenceClip target for `context` (snapshot or project).
+    [[nodiscard]] static Timeline* resolveSequence(
+        const RenderExecutionContext& context, size_t sequenceIndex);
+    /// Segment-cache config hash for `timeline` under `context`.
+    [[nodiscard]] static uint64_t configHashFor(
+        const RenderExecutionContext& context, const Timeline& timeline,
+        int64_t tick, uint32_t renderFlags);
 
     std::shared_ptr<CachedFrame> compositeFrameImpl(
         int64_t tick, uint32_t outW, uint32_t outH,
@@ -782,6 +802,7 @@ private:
     ModelManager* m_modelManager{nullptr};
     Project* m_project{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};
+    const SnapshotPublisher* m_snapshotPublisher{nullptr};
 
     // Optional per-consumer mutable GPU helpers. Declared before m_engine so
     // the engine is destroyed first and cannot retain resolver pointers into
@@ -957,13 +978,17 @@ private:
         int64_t  tick{0};
         uint32_t outW{0};
         uint32_t outH{0};
+        /// Snapshot captured at enqueue (live service); the prewarm thread
+        /// never reads the live timeline.
+        std::shared_ptr<const RenderSnapshot> snapshot;
     };
 
     /// Background thread entry point — runs prewarm work off the UI thread.
     void prewarmThreadLoop();
 
     /// Actual prewarm implementation (moved to background thread).
-    void doPrewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH);
+    void doPrewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH,
+                                    Timeline* timeline);
 
     std::thread m_prewarmThread;
     /// Bulk-open thread spawned by prewarm iteration (now tracked so

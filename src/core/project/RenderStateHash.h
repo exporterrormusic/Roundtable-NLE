@@ -36,12 +36,19 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace rt {
 
 class Timeline;
 class Project;
+
+/// Resolves a nested SequenceClip's sequence index to its Timeline (nullptr
+/// when out of range). Lets render snapshots, which carry sequences but no
+/// Project, hash nested content the same way the live project does.
+using SequenceLookup = std::function<const Timeline*(size_t)>;
 
 enum RenderStateFlag : uint32_t {
     RenderStateNone           = 0,
@@ -56,5 +63,18 @@ enum RenderStateFlag : uint32_t {
 [[nodiscard]] uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
                                              const Project* project = nullptr,
                                              uint32_t renderFlags = RenderStateNone);
+
+/// Same as above, resolving nested sequences through `sequences` instead of
+/// a Project. Produces the identical hash for identical content.
+[[nodiscard]] uint64_t hashCompositeConfigAt(const Timeline& timeline, int64_t tick,
+                                             const SequenceLookup& sequences,
+                                             uint32_t renderFlags = RenderStateNone);
+
+/// Hash of a WHOLE sequence: settings, every track's flags and mix, every
+/// clip's full serialized state (including its id) and every transition.
+/// Two timelines hash equal exactly when a render snapshot of one would
+/// render and cache like the other. Cost is one serialization pass, so
+/// callers throttle it.
+[[nodiscard]] uint64_t hashTimelineState(const Timeline& timeline);
 
 } // namespace rt

@@ -103,6 +103,7 @@ class AudioPlaybackService;
 class AnimationVideoCache;
 class Clip;
 class CompositeService;
+class SnapshotPublisher;
 class ExportRenderSession;
 struct OpacityMask;
 class DockLayoutManager;
@@ -233,6 +234,13 @@ public:
 
     /// Flush the composite result LRU cache (call when transforms change).
     void invalidateCompositeCache();
+    /// The edited model changed: republish the render snapshot (coalesced to
+    /// once per event-loop turn). `allSequences` for edits that may touch a
+    /// sequence other than the active one (undo/redo, sequence add/remove).
+    void markSnapshotDirty(bool allSequences = false);
+    /// Publish pending model changes now, so a render requested from the UI
+    /// thread sees the very latest edit.
+    void publishSnapshotNow();
     /// Apply all UI/cache consequences of a completed edit in a stable order.
     void applyEditImpact(const EditImpact& impact = {});
     /// A3: drop only LRU entries whose tick is in [fromTick, toTick].
@@ -409,6 +417,20 @@ private:
     // The watcher/debounce/poll machinery lives in MediaWatchController;
     // the reload reaction is refreshChangedMedia() above.
     std::unique_ptr<MediaWatchController> m_mediaWatch;
+
+    // Read-only copies of the edited model for render threads (see
+    // SnapshotPublisher.h). Declared before m_compositeService so it outlives
+    // the compositor and its prewarm thread.
+    std::unique_ptr<SnapshotPublisher> m_snapshotPublisher;
+    QTimer* m_snapshotPublishTimer{nullptr};   // coalesces markSnapshotDirty()
+    QTimer* m_snapshotVerifyTimer{nullptr};    // idle check for missed signals
+    bool m_refreshFromSnapshotPublish{false};  // refresh issued by the publish itself
+    // The project the publisher may read. Set by setProject(), cleared by
+    // setTimeline(nullptr): on a project switch setTimeline(new) runs before
+    // setProject(new) while m_project still names the destroyed project.
+    Project* m_snapshotProject{nullptr};
+    void rebindSnapshotPublisher();
+    void verifySnapshot();
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;
