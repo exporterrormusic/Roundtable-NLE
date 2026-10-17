@@ -113,6 +113,10 @@ struct CachedFrame
     /// Composite-cache diagnostics/output identity.  A segment-cache hit still
     /// goes through the encoder, but avoids rebuilding and compositing layers.
     bool        segmentCacheHit{false};
+    /// A composite built while some source was a stand-in (a nearby cached
+    /// frame while the exact one decodes). Valid preview feedback, but the
+    /// caller should render the tick again; never cached by tick.
+    bool        provisionalSource{false};
     /// True when the composite pixels retain straight alpha.  This participates
     /// in segment-cache identity so transparent and flattened exports cannot
     /// accidentally reuse one another.

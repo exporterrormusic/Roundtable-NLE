@@ -173,6 +173,8 @@ private:
     struct RenderExecutionOutcome {
         RenderResultStatus status{RenderResultStatus::Pending};
         std::string warning;
+        /// Some visual clip had no frame yet; the answer is a stand-in.
+        bool provisional{false};
 
         void report(RenderResultStatus newStatus, std::string message)
         {

@@ -973,6 +973,10 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 frame = buildSequenceClipFrame(seqClip, localTick, outW, outH,
                                                scrubMode, requestTier, stillMode,
                                                context);
+                // A stand-in source inside the nested sequence makes this
+                // layer provisional too.
+                if (frame && frame->provisionalSource)
+                    sourceFallbackPending = true;
             }
             // ── PngPuppetClip (Veadotube-style 4-image character) ───────────
             // Use GLOBAL tick so talk/blink phase carries across cuts between

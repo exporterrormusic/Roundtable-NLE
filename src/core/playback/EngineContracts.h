@@ -165,6 +165,9 @@ struct FrameDiagnostics
     bool gpuTimingsValid{false};
     bool heldFrame{false};
     bool droppedFrame{false};
+    /// Ready, but some source was a stand-in for the exact frame (still and
+    /// scrub requests do not block on decode). Render the tick again.
+    bool provisionalSource{false};
     std::string warning;
 };
 

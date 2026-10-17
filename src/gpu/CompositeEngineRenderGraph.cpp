@@ -2054,6 +2054,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             layers.begin(), layers.end(), [](const LayerInfo& layer) {
                 return layer.sourceFallbackPending;
             });
+        result->provisionalSource = hasPendingSourceFallback;
 
         // allowLruInsert is false for nested-sequence inner composites:
         // their CPU result is the inner timeline WITHOUT the SequenceClip

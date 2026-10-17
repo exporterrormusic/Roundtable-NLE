@@ -67,7 +67,10 @@ std::shared_ptr<CachedFrame> CompositeService::tryCompositeOnGpu(
         perfLog, perfT0, perfTlayers, perfTgpuUp, perfTcomp,
         effectLayerCount, effectPassCount, transitionCount,
         cacheKey,
-        /*allowLruInsert=*/!isNestedRecursion,
+        // A partial composite (a source still decoding) must not be cached
+        // under this tick, or the retry would get it back.
+        /*allowLruInsert=*/!isNestedRecursion &&
+            !(context.outcome && context.outcome->provisional),
         /*forceSyncReadback=*/policy.forceFullResolution);
 
     if (context.diagnostics && policy.measureRealtimeCost &&

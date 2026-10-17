@@ -428,6 +428,9 @@ RenderResult CompositeService::renderFrame(
             }
         }
     }
+    // Also for an empty sentinel (Blank) answered while a source decodes.
+    result.diagnostics.provisionalSource = executionOutcome.provisional ||
+        (result.frame && result.frame->provisionalSource);
     result.diagnostics.status = result.status;
     return result;
 }
@@ -1157,6 +1160,11 @@ try
         resolvedClipsAtTick < clipsAtTick) {
         return nullptr;
     }
+    // Still and scrub requests answer anyway — with the held prior composite,
+    // an empty sentinel or a partial composite. Say so, so the caller renders
+    // this tick again instead of taking it as the exact frame.
+    if (!resourceFailure && resolvedClipsAtTick < clipsAtTick && context.outcome)
+        context.outcome->provisional = true;
 
     // ── A1: Settle-window fallback (Premiere-style hold) ─────────────────
     // If we resolved FEWER layers than the active clip count, the composite
@@ -1343,6 +1351,15 @@ try
         }
     }
 
+    // A layer drawn from a stand-in source makes the answer provisional on
+    // every return path below — including the single-layer fast path, which
+    // hands back the (nearby) source frame itself.
+    if (context.outcome &&
+        std::any_of(layers.begin(), layers.end(), [](const LayerInfo& layer) {
+            return layer.sourceFallbackPending;
+        }))
+        context.outcome->provisional = true;
+
     // If every source is invariant and the evaluated layer state is identical
     // to the preceding tick, reuse the completed composite. This is the common
     // stacked-PNG/tier-board case: layer lookup is cheap, while dispatching and
@@ -1395,7 +1412,19 @@ try
                           L.cropT < 0.01f && L.cropB < 0.01f &&
                           L.effects.empty() &&
                           L.temporalMode == 0 &&
-                          !L.gpuTextureReady;
+                          !L.gpuTextureReady &&
+                          // Everything else the compositor would apply: a
+                          // single-clip fade/wipe in progress, opacity masks,
+                          // a blend mode against the black canvas, the pivot,
+                          // source rotation and alpha packing. (A fade from
+                          // black on a lone full-frame clip used to export
+                          // with no fade at all.)
+                          L.wipeProgress < 0.0f &&
+                          L.masks.empty() &&
+                          L.blendMode == 0 &&
+                          std::abs(L.anchorX) < 0.5f && std::abs(L.anchorY) < 0.5f &&
+                          L.srcRotation == 0 &&
+                          !L.isPacked && !L.isPMA && !L.needsSwapRB;
         if (isIdentity && L.frame && L.frame->width == outW && L.frame->height == outH)
             return L.frame;
     }
