@@ -16,6 +16,8 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/effects/EffectsPanel.h"
+#include "panels/effects/ColorGradingPanel.h"
+#include "panels/effects/KeyframeEditor.h"
 #include "panels/captions/CaptionsPanel.h"
 #include "panels/tierlist/TierListPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
@@ -298,6 +300,34 @@ void TimelineWorkspace::publishSnapshotNow()
         spdlog::warn("[SNAPSHOT] slow publish: {:.1f} ms for {} clips in {} sequence(s)",
                      stats.cloneMs, stats.clipsCloned, stats.sequencesCloned);
     }
+}
+
+void TimelineWorkspace::revalidatePanelClipBindings()
+{
+    if (m_destroying.load(std::memory_order_acquire)) return;
+    std::unordered_set<const Clip*> live;
+    if (m_timeline) {
+        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+            const Track* track = m_timeline->track(ti);
+            if (!track) continue;
+            for (size_t ci = 0; ci < track->clipCount(); ++ci)
+                live.insert(track->clip(ci));
+        }
+    }
+    // Pointers are only compared: a stale one may already be freed.
+    const auto gone = [&live](const Clip* clip) { return clip && !live.count(clip); };
+
+    if (gone(m_selection.clip)) {
+        m_selection.clip = nullptr;
+        m_selection.graphicLayerIdx = -1;
+    }
+    if (m_propertiesPanel && gone(m_propertiesPanel->clip())) m_propertiesPanel->clearClip();
+    if (m_effectControlsPanel && gone(m_effectControlsPanel->clip())) m_effectControlsPanel->clearClip();
+    if (m_GraphicsEditorPanel && gone(m_GraphicsEditorPanel->clip())) m_GraphicsEditorPanel->clearClip();
+    if (m_ColorGradingPanel && gone(m_ColorGradingPanel->clip())) m_ColorGradingPanel->clearClip();
+    if (m_effectsPanel && gone(m_effectsPanel->clip())) m_effectsPanel->setClip(nullptr, nullptr);
+    if (m_keyframeEditor && gone(m_keyframeEditor->clip())) m_keyframeEditor->setClip(nullptr);
+    if (m_tierListPanel && gone(m_tierListPanel->clip())) m_tierListPanel->setClip(nullptr, nullptr);
 }
 
 std::shared_ptr<const RenderSnapshot> TimelineWorkspace::publishedSnapshot()

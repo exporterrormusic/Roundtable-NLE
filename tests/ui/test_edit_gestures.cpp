@@ -18,6 +18,10 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/timeline/TimelinePanel.h"
+#include "panels/timeline/TimelineWorkspace.h"
+#include "panels/effects/ColorGradingPanel.h"
+#include "panels/effects/KeyframeEditor.h"
+#include "timeline/EditOperations.h"
 #include "project/RenderStateHash.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -160,4 +164,41 @@ TEST(EditGestures, PropertiesEditRecordsExactUndo)
     EXPECT_EQ(rt::hashTimelineState(s.timeline), before);
     ASSERT_TRUE(s.stack.redo());
     EXPECT_EQ(c->label(), "After");
+}
+
+// A panel bound to a deleted clip must let go before the clip is freed (the
+// recorded step keeps it alive until it leaves history).
+TEST(EditGestures, PanelsReleaseClipsThatLeaveTheTimeline)
+{
+    Session s;
+    rt::Track* v1 = s.timeline.addVideoTrack("V1");
+    auto clip = std::make_unique<rt::VideoClip>();
+    clip->setDuration(48000);
+    rt::Clip* c = v1->addClip(std::move(clip));
+    const uint64_t id = c->id();
+
+    rt::TimelineWorkspace workspace;
+    workspace.setCommandStack(&s.stack);
+    workspace.setTimeline(&s.timeline);
+    workspace.buildPanels();
+    ASSERT_NE(workspace.effectControlsPanel(), nullptr);
+    workspace.effectControlsPanel()->setClip(c, v1);
+    if (workspace.colorGradingPanel()) workspace.colorGradingPanel()->setClip(c, v1);
+    if (workspace.keyframeEditor()) workspace.keyframeEditor()->setClip(c);
+
+    size_t trackIndex = 0;
+    for (size_t i = 0; i < s.timeline.trackCount(); ++i)
+        if (s.timeline.track(i) == v1) trackIndex = i;
+    rt::SelectionSet selection;
+    selection.selectClip(rt::ClipRef{trackIndex, id});
+    ASSERT_TRUE(s.edits.execute(
+        s.timeline, rt::EditOperations::deleteSelection(s.timeline, selection)));
+
+    // Deleted (kept alive by the step): every bound panel already let go.
+    EXPECT_EQ(workspace.effectControlsPanel()->clip(), nullptr);
+    if (workspace.colorGradingPanel()) EXPECT_EQ(workspace.colorGradingPanel()->clip(), nullptr);
+    if (workspace.keyframeEditor()) EXPECT_EQ(workspace.keyframeEditor()->clip(), nullptr);
+
+    s.stack.clear();   // frees the deleted clip; nothing may still point at it
+    EXPECT_EQ(workspace.effectControlsPanel()->clip(), nullptr);
 }

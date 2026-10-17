@@ -437,6 +437,11 @@ private:
     Project* m_snapshotProject{nullptr};
     void rebindSnapshotPublisher();
     void verifySnapshot();
+    /// After any model change: every panel still bound to a clip that is no
+    /// longer on the timeline is cleared (pointers compared, never
+    /// dereferenced). Clips leave history 200 steps later, so a panel bound
+    /// to a long-deleted clip must let go before it is freed.
+    void revalidatePanelClipBindings();
 
     // Composite service (GPU compositing + spine rendering)
     std::unique_ptr<CompositeService> m_compositeService;

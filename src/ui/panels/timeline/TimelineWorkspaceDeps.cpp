@@ -57,6 +57,9 @@ void TimelineWorkspace::setCommandStack(CommandStack* stack)
         m_historyListenerId = stack->addHistoryListener(
             [this](CommandStack::HistoryEvent event) {
                 markSnapshotDirty(event != CommandStack::HistoryEvent::Recorded);
+                // A step leaving history (trimmed, cleared) frees the clips
+                // it kept; a step undone may remove a bound clip.
+                revalidatePanelClipBindings();
             });
     }
     // Each recorded edit (and its undo/redo) names the sequence it changed.

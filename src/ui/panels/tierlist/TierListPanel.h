@@ -162,6 +162,7 @@ public:
 
     /// Bind to the selected clip. Non-TierList clips clear the panel.
     void setClip(Clip* clip, Track* track = nullptr);
+    [[nodiscard]] TierListClip* clip() const noexcept { return m_clip; }
 
     /// Rebuild everything from the bound clip.
     void refresh();
