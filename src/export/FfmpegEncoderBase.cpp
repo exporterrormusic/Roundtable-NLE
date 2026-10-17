@@ -18,6 +18,7 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 #endif
@@ -275,6 +276,21 @@ bool FfmpegEncoderBase::finishInit(int swFrameFormat)
     if (!m_swsCtx) {
         return failInit(std::string(logName()) +
                         ": failed to create pixel conversion context");
+    }
+    // The output is BT.709 limited range (and tagged so when config.bt709),
+    // but swscale converts RGB → YUV with BT.601 unless told otherwise —
+    // every composited export carried 601 colours under a 709 tag, shifting
+    // reds and greens in any player (ExportEncoder.BgraFramesEncodeAsBt709*).
+    const AVPixFmtDescriptor* outDesc =
+        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(swFrameFormat));
+    if (m_config.bt709 && outDesc && !(outDesc->flags & AV_PIX_FMT_FLAG_RGB)) {
+        const int* bt709 = sws_getCoefficients(SWS_CS_ITU709);
+        if (sws_setColorspaceDetails(m_swsCtx, bt709, /*srcRange=*/1,
+                                     bt709, /*dstRange=*/0,
+                                     0, 1 << 16, 1 << 16) < 0) {
+            spdlog::warn("{}: could not set BT.709 conversion; colours use "
+                         "swscale's default matrix", logName());
+        }
     }
 
     m_initialized = true;

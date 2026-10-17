@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -188,6 +189,102 @@ TEST(ExportEncoder, ProRes4444EncodesViaKs)
 {
     // 4444 / 4444 XQ need prores_ks (alpha / 4:4:4).
     EXPECT_TRUE(encodeSolidProRes(ProResProfile::_4444, 4));
+}
+
+namespace {
+
+struct Yuv { int y, cb, cr; };
+
+/// Encode a solid BGRA colour with the CPU H.264 encoder, decode the stream
+/// and return the YUV of the centre pixel of the last frame.
+bool encodeSolidH264(uint8_t b, uint8_t g, uint8_t r, Yuv& out)
+{
+    EncoderConfig cfg;
+    cfg.width   = 64;
+    cfg.height  = 64;
+    cfg.fpsNum  = 30;
+    cfg.fpsDen  = 1;
+    cfg.codec   = EncoderCodec::H264;
+    cfg.hwAccel = HardwareAccel::None;
+    cfg.crf     = 10;
+
+    auto enc = Encoder::create(EncoderCodec::H264, HardwareAccel::None);
+    if (!enc || !enc->init(cfg)) return false;
+
+    std::vector<uint8_t> bgra(static_cast<size_t>(cfg.width) * cfg.height * 4);
+    for (size_t i = 0; i < bgra.size(); i += 4) {
+        bgra[i] = b; bgra[i + 1] = g; bgra[i + 2] = r; bgra[i + 3] = 255;
+    }
+    std::vector<std::vector<uint8_t>> packets;
+    auto keep = [&](const EncodedPacket& p) {
+        if (p.data && p.size > 0) packets.emplace_back(p.data, p.data + p.size);
+    };
+    for (int i = 0; i < 3; ++i) {
+        if (enc->encodeFrame(bgra.data(), i)) keep(enc->lastPacket());
+        for (const auto& p : enc->pendingPackets()) keep(p);
+    }
+    enc->flush();
+    for (const auto& p : enc->flushedPackets()) keep(p);
+
+    const AVCodec* dec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    AVCodecContext* dctx = dec ? avcodec_alloc_context3(dec) : nullptr;
+    const AVCodecContext* ectx = enc->avCodecContext();
+    bool ok = dctx && ectx;
+    if (ok && ectx->extradata_size > 0) {
+        dctx->extradata = static_cast<uint8_t*>(
+            av_mallocz(ectx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE));
+        std::memcpy(dctx->extradata, ectx->extradata, ectx->extradata_size);
+        dctx->extradata_size = ectx->extradata_size;
+    }
+    ok = ok && avcodec_open2(dctx, dec, nullptr) >= 0;
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    bool got = false;
+    auto drain = [&] {
+        while (avcodec_receive_frame(dctx, frame) == 0) {
+            const int cx = frame->width / 2, cy = frame->height / 2;
+            out.y  = frame->data[0][cy * frame->linesize[0] + cx];
+            out.cb = frame->data[1][(cy / 2) * frame->linesize[1] + cx / 2];
+            out.cr = frame->data[2][(cy / 2) * frame->linesize[2] + cx / 2];
+            got = true;
+        }
+    };
+    for (auto& data : packets) {
+        if (!ok) break;
+        av_new_packet(pkt, static_cast<int>(data.size()));
+        std::memcpy(pkt->data, data.data(), data.size());
+        avcodec_send_packet(dctx, pkt);
+        av_packet_unref(pkt);
+        drain();
+    }
+    if (ok) { avcodec_send_packet(dctx, nullptr); drain(); }
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dctx);
+    enc->shutdown();
+    return ok && got;
+}
+
+} // namespace
+
+TEST(ExportEncoder, BgraFramesEncodeAsBt709LimitedRange)
+{
+    // The stream is tagged BT.709, so the BGRA → YUV conversion must use the
+    // BT.709 matrix. BT.601 (swscale's default) puts red at Y≈82, not ≈63.
+    struct Case { const char* name; uint8_t b, g, r; Yuv want; };
+    const Case cases[] = {
+        {"red",   0,   0,   255, {63,  102, 240}},
+        {"green", 0,   255, 0,   {173, 42,  26}},
+        {"blue",  255, 0,   0,   {32,  240, 118}},
+        {"grey",  128, 128, 128, {126, 128, 128}},
+    };
+    for (const auto& c : cases) {
+        Yuv got{};
+        ASSERT_TRUE(encodeSolidH264(c.b, c.g, c.r, got)) << c.name;
+        EXPECT_NEAR(got.y,  c.want.y,  2) << c.name << " Y";
+        EXPECT_NEAR(got.cb, c.want.cb, 2) << c.name << " Cb";
+        EXPECT_NEAR(got.cr, c.want.cr, 2) << c.name << " Cr";
+    }
 }
 
 TEST(ExportEncoder, FractionalFpsAutoGopIsTwoSecondsInFrames)
