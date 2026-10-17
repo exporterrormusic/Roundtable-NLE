@@ -20,6 +20,7 @@
 #include "playback/PlaybackTelemetry.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -220,6 +221,16 @@ private:
     std::deque<int64_t>     m_pendingTicks;
     std::optional<ScrubRequest> m_pendingScrub;  // latest scrub request (replaces prior)
     std::atomic<uint64_t> m_scrubGeneration{0};
+    // A paused frame answered with a stand-in source (provisionalSource) is
+    // rendered again until it is exact: one retry per kProvisionalRetryMs,
+    // at most kMaxProvisionalRetries times. Any newer request drops it (its
+    // generation goes stale). Guarded by m_reqMtx.
+    std::optional<ScrubRequest> m_provisionalRetry;
+    std::chrono::steady_clock::time_point m_provisionalRetryAt{};
+    int m_provisionalRetries{0};
+    uint64_t m_provisionalRetryGeneration{0};
+    static constexpr int kProvisionalRetryMs = 20;
+    static constexpr int kMaxProvisionalRetries = 150;   // ~3 s
 
     // Frame exchange slot (producer → presenter)
     mutable std::mutex       m_exchangeMtx;

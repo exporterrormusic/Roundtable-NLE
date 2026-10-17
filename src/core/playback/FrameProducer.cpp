@@ -210,12 +210,29 @@ void FrameProducer::producerLoop()
         // Wait for a request (scrub requests or clock ticks)
         {
             std::unique_lock lock(m_reqMtx);
-            m_reqCV.wait_for(lock, std::chrono::milliseconds(50), [this] {
+            auto wakeAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+            if (m_provisionalRetry && m_provisionalRetryAt < wakeAt)
+                wakeAt = m_provisionalRetryAt;
+            m_reqCV.wait_until(lock, wakeAt, [this] {
                 return m_pendingScrub.has_value()
                     || !m_pendingTicks.empty()
                     || !m_running.load(std::memory_order_relaxed);
             });
             if (!m_running.load(std::memory_order_relaxed)) break;
+
+            // A provisional paused frame is due for another render, unless a
+            // newer request superseded it.
+            if (m_provisionalRetry) {
+                const bool stale = m_provisionalRetry->generation !=
+                    m_scrubGeneration.load(std::memory_order_acquire);
+                if (stale || m_pendingScrub.has_value() ||
+                    (m_controller && m_controller->isPlaying())) {
+                    m_provisionalRetry.reset();
+                } else if (std::chrono::steady_clock::now() >= m_provisionalRetryAt) {
+                    m_pendingScrub = *m_provisionalRetry;
+                    m_provisionalRetry.reset();
+                }
+            }
 
             // Clear backpressure — the producer is about to process a frame.
             m_backpressure.store(false, std::memory_order_release);
@@ -456,6 +473,33 @@ void FrameProducer::produceScrubFrameImpl(const ScrubRequest& req)
         publishFrame(std::make_shared<CachedFrame>(), req.tick);
     else
         publishFrame(frame ? std::move(frame) : m_lastGoodFrame, req.tick);
+
+    // Shown a stand-in (a nearby frame while the exact one decodes): render
+    // this tick again shortly, until it is exact. The monitor's own settle
+    // window ends after ~1 s; a slow decode (busy GPU) used to outlast it
+    // and leave the paused monitor on the wrong frame.
+    {
+        std::lock_guard lock(m_reqMtx);
+        const bool current =
+            req.generation == m_scrubGeneration.load(std::memory_order_acquire);
+        if (req.generation != m_provisionalRetryGeneration) {
+            m_provisionalRetryGeneration = req.generation;
+            m_provisionalRetries = 0;
+        }
+        const bool retryAgain = renderResult.diagnostics.provisionalSource &&
+            current && !m_pendingScrub.has_value();
+        if (!retryAgain) {
+            if (current) m_provisionalRetries = 0;
+        } else if (++m_provisionalRetries <= kMaxProvisionalRetries) {
+            m_provisionalRetry = req;
+            m_provisionalRetryAt = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(kProvisionalRetryMs);
+        } else {
+            spdlog::warn("[FrameProducer] tick {} still provisional after {} retries",
+                         req.tick, kMaxProvisionalRetries);
+            m_provisionalRetries = 0;
+        }
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

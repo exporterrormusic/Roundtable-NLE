@@ -4,12 +4,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <initializer_list>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace rt {
 namespace {
@@ -371,6 +373,83 @@ TEST(PlaybackSchedulerTest, SameFrameRefreshDoesNotStarveInFlightStillRender)
     }
     cv.notify_all();
     producer.stop();
+}
+
+// A paused frame answered from a stand-in source (the exact one still
+// decoding) is rendered again, unprompted, until it is exact.
+TEST(PlaybackSchedulerTest, ProvisionalPausedFrameIsRenderedAgainUntilExact)
+{
+    FrameProducer producer;
+    std::atomic<int> calls{0};
+    auto standIn = std::make_shared<CachedFrame>();
+    standIn->width = 320;
+    standIn->height = 180;
+    auto exact = std::make_shared<CachedFrame>();
+    exact->width = 320;
+    exact->height = 180;
+
+    producer.setCompositeResultCallback(
+        [&](int64_t tick, uint32_t, uint32_t, bool, bool) {
+            RenderResult result;
+            result.timelineTick = tick;
+            result.status = RenderResultStatus::Ready;
+            const bool stillDecoding = ++calls <= 3;
+            result.frame = stillDecoding ? standIn : exact;
+            result.diagnostics.provisionalSource = stillDecoding;
+            return result;
+        });
+    producer.start();
+    producer.requestScrubFrame(1000, 320, 180, false);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::shared_ptr<CachedFrame> shown;
+    int64_t shownTick = 0;
+    while (std::chrono::steady_clock::now() < deadline && shown != exact) {
+        if (producer.waitForFrame(std::chrono::milliseconds(50)))
+            producer.consumeFrame(shown, shownTick);
+    }
+    EXPECT_EQ(shown, exact);
+    EXPECT_EQ(shownTick, 1000);
+    // Exact once: no more renders after that.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_EQ(calls.load(), 4);
+    producer.stop();
+}
+
+// A newer request supersedes a pending provisional retry.
+TEST(PlaybackSchedulerTest, NewerRequestDropsProvisionalRetry)
+{
+    FrameProducer producer;
+    std::mutex mutex;
+    std::vector<int64_t> rendered;
+    producer.setCompositeResultCallback(
+        [&](int64_t tick, uint32_t, uint32_t, bool, bool) {
+            {
+                std::lock_guard lock(mutex);
+                rendered.push_back(tick);
+            }
+            RenderResult result;
+            result.timelineTick = tick;
+            result.status = RenderResultStatus::Ready;
+            result.frame = std::make_shared<CachedFrame>();
+            result.frame->width = 64;
+            result.frame->height = 36;
+            result.diagnostics.provisionalSource = tick == 1000;   // never exact
+            return result;
+        });
+    producer.start();
+    producer.requestScrubFrame(1000, 64, 36, false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    producer.requestScrubFrame(2000, 64, 36, false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    producer.stop();
+
+    std::lock_guard lock(mutex);
+    ASSERT_FALSE(rendered.empty());
+    EXPECT_EQ(rendered.back(), 2000);
+    EXPECT_GE(std::count(rendered.begin(), rendered.end(), 1000), 2)
+        << "the provisional frame was not rendered again";
+    EXPECT_EQ(std::count(rendered.begin(), rendered.end(), 2000), 1);
 }
 
 TEST(PlaybackSchedulerTest, ProducerHonorsExplicitPendingAndBlankOutcomes)
