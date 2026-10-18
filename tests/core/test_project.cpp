@@ -49,6 +49,7 @@
 #include "audiofx/FxChain.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/Dynamics.h"
+#include "support/LegacyProjectWriterV47.h"
 
 using namespace rt;
 
@@ -709,7 +710,8 @@ TEST_F(SerializerTest, TitleClipMigratesToGraphicOnLoad)
     auto original = makeTestProject();
     const uint64_t titleId = original->timeline()->track(0)->clip(2)->id();
 
-    auto data = serializer.serialize(*original);
+    // Only positional (v1–47) files can hold a Title record.
+    auto data = legacy_v47::serialize(*original);
     auto loaded = serializer.deserialize(data);
     ASSERT_NE(loaded, nullptr);
 
@@ -865,9 +867,9 @@ TEST_F(SerializerTest, PreV46FrameAlignSnapsVisualClipsOnceToTheCanonicalGrid)
     const uint64_t filmId = filmClip->id();
     vt2->addClip(std::move(filmClip));
 
-    auto bytes = serializer.serialize(*p);
+    auto bytes = legacy_v47::serialize(*p);
     ASSERT_GE(bytes.size(), 12u);
-    ASSERT_EQ(bytes[8], ProjectSerializer::FORMAT_VERSION);  // LE u32 after magic
+    ASSERT_EQ(bytes[8], legacy_v47::kVersion);  // LE u32 after magic
     bytes[8] = 45;  // same layout; v46 added no bytes
 
     auto loaded = serializer.deserialize(bytes);
@@ -2015,9 +2017,9 @@ TEST_F(SerializerTest, PreV45VignetteAmountAndRoundnessMigrateOnLoad)
     video->effects().addEffect(std::move(grading));
     p->timeline()->track(0)->addClip(std::move(video));
 
-    auto bytes = serializer.serialize(*p);
+    auto bytes = legacy_v47::serialize(*p);
     ASSERT_GE(bytes.size(), 12u);
-    ASSERT_EQ(bytes[8], ProjectSerializer::FORMAT_VERSION);  // LE u32 after magic
+    ASSERT_EQ(bytes[8], legacy_v47::kVersion);  // LE u32 after magic
 
     auto current = serializer.deserialize(bytes);
     ASSERT_NE(current, nullptr);

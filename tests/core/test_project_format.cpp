@@ -46,7 +46,7 @@
 #include "audiofx/Dynamics.h"
 #include "PathUtils.h"
 #include "project/BinaryIO.h"
-#include "project/ClipSerialization.h"
+#include "support/LegacyProjectWriterV47.h"
 #include "project/schema/LeafSchemas.h"
 #include "project/schema/ClipSchemas.h"
 
@@ -721,7 +721,7 @@ void readRecordInto(const std::vector<uint8_t>& bytes, V& out)
 std::vector<uint8_t> legacyTrackBytes(const KeyframeTrack<float>& track)
 {
     BinaryWriter w;
-    writeKeyframeTrack(w, track);
+    legacy_v47::writeKeyframeTrack(w, track);
     return w.data();
 }
 
@@ -896,7 +896,7 @@ namespace {
 std::vector<uint8_t> legacyClipBytes(const Clip& clip)
 {
     BinaryWriter w;
-    rt::writeClip(w, clip);
+    legacy_v47::writeClip(w, clip);
     return w.data();
 }
 

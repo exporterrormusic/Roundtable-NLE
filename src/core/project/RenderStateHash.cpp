@@ -4,7 +4,7 @@
 
 #include "project/RenderStateHash.h"
 
-#include "project/ClipSerialization.h"   // writeClip — full per-clip serialization
+#include "project/schema/ClipSchemas.h" // clipBytes — full per-clip saved state
 #include "project/BinaryIO.h"            // BinaryWriter
 #include "project/Settings.h"
 #include "project/Project.h"
@@ -53,6 +53,14 @@ constexpr int kMaxNestDepth = 16;
     return tr.type() == TrackType::Video && !tr.isDivider();
 }
 
+/// A clip's full saved state (the same bytes the project file holds).
+void appendClipState(BinaryWriter& w, const Clip& clip)
+{
+    const std::vector<uint8_t> bytes = record::clipBytes(clip);
+    w.writeU32(static_cast<uint32_t>(bytes.size()));
+    w.writeBytes(bytes.data(), bytes.size());
+}
+
 // Append the full compositing config governing `tick` of `timeline` into `w`.
 // Recurses into active nested sequences when `sequences` is supplied; `ancestors`
 // is the stack of timelines already being hashed up the recursion, used to break
@@ -91,9 +99,9 @@ void appendCompositeConfig(BinaryWriter& w, const Timeline& timeline, int64_t ti
             if (tick < c->timelineIn() || tick >= c->timelineOut()) continue;
             w.writeU8(0x01);                              // active-clip marker
             w.writeU32(static_cast<uint32_t>(ti));        // its track (layer order)
-            writeClip(w, *c);                             // FULL serialized state
+            appendClipState(w, *c);                       // FULL saved state
 
-            // Nested sequence: writeClip captured only the reference, so fold
+            // Nested sequence: the clip state holds only the reference, so fold
             // in the referenced sequence's inner config at the mapped tick —
             // otherwise an edit inside the nested sequence wouldn't invalidate
             // this composite.  Map the outer tick exactly as the compositor:
@@ -188,7 +196,7 @@ uint64_t hashTimelineState(const Timeline& timeline)
             const Clip* c = tr->clip(ci);
             if (!c) continue;
             w.writeU8(0x01);
-            writeClip(w, *c);
+            appendClipState(w, *c);
         }
         for (const Transition& t : tr->transitions()) {
             w.writeU8(0x02);

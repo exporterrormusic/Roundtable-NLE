@@ -9,7 +9,7 @@
 
 #include "project/schema/ClipSchemas.h"
 
-#include "project/ClipSerialization.h"
+#include "project/VideoPathResolve.h"
 #include "project/schema/LeafSchemas.h"
 
 #include "effects/Effect.h"

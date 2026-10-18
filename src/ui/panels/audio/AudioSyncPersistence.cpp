@@ -15,7 +15,7 @@
 #include "Settings.h"
 
 #include "ai/ScriptMatcher.h"     // For Script (complete type needed by ScriptSession dtor)
-#include "project/ClipSerialization.h"
+#include "project/BinaryIO.h"
 
 namespace rt {
 // ═══════════════════════════════════════════════════════════════════════════

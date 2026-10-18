@@ -5,7 +5,7 @@
 #include "edit/ModelDelta.h"
 
 #include "project/BinaryIO.h"
-#include "project/ClipSerialization.h"
+#include "project/schema/ClipSchemas.h"
 #include "timeline/Clip.h"
 #include "timeline/Timeline.h"
 
@@ -57,11 +57,10 @@ namespace {
         && a.param2 == b.param2;
 }
 
+/// A clip's full saved state: two clips with the same bytes are the same.
 [[nodiscard]] std::vector<uint8_t> serialized(const Clip& clip)
 {
-    BinaryWriter w;
-    writeClip(w, clip);
-    return w.data();
+    return record::clipBytes(clip);
 }
 
 [[nodiscard]] DeltaSequenceState captureState(const Timeline& tl)

@@ -1,16 +1,21 @@
 /*
- * ProjectSerializer.cpp — Binary serialization for .rtp files.
- * Step 5: Project Serialization
+ * ProjectSerializer.cpp — saving and loading .rtp project files.
  *
- * Uses a simple streaming binary format with section tags.
- * All values little-endian (native on x86/x64).
+ * Saving always writes the newest format: field-tagged records (v48+, see
+ * ProjectSerializer.h and schema/Schema.h). Loading dispatches on the
+ * file's version: records here, positional files (v1–47) through the frozen
+ * ProjectSerializerLegacy.cpp. The load repairs both share live here too.
  */
 
 #include "project/ProjectSerializer.h"
-#include "project/ClipSerialization.h"
+#include "project/ProjectSerializerInternal.h"
+#include "project/BinaryIO.h"
 #include "project/Project.h"
 #include "project/Settings.h"
 #include "project/AssetDatabase.h"
+#include "project/schema/ClipSchemas.h"
+#include "project/schema/LeafSchemas.h"
+#include "project/schema/Schema.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
@@ -19,6 +24,7 @@
 #include "timeline/Transition.h"
 #include "timeline/VideoClip.h"
 #include "AppPaths.h"
+#include "FrameTime.h"
 #include "PathUtils.h"
 
 #include <fstream>
@@ -30,20 +36,11 @@
 
 namespace rt {
 
-namespace {
+// ═══════════════════════════════════════════════════════════════════════════
+// Load repairs (both formats)
+// ═══════════════════════════════════════════════════════════════════════════
 
-constexpr uint32_t kMaxProjectSections = 256;
-constexpr uint32_t kMaxSequences = 10000;
-constexpr uint32_t kMaxTracksPerSequence = 65536;
-constexpr uint32_t kMaxClipsPerTrack = 1000000;
-constexpr uint32_t kMaxTransitionsPerTrack = 1000000;
-constexpr uint32_t kMaxMarkersPerSequence = 1000000;
-constexpr uint32_t kMaxAssets = 1000000;
-constexpr uint32_t kMaxCharacters = 100000;
-constexpr uint32_t kMaxBinItems = 1000000;
-constexpr uint32_t kMaxBinFolders = 100000;
-constexpr uint32_t kMaxFolderChildren = 1000000;
-constexpr uint32_t kMaxSectionBytes = 256u * 1024u * 1024u;
+namespace project_detail {
 
 // Re-link a track's transitions to its clips by timeline geometry.
 //
@@ -233,908 +230,506 @@ void dedupeTransitions(Track& track)
     }
 }
 
-} // namespace
+} // namespace project_detail
 
+using namespace project_detail;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Serialize
+// v48 records: what each section holds. Field ids are append-only (see
+// schema/Schema.h): add new fields at the end with the next id.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The bin as one record (items + folders).
+struct BinStateRecord
+{
+    std::vector<Project::BinItem>   items;
+    std::vector<Project::BinFolder> folders;
+};
+
+} // namespace rt
+
+namespace rt::record {
+
+template <> struct SchemaOf<Project::BinItem> { static const Schema<Project::BinItem>& get(); };
+template <> struct SchemaOf<Project::BinFolder> { static const Schema<Project::BinFolder>& get(); };
+template <> struct SchemaOf<AssetEntry> { static const Schema<AssetEntry>& get(); };
+
+#define RT_MEMBER(Type, id, name) \
+    member<Type>(id, #name, [](Type& o) -> auto& { return o.name; })
+
+const Schema<Project::BinItem>& SchemaOf<Project::BinItem>::get()
+{
+    using B = Project::BinItem;
+    static const Schema<B> s("BinItem", {
+        RT_MEMBER(B, 1, id),
+        RT_MEMBER(B, 2, path),
+        RT_MEMBER(B, 3, displayName),
+        RT_MEMBER(B, 4, labelColor),
+    });
+    return s;
+}
+
+const Schema<Project::BinFolder>& SchemaOf<Project::BinFolder>::get()
+{
+    using F = Project::BinFolder;
+    static const Schema<F> s("BinFolder", {
+        RT_MEMBER(F, 1, name),
+        RT_MEMBER(F, 2, expanded),
+        RT_MEMBER(F, 3, childKeys),
+    });
+    return s;
+}
+
+const Schema<AssetEntry>& SchemaOf<AssetEntry>::get()
+{
+    static const Schema<AssetEntry> s("AssetEntry", {
+        RT_MEMBER(AssetEntry, 1, id),
+        RT_MEMBER(AssetEntry, 2, type),
+        RT_MEMBER(AssetEntry, 3, name),
+        RT_MEMBER(AssetEntry, 4, path),
+        RT_MEMBER(AssetEntry, 5, absolutePath),
+        RT_MEMBER(AssetEntry, 6, fileSize),
+        RT_MEMBER(AssetEntry, 7, hash),
+    });
+    return s;
+}
+
+} // namespace rt::record
+
+namespace rt {
+
+namespace {
+
+using record::RecordReader;
+using record::RecordWriter;
+using record::Schema;
+using record::SchemaOf;
+using record::custom;
+using record::field;
+using record::member;
+using record::detail::kListElement;
+
+/// Each element of the list record in the current field of `r`, as a
+/// nested record. False when the field isn't a list; a malformed list
+/// fails `r`.
+template <class Fn>
+bool forEachListRecord(RecordReader& r, Fn&& fn)
+{
+    RecordReader list;
+    if (r.kind() != record::Kind::Bytes) return false;
+    if (!r.readRecord(list)) { r.fail(); return true; }
+    while (list.next()) {
+        RecordReader item;
+        if (list.id() != kListElement || !list.readRecord(item)) continue;
+        if (!fn(item)) { list.fail(); break; }
+    }
+    if (!list.ok()) r.fail();
+    return true;
+}
+
+/// The first field `id` of a record, read as V (the record is not consumed).
+template <class V>
+bool peekField(const RecordReader& r, uint32_t id, V& out)
+{
+    RecordReader scan = r;
+    while (scan.next())
+        if (scan.id() == id) return record::readValue(scan, out);
+    return false;
+}
+
+const Schema<Track>& trackSchema()
+{
+    using T = Track;
+    static const Schema<T> s("Track", {
+        custom<T>(1, "type",
+            [](RecordWriter& w, uint32_t id, const T& t) { record::writeValue(w, id, t.type()); },
+            // Read first, by the sequence, to create the track.
+            [](RecordReader&, T&) { return true; }),
+        field<T>(2, "name", [](const T& t) { return t.name(); },
+            [](T& t, std::string v) { t.setName(v); }),
+        field<T>(3, "locked", [](const T& t) { return t.isLocked(); },
+            [](T& t, bool v) { t.setLocked(v); }),
+        field<T>(4, "muted", [](const T& t) { return t.isMuted(); },
+            [](T& t, bool v) { t.setMuted(v); }),
+        field<T>(5, "soloed", [](const T& t) { return t.isSoloed(); },
+            [](T& t, bool v) { t.setSoloed(v); }),
+        field<T>(6, "height", [](const T& t) { return t.height(); },
+            [](T& t, float v) { t.setHeight(v); }),
+        field<T>(7, "syncLocked", [](const T& t) { return t.isSyncLocked(); },
+            [](T& t, bool v) { t.setSyncLocked(v); }),
+        field<T>(8, "divider", [](const T& t) { return t.isDivider(); },
+            [](T& t, bool v) { t.setDivider(v); }),
+        field<T>(9, "permanentDivider", [](const T& t) { return t.isPermanentDivider(); },
+            [](T& t, bool v) { t.setPermanentDivider(v); }),
+        field<T>(10, "captionTrack", [](const T& t) { return t.isCaptionTrack(); },
+            [](T& t, bool v) { t.setCaptionTrack(v); }),
+        custom<T>(11, "clips",
+            [](RecordWriter& w, uint32_t id, const T& t) {
+                RecordWriter list = w.nested();
+                for (size_t i = 0; i < t.clipCount(); ++i) {
+                    RecordWriter n = list.nested();
+                    record::writeClip(n, *t.clip(i));
+                    list.writeRecord(kListElement, n);
+                }
+                w.writeRecord(id, list);
+            },
+            [](RecordReader& r, T& t) -> bool {
+                return forEachListRecord(r, [&t](RecordReader& item) {
+                    if (auto clip = record::readClip(item))
+                        t.addClip(std::move(clip), TrackMutationPolicy::BypassLock);
+                    return item.ok();
+                });
+            }),
+        custom<T>(12, "transitions",
+            [](RecordWriter& w, uint32_t id, const T& t) {
+                record::writeValue(w, id, t.transitions());
+            },
+            [](RecordReader& r, T& t) -> bool {
+                std::vector<Transition> transitions;
+                if (!record::readValue(r, transitions)) return false;
+                for (const Transition& tr : transitions)
+                    t.addTransition(tr, TrackMutationPolicy::BypassLock);
+                return true;
+            }),
+    });
+    return s;
+}
+
+const Schema<Timeline>& sequenceSchema()
+{
+    using S = Timeline;
+    static const Schema<S> s("Sequence", {
+        field<S>(1, "name", [](const S& t) { return t.name(); },
+            [](S& t, std::string v) { t.setName(v); }),
+        field<S>(2, "playhead", [](const S& t) { return t.playheadPosition(); },
+            [](S& t, int64_t v) { t.setPlayheadPosition(v); }),
+        field<S>(3, "inPoint", [](const S& t) { return t.inPoint(); },
+            [](S& t, int64_t v) { t.setInPoint(v); }),
+        field<S>(4, "outPoint", [](const S& t) { return t.outPoint(); },
+            [](S& t, int64_t v) { t.setOutPoint(v); }),
+        field<S>(5, "settings", [](const S& t) -> const Settings& { return t.settings(); },
+            [](S& t, Settings v) { t.setSettings(v); }),
+        custom<S>(6, "tracks",
+            [](RecordWriter& w, uint32_t id, const S& t) {
+                RecordWriter list = w.nested();
+                for (size_t i = 0; i < t.trackCount(); ++i) {
+                    RecordWriter n = list.nested();
+                    trackSchema().write(n, *t.track(i));
+                    list.writeRecord(kListElement, n);
+                }
+                w.writeRecord(id, list);
+            },
+            [](RecordReader& r, S& t) -> bool {
+                const bool ok = forEachListRecord(r, [&t](RecordReader& item) {
+                    TrackType type = TrackType::Video;
+                    if (!peekField(item, 1, type)) return item.ok();   // no type: left out
+                    // Appended in saved order (addVideoTrack/addAudioTrack
+                    // would re-sort and move user dividers).
+                    Track* track = t.insertTrack(t.trackCount(), std::make_unique<Track>(type));
+                    if (!trackSchema().read(item, *track)) return false;
+                    relinkTransitionsByGeometry(*track);
+                    dedupeTransitions(*track);
+                    return true;
+                });
+                t.sortTracksByType();
+                return ok;
+            }),
+        field<S>(7, "markers",
+            [](const S& t) -> const std::vector<Marker>& { return t.markers(); },
+            [](S& t, std::vector<Marker> markers) {
+                while (!t.markers().empty()) t.removeMarker(0);
+                for (const Marker& m : markers) t.addMarker(m.time, m.label, m.color);
+            }),
+    });
+    return s;
+}
+
+const Schema<Project>& projectMetaSchema()
+{
+    using P = Project;
+    static const Schema<P> s("ProjectMeta", {
+        field<P>(1, "name", [](const P& p) { return p.name(); },
+            [](P& p, std::string v) { p.setName(v); }),
+        field<P>(2, "show", [](const P& p) { return p.show(); },
+            [](P& p, std::string v) { p.setShow(v); }),
+    });
+    return s;
+}
+
+const Schema<BinStateRecord>& binStateSchema()
+{
+    static const Schema<BinStateRecord> s("BinState", {
+        member<BinStateRecord>(1, "items", [](BinStateRecord& b) -> auto& { return b.items; }),
+        member<BinStateRecord>(2, "folders", [](BinStateRecord& b) -> auto& { return b.folders; }),
+    });
+    return s;
+}
+
+// Fields of the Sequences, Assets and WorkspaceState records.
+constexpr uint32_t kSequencesActive = 1;
+constexpr uint32_t kSequencesList = 2;
+constexpr uint32_t kAssetsList = 1;
+constexpr uint32_t kWorkspaceOpenSequences = 1;
+
+} // namespace
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Save (always the newest format)
 // ═══════════════════════════════════════════════════════════════════════════
 
 std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
 {
     BinaryWriter out;
-
-    // ── Header ──────────────────────────────────────────────────────────
     out.writeBytes(MAGIC, 8);
     out.writeU32(FORMAT_VERSION);
-    // Section count placeholder — we'll count as we go
-    size_t sectionCountPos = out.size();
+    const size_t sectionCountPos = out.size();
     out.writeU32(0);
-    // Reserved 16 bytes
-    for (int i = 0; i < 16; ++i) out.writeU8(0);
+    for (int i = 0; i < 16; ++i) out.writeU8(0);   // reserved
 
     uint32_t sectionCount = 0;
-
-    // ── Section: Settings ───────────────────────────────────────────────
-    {
-        BinaryWriter sec;
-        // Project default template (NOT a sequence's settings — those are
-        // written per-sequence in Section_Sequences). Kept for the New
-        // Sequence dialog defaults and for loading pre-v25 projects.
-        const auto& s = project.defaultSettings();
-        sec.writeU32(s.resolution().width);
-        sec.writeU32(s.resolution().height);
-        sec.writeF64(s.frameRate());
-        sec.writeU8(static_cast<uint8_t>(s.colorSpace()));
-        sec.writeU32(s.sampleRate());
-        sec.writeU32(s.audioBitDepth());
-        sec.writeU32(s.audioChannels());
-        sec.writeString(s.exportSettings().codec);
-        sec.writeU32(s.exportSettings().quality);
-        sec.writeU32(s.exportSettings().audioBitrate);
-        sec.writeString(s.exportSettings().outputPath);
-        out.beginSection(Section_Settings, sec.data());
+    auto section = [&](uint32_t tag, const std::vector<uint8_t>& data) {
+        out.beginSection(tag, data);
         ++sectionCount;
-    }
+    };
 
-    // ── Section: Timeline metadata (backward compat — active sequence) ──
+    // Settings and ProjectMeta first: readMetadata reads only the start.
     {
-        BinaryWriter sec;
-        const Timeline* tl = project.timeline();
-        sec.writeString(tl->name());
-        sec.writeString(project.name());
-        sec.writeI64(tl->playheadPosition());
-        sec.writeI64(tl->inPoint());
-        sec.writeI64(tl->outPoint());
-        out.beginSection(Section_Timeline, sec.data());
-        ++sectionCount;
+        RecordWriter w;
+        SchemaOf<Settings>::get().write(w, project.defaultSettings());
+        section(Section_Settings, w.data());
     }
-
-    // ── Section: Tracks + Clips (backward compat — active sequence) ─────
     {
-        BinaryWriter sec;
-        const Timeline* tl = project.timeline();
-        sec.writeU32(static_cast<uint32_t>(tl->trackCount()));
-
-        for (size_t ti = 0; ti < tl->trackCount(); ++ti)
-        {
-            const Track* track = tl->track(ti);
-            sec.writeU8(static_cast<uint8_t>(track->type()));
-            sec.writeString(track->name());
-            sec.writeU8(track->isLocked() ? 1 : 0);
-            sec.writeU8(track->isMuted() ? 1 : 0);
-            sec.writeU8(track->isSoloed() ? 1 : 0);
-            sec.writeF32(track->height());
-            sec.writeU8(track->isSyncLocked() ? 1 : 0); // v5+
-            sec.writeU8(track->isDivider() ? 1 : 0);    // v18+
-            sec.writeU8(track->isPermanentDivider() ? 1 : 0); // v20+
-            sec.writeU8(track->isCaptionTrack() ? 1 : 0); // v21+
-
-            // Clips for this track
-            sec.writeU32(static_cast<uint32_t>(track->clipCount()));
-            for (size_t ci = 0; ci < track->clipCount(); ++ci)
-            {
-                writeClip(sec, *track->clip(ci));
-            }
-
-            // Transitions for this track
-            sec.writeU32(static_cast<uint32_t>(track->transitionCount()));
-            for (size_t xi = 0; xi < track->transitionCount(); ++xi)
-            {
-                const Transition* t = track->transition(xi);
-                sec.writeU8(static_cast<uint8_t>(t->type));
-                sec.writeI64(t->duration);
-                sec.writeI64(t->offset);
-                sec.writeF32(t->param1);
-                sec.writeF32(t->param2);
-                // v16+: clip linkage + edit-point position. Without these
-                // the transition collapses to tick 0 on reload and is
-                // effectively lost.
-                sec.writeU64(t->leftClipId);
-                sec.writeU64(t->rightClipId);
-                sec.writeI64(t->editPointTick);
-            }
+        RecordWriter w;
+        projectMetaSchema().write(w, project);
+        section(Section_ProjectMeta, w.data());
+    }
+    {
+        RecordWriter w;
+        w.writeVarint(kSequencesActive, project.activeSequenceIndex());
+        RecordWriter list = w.nested();
+        for (size_t i = 0; i < project.sequenceCount(); ++i) {
+            RecordWriter n = list.nested();
+            sequenceSchema().write(n, *project.sequence(i));
+            list.writeRecord(kListElement, n);
         }
-
-        out.beginSection(Section_Tracks, sec.data());
-        ++sectionCount;
+        w.writeRecord(kSequencesList, list);
+        section(Section_Sequences, w.data());
     }
-
-    // ── Section: Markers (backward compat — active sequence) ────────────
     {
-        BinaryWriter sec;
-        const auto& markers = project.timeline()->markers();
-        sec.writeU32(static_cast<uint32_t>(markers.size()));
-        for (const auto& m : markers)
-        {
-            sec.writeI64(m.time);
-            sec.writeString(m.label);
-            sec.writeU32(m.color);
-        }
-        out.beginSection(Section_Markers, sec.data());
-        ++sectionCount;
-    }
-
-    // ── Section: Sequences (all sequences including non-active) ─────────
-    {
-        BinaryWriter sec;
-        sec.writeU32(static_cast<uint32_t>(project.sequenceCount()));
-        sec.writeU32(static_cast<uint32_t>(project.activeSequenceIndex()));
-
-        for (size_t si = 0; si < project.sequenceCount(); ++si)
-        {
-            const Timeline* tl = project.sequence(si);
-
-            // Sequence metadata
-            sec.writeString(tl->name());
-            sec.writeI64(tl->playheadPosition());
-            sec.writeI64(tl->inPoint());
-            sec.writeI64(tl->outPoint());
-
-            // Tracks + clips
-            sec.writeU32(static_cast<uint32_t>(tl->trackCount()));
-            for (size_t ti = 0; ti < tl->trackCount(); ++ti)
-            {
-                const Track* track = tl->track(ti);
-                sec.writeU8(static_cast<uint8_t>(track->type()));
-                sec.writeString(track->name());
-                sec.writeU8(track->isLocked() ? 1 : 0);
-                sec.writeU8(track->isMuted() ? 1 : 0);
-                sec.writeU8(track->isSoloed() ? 1 : 0);
-                sec.writeF32(track->height());
-                sec.writeU8(track->isSyncLocked() ? 1 : 0); // v5+
-                sec.writeU8(track->isDivider() ? 1 : 0);    // v18+
-                sec.writeU8(track->isPermanentDivider() ? 1 : 0); // v20+
-                sec.writeU8(track->isCaptionTrack() ? 1 : 0); // v21+
-
-                sec.writeU32(static_cast<uint32_t>(track->clipCount()));
-                for (size_t ci = 0; ci < track->clipCount(); ++ci)
-                    writeClip(sec, *track->clip(ci));
-
-                sec.writeU32(static_cast<uint32_t>(track->transitionCount()));
-                for (size_t xi = 0; xi < track->transitionCount(); ++xi)
-                {
-                    const Transition* t = track->transition(xi);
-                    sec.writeU8(static_cast<uint8_t>(t->type));
-                    sec.writeI64(t->duration);
-                    sec.writeI64(t->offset);
-                    sec.writeF32(t->param1);
-                    sec.writeF32(t->param2);
-                    // v16+: clip linkage + edit-point position
-                    sec.writeU64(t->leftClipId);
-                    sec.writeU64(t->rightClipId);
-                    sec.writeI64(t->editPointTick);
-                }
-            }
-
-            // Markers for this sequence
-            const auto& markers = tl->markers();
-            sec.writeU32(static_cast<uint32_t>(markers.size()));
-            for (const auto& m : markers)
-            {
-                sec.writeI64(m.time);
-                sec.writeString(m.label);
-                sec.writeU32(m.color);
-            }
-
-            // Per-sequence settings (v25+) — resolution/fps/colour/audio are
-            // independent per sequence, like Premiere Pro.
-            const auto& ss = tl->settings();
-            sec.writeU32(ss.resolution().width);
-            sec.writeU32(ss.resolution().height);
-            sec.writeF64(ss.frameRate());
-            sec.writeU8(static_cast<uint8_t>(ss.colorSpace()));
-            sec.writeU32(ss.sampleRate());
-            sec.writeU32(ss.audioBitDepth());
-            sec.writeU32(ss.audioChannels());
-            sec.writeString(ss.exportSettings().codec);
-            sec.writeU32(ss.exportSettings().quality);
-            sec.writeU32(ss.exportSettings().audioBitrate);
-            sec.writeString(ss.exportSettings().outputPath);
-        }
-
-        out.beginSection(Section_Sequences, sec.data());
-        ++sectionCount;
-    }
-
-    // ── Section: Asset entries ──────────────────────────────────────────
-    {
-        BinaryWriter sec;
-        const AssetDatabase* db = project.assets();
-        sec.writeU32(static_cast<uint32_t>(db->assetCount()));
-
-        // Serialize all assets by type
+        // By type, in the same order the positional writer used.
+        std::vector<AssetEntry> assets;
         for (auto t : {AssetType::Character, AssetType::Background, AssetType::Audio,
                        AssetType::Video, AssetType::Image, AssetType::Font})
-        {
-            auto assets = db->findByType(t);
-            for (const AssetEntry* a : assets)
-            {
-                sec.writeU64(a->id);
-                sec.writeU8(static_cast<uint8_t>(a->type));
-                sec.writeString(a->name);
-                sec.writePath(a->path);
-                sec.writePath(a->absolutePath);
-                sec.writeU64(a->fileSize);
-                sec.writeString(a->hash);
-            }
-        }
-
-        out.beginSection(Section_Assets, sec.data());
-        ++sectionCount;
+            for (const AssetEntry* a : project.assets()->findByType(t))
+                assets.push_back(*a);
+        RecordWriter w;
+        record::writeValue(w, kAssetsList, assets);
+        section(Section_Assets, w.data());
     }
-
-    // ── Section: Character assets ───────────────────────────────────────
     {
-        BinaryWriter sec;
-        const auto& chars = project.assets()->characters();
-        sec.writeU32(static_cast<uint32_t>(chars.size()));
-        for (const auto& c : chars)
-        {
-            sec.writeString(c.name);
-            sec.writePath(c.basePath);
-            sec.writeU32(static_cast<uint32_t>(c.outfits.size()));
-            for (const auto& o : c.outfits) sec.writeString(o);
-            sec.writeU32(static_cast<uint32_t>(c.stances.size()));
-            for (const auto& s : c.stances) sec.writeString(s);
-        }
-        out.beginSection(Section_Characters, sec.data());
-        ++sectionCount;
-    }
-
-    // ── Section: Bin state (v14+: rich per-instance items + folders) ────
-    {
-        BinaryWriter sec;
-
-        // Rich bin items: each is an independent bin entry (footage can
-        // appear multiple times as separate "master clips"). Falls back
-        // to deriving from binFiles() for projects that never populated
-        // the rich model.
-        const auto& binItems = project.binItems();
-        if (!binItems.empty()) {
-            sec.writeU32(static_cast<uint32_t>(binItems.size()));
-            for (const auto& it : binItems) {
-                sec.writeU64(it.id);
-                sec.writePath(it.path);
-                sec.writeString(it.displayName);
-                sec.writeU32(it.labelColor);
-            }
-        } else {
-            const auto& binFiles = project.binFiles();
-            sec.writeU32(static_cast<uint32_t>(binFiles.size()));
+        // Rich bin items; a project that never filled them derives them from
+        // its bin files, as the positional writer did.
+        BinStateRecord bin;
+        bin.items = project.binItems();
+        if (bin.items.empty()) {
             uint64_t synthId = 1;
-            for (const auto& f : binFiles) {
-                sec.writeU64(synthId++);
-                sec.writePath(f);
-                sec.writeString(std::string{});      // no custom name
-                sec.writeU32(0xFF888888u);           // default label
-            }
+            for (const auto& f : project.binFiles())
+                bin.items.push_back({synthId++, f, std::string{}, 0xFF888888u});
         }
-
-        const auto& binFolders = project.binFolders();
-        sec.writeU32(static_cast<uint32_t>(binFolders.size()));
-        for (const auto& bf : binFolders)
-        {
-            sec.writeString(bf.name);
-            sec.writeU8(bf.expanded ? 1 : 0);
-            sec.writeU32(static_cast<uint32_t>(bf.childKeys.size()));
-            for (const auto& k : bf.childKeys)
-                sec.writeString(k);
-        }
-
-        out.beginSection(Section_BinState, sec.data());
-        ++sectionCount;
+        bin.folders = project.binFolders();
+        RecordWriter w;
+        binStateSchema().write(w, bin);
+        section(Section_BinState, w.data());
     }
-
-    // ── Section: AudioSync state (opaque blob from AudioSync panel) ─────
+    if (!project.audioSyncBlob().empty())
+        section(Section_AudioSync, project.audioSyncBlob());
     {
-        const auto& blob = project.audioSyncBlob();
-        if (!blob.empty()) {
-            out.beginSection(Section_AudioSync, blob);
-            ++sectionCount;
-        }
+        std::vector<uint64_t> open(project.openSequenceIndices().begin(),
+                                   project.openSequenceIndices().end());
+        RecordWriter w;
+        record::writeValue(w, kWorkspaceOpenSequences, open);
+        section(Section_WorkspaceState, w.data());
     }
 
-    // ── Section: Project metadata (show assignment) ─────────────────────
-    if (!project.show().empty()) {
-        BinaryWriter sec;
-        sec.writeString(project.show());
-        out.beginSection(Section_ProjectMeta, sec.data());
-        ++sectionCount;
-    }
-
-    // ── Section: Per-project workspace state ─────────────────────────────
-    // Keep this separate from sequence content so future UI state can evolve
-    // without changing the timeline record layout.
-    {
-        BinaryWriter sec;
-        const auto& openIndices = project.openSequenceIndices();
-        sec.writeU32(static_cast<uint32_t>(openIndices.size()));
-        for (size_t index : openIndices)
-            sec.writeU32(static_cast<uint32_t>(index));
-        out.beginSection(Section_WorkspaceState, sec.data());
-        ++sectionCount;
-    }
-
-    // ── Patch section count ─────────────────────────────────────────────
     auto& d = const_cast<std::vector<uint8_t>&>(out.data());
-    d[sectionCountPos]     = static_cast<uint8_t>(sectionCount);
-    d[sectionCountPos + 1] = static_cast<uint8_t>(sectionCount >> 8);
-    d[sectionCountPos + 2] = static_cast<uint8_t>(sectionCount >> 16);
-    d[sectionCountPos + 3] = static_cast<uint8_t>(sectionCount >> 24);
-
+    for (int i = 0; i < 4; ++i)
+        d[sectionCountPos + i] = static_cast<uint8_t>(sectionCount >> (8 * i));
     return out.data();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Deserialize
+// Load
 // ═══════════════════════════════════════════════════════════════════════════
 
 std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_t>& data) const
 {
-    if (data.size() < 32) // Header is 32 bytes minimum
-    {
+    if (data.size() < 32) {
         spdlog::error("ProjectSerializer: file too small ({} bytes)", data.size());
         return nullptr;
     }
-
-    BinaryReader r(data.data(), data.size());
-
-    // ── Verify magic ────────────────────────────────────────────────────
-    for (int i = 0; i < 8; ++i)
-    {
-        if (r.readU8() != MAGIC[i])
-        {
-            spdlog::error("ProjectSerializer: invalid magic header");
-            return nullptr;
-        }
-    }
-
-    uint32_t version = r.readU32();
-    if (version > FORMAT_VERSION)
-    {
-        spdlog::error("ProjectSerializer: format version {} > supported {}", version, FORMAT_VERSION);
+    if (!std::equal(MAGIC, MAGIC + 8, data.begin())) {
+        spdlog::error("ProjectSerializer: invalid magic header");
         return nullptr;
     }
+    const uint32_t version = static_cast<uint32_t>(data[8])
+        | (static_cast<uint32_t>(data[9]) << 8)
+        | (static_cast<uint32_t>(data[10]) << 16)
+        | (static_cast<uint32_t>(data[11]) << 24);
+    if (version > FORMAT_VERSION) {
+        spdlog::error("ProjectSerializer: format version {} > supported {}", version,
+                      FORMAT_VERSION);
+        return nullptr;
+    }
+    return version <= LAST_POSITIONAL_VERSION ? deserializeLegacy(data)
+                                              : deserializeRecords(data);
+}
 
+std::unique_ptr<Project> ProjectSerializer::deserializeRecords(const std::vector<uint8_t>& data)
+{
+    BinaryReader r(data.data(), data.size());
+    r.skip(12);   // magic + version (checked by deserialize)
     const uint32_t sectionCount = r.readCount(kMaxProjectSections, 8);
-    r.skip(16); // Reserved
-
+    r.skip(16);   // reserved
     if (!r.ok()) {
-        spdlog::error("ProjectSerializer: corrupt project header at byte {}",
-                      r.errorPosition());
+        spdlog::error("ProjectSerializer: corrupt project header");
         return nullptr;
     }
 
     auto project = std::make_unique<Project>();
-    bool hasSequencesSection = false;  // Track whether v4 multi-sequence section exists
-    bool hasWorkspaceStateSection = false;
-    std::vector<size_t> savedOpenSequenceIndices;
+    bool hasWorkspaceState = false;
+    std::vector<size_t> openSequences;
 
-    // ── Read sections ───────────────────────────────────────────────────
-    for (uint32_t s = 0; s < sectionCount; ++s)
-    {
+    for (uint32_t s = 0; s < sectionCount; ++s) {
         if (!r.hasRemaining(8)) {
-            spdlog::error("ProjectSerializer: missing section header {} of {}",
-                          s + 1, sectionCount);
+            spdlog::error("ProjectSerializer: missing section header {} of {}", s + 1,
+                          sectionCount);
             return nullptr;
         }
-        uint32_t tag  = r.readU32();
-        uint32_t size = r.readU32();
-
-        if (size > kMaxSectionBytes || !r.hasRemaining(size))
-        {
-            spdlog::error("ProjectSerializer: section {} has invalid size {} ({} bytes remain)",
-                          tag, size, r.remaining());
+        const uint32_t tag = r.readU32();
+        const uint32_t size = r.readU32();
+        if (size > kMaxSectionBytes || !r.hasRemaining(size)) {
+            spdlog::error("ProjectSerializer: section {} has invalid size {}", tag, size);
             return nullptr;
         }
+        const uint8_t* payload = data.data() + r.position();
+        r.skip(size);
+        RecordReader rec(payload, size);
+        bool ok = true;
 
-        // Create a sub-reader for this section
-        const size_t sectionStart = r.position();
-        BinaryReader sr = r.readSubReader(size);
-
-        switch (tag)
-        {
-        case Section_Settings: {
-            auto& settings = project->defaultSettings();
-            uint32_t w = sr.readU32();
-            uint32_t h = sr.readU32();
-            settings.setResolution(w, h);
-            settings.setFrameRate(sr.readF64());
-            settings.setColorSpace(static_cast<ColorSpace>(sr.readU8()));
-            AudioFormat af;
-            af.sampleRate = sr.readU32();
-            af.bitDepth   = sr.readU32();
-            af.channels   = sr.readU32();
-            settings.setAudioFormat(af);
-            ExportSettings es;
-            es.codec        = sr.readString();
-            es.quality      = sr.readU32();
-            es.audioBitrate = sr.readU32();
-            es.outputPath   = sr.readString();
-            settings.setExportSettings(es);
+        switch (tag) {
+        case Section_Settings:
+            ok = SchemaOf<Settings>::get().read(rec, project->defaultSettings());
             break;
-        }
 
-        case Section_Timeline: {
-            // Legacy single-sequence metadata (used only if no Section_Sequences)
-            if (!hasSequencesSection) {
-                Timeline* tl = project->timeline();
-                tl->setName(sr.readString());
-                project->setName(sr.readString());
-                tl->setPlayheadPosition(sr.readI64());
-                tl->setInPoint(sr.readI64());
-                tl->setOutPoint(sr.readI64());
-            } else {
-                // Just read the project name from the legacy section
-                sr.readString(); // timeline name (already loaded from sequences)
-                project->setName(sr.readString());
-            }
+        case Section_ProjectMeta:
+            ok = projectMetaSchema().read(rec, *project);
             break;
-        }
-
-        case Section_Tracks: {
-            if (!hasSequencesSection) {
-                Timeline* tl = project->timeline();
-                // Remove default tracks (constructor adds empty timeline)
-                while (tl->trackCount() > 0)
-                    tl->removeTrack(0);
-
-                const uint32_t trackCount = sr.readCount(kMaxTracksPerSequence, 20);
-                for (uint32_t ti = 0; ti < trackCount && sr.ok(); ++ti)
-                {
-                    auto type = static_cast<TrackType>(sr.readU8());
-                    std::string name = sr.readString();
-                    bool locked = sr.readU8() != 0;
-                    bool muted  = sr.readU8() != 0;
-                    bool soloed = sr.readU8() != 0;
-                    float height = sr.readF32();
-
-                    // Build the track directly and APPEND in saved order.
-                    // Going through addVideoTrack/addAudioTrack used to
-                    // re-sort by type+divider, which dragged any user-added
-                    // divider sitting above the video stack down into the
-                    // V/A boundary slot on load.
-                    auto trackPtr = std::make_unique<Track>(type, name);
-                    Track* track = trackPtr.get();
-                    tl->insertTrack(tl->trackCount(), std::move(trackPtr));
-
-                    track->setLocked(locked);
-                    track->setMuted(muted);
-                    track->setSoloed(soloed);
-                    track->setHeight(height);
-                    if (version >= 5)
-                        track->setSyncLocked(sr.readU8() != 0);
-                    if (version >= 18) {
-                        track->setDivider(sr.readU8() != 0);
-                    } else if (type == TrackType::Video && height < 15.0f) {
-                        // v17 and older never persisted isDivider; the V/A
-                        // separator was saved as a regular Video track. Auto-
-                        // promote tracks matching the divider signature (Video
-                        // type + short height — real video tracks default to
-                        // 80px). The name check was dropped after we hit cases
-                        // where an older build's auto-rename loop gave the
-                        // unflagged divider a "V<N>" label before saving.
-                        track->setDivider(true);
-                    }
-                    if (version >= 20) {
-                        track->setPermanentDivider(sr.readU8() != 0);
-                    }
-                    // For v19 and older, leave isPermanentDivider=false —
-                    // ensureSectionDivider will promote whichever divider sits
-                    // at the V/A boundary on first rebuild (the legacy
-                    // "greedy" path, used only for one-time migration).
-                    if (version >= 21) {
-                        track->setCaptionTrack(sr.readU8() != 0);
-                    }
-
-                    // Clips
-                    const uint32_t clipCount = sr.readCount(kMaxClipsPerTrack, 50);
-                    for (uint32_t ci = 0; ci < clipCount && sr.ok(); ++ci)
-                    {
-                        auto clip = readClip(sr, version);
-                        if (clip)
-                            track->addClip(
-                                std::move(clip), TrackMutationPolicy::BypassLock);
-                    }
-
-                    // Transitions
-                    const uint32_t transCount = sr.readCount(
-                        kMaxTransitionsPerTrack, version >= 16 ? 49 : 25);
-                    for (uint32_t xi = 0; xi < transCount && sr.ok(); ++xi)
-                    {
-                        Transition t;
-                        t.type     = static_cast<TransitionType>(sr.readU8());
-                        t.duration = sr.readI64();
-                        t.offset   = sr.readI64();
-                        t.param1   = sr.readF32();
-                        t.param2   = sr.readF32();
-                        if (version >= 16)
-                        {
-                            t.leftClipId    = sr.readU64();
-                            t.rightClipId   = sr.readU64();
-                            t.editPointTick = sr.readI64();
-                        }
-                        track->addTransition(
-                            t, TrackMutationPolicy::BypassLock);
-                    }
-
-                    relinkTransitionsByGeometry(*track);
-                    dedupeTransitions(*track);
-                }
-
-                // Ensure video tracks are always above audio tracks,
-                // even if an old project file saved them in wrong order.
-                tl->sortTracksByType();
-            }
-            // If hasSequencesSection, skip — data already loaded from sequences
-            break;
-        }
-
-        case Section_Markers: {
-            if (!hasSequencesSection) {
-                Timeline* tl = project->timeline();
-                const uint32_t count = sr.readCount(kMaxMarkersPerSequence, 16);
-                for (uint32_t i = 0; i < count && sr.ok(); ++i)
-                {
-                    int64_t time     = sr.readI64();
-                    std::string label = sr.readString();
-                    uint32_t color   = sr.readU32();
-                    tl->addMarker(time, label, color);
-                }
-            }
-            // If hasSequencesSection, skip — markers already loaded per-sequence
-            break;
-        }
 
         case Section_Sequences: {
-            hasSequencesSection = true;
-
-            // Clear the default sequence created by constructor
-            while (project->sequenceCount() > 1)
-                project->removeSequence(project->sequenceCount() - 1);
-
-            const uint32_t seqCount = sr.readCount(kMaxSequences, 36);
-            uint32_t activeIndex = sr.readU32();
-
-            for (uint32_t si = 0; si < seqCount && sr.ok(); ++si)
-            {
-                Timeline* tl = nullptr;
-                if (si == 0) {
-                    // Reuse the default sequence from the constructor
-                    tl = project->sequence(0);
-                    // Remove its default tracks
-                    while (tl->trackCount() > 0)
-                        tl->removeTrack(0);
-                } else {
-                    tl = project->addSequence("");
-                    // Remove the default V1+A1 tracks added by addSequence
-                    while (tl->trackCount() > 0)
-                        tl->removeTrack(0);
+            uint64_t active = 0;
+            while (rec.next()) {
+                if (rec.id() == kSequencesActive) {
+                    (void)rec.readVarint(active);
+                } else if (rec.id() == kSequencesList) {
+                    while (project->sequenceCount() > 1)
+                        project->removeSequence(project->sequenceCount() - 1);
+                    size_t index = 0;
+                    forEachListRecord(rec, [&](RecordReader& item) {
+                        // The first sequence reuses the constructor's;
+                        // either way start without default tracks.
+                        Timeline* tl = index++ == 0 ? project->sequence(0)
+                                                    : project->addSequence("");
+                        while (tl->trackCount() > 0) tl->removeTrack(0);
+                        return sequenceSchema().read(item, *tl);
+                    });
                 }
+            }
+            ok = rec.ok();
+            if (active < project->sequenceCount())
+                project->setActiveSequence(static_cast<size_t>(active));
+            break;
+        }
 
-                // Read sequence metadata
-                tl->setName(sr.readString());
-                tl->setPlayheadPosition(sr.readI64());
-                tl->setInPoint(sr.readI64());
-                tl->setOutPoint(sr.readI64());
-
-                // Read tracks + clips
-                const uint32_t trackCount = sr.readCount(kMaxTracksPerSequence, 20);
-                for (uint32_t ti = 0; ti < trackCount && sr.ok(); ++ti)
-                {
-                    auto type = static_cast<TrackType>(sr.readU8());
-                    std::string name = sr.readString();
-                    bool locked = sr.readU8() != 0;
-                    bool muted  = sr.readU8() != 0;
-                    bool soloed = sr.readU8() != 0;
-                    float height = sr.readF32();
-
-                    // Append in saved order; addVideoTrack/addAudioTrack would
-                    // re-sort and shuffle user-added dividers — see comment in
-                    // the Section_Tracks reader above.
-                    auto trackPtr = std::make_unique<Track>(type, name);
-                    Track* track = trackPtr.get();
-                    tl->insertTrack(tl->trackCount(), std::move(trackPtr));
-
-                    track->setLocked(locked);
-                    track->setMuted(muted);
-                    track->setSoloed(soloed);
-                    track->setHeight(height);
-                    if (version >= 5)
-                        track->setSyncLocked(sr.readU8() != 0);
-                    if (version >= 18) {
-                        track->setDivider(sr.readU8() != 0);
-                    } else if (type == TrackType::Video &&
-                               name.empty() &&
-                               height < 15.0f) {
-                        // v17 and older: auto-promote tracks matching the
-                        // divider signature (see Section_Tracks reader above).
-                        track->setDivider(true);
-                    }
-                    if (version >= 20) {
-                        track->setPermanentDivider(sr.readU8() != 0);
-                    }
-                    if (version >= 21) {
-                        track->setCaptionTrack(sr.readU8() != 0);
-                    }
-
-                    const uint32_t clipCount = sr.readCount(kMaxClipsPerTrack, 50);
-                    for (uint32_t ci = 0; ci < clipCount && sr.ok(); ++ci)
-                    {
-                        auto clip = readClip(sr, version);
-                        if (clip)
-                            track->addClip(
-                                std::move(clip), TrackMutationPolicy::BypassLock);
-                    }
-
-                    const uint32_t transCount = sr.readCount(
-                        kMaxTransitionsPerTrack, version >= 17 ? 49 : 25);
-                    for (uint32_t xi = 0; xi < transCount && sr.ok(); ++xi)
-                    {
-                        Transition t;
-                        t.type     = static_cast<TransitionType>(sr.readU8());
-                        t.duration = sr.readI64();
-                        t.offset   = sr.readI64();
-                        t.param1   = sr.readF32();
-                        t.param2   = sr.readF32();
-                        if (version >= 17)  // v17+: Sequences section correctly writes clip-link fields
-                        {
-                            t.leftClipId    = sr.readU64();
-                            t.rightClipId   = sr.readU64();
-                            t.editPointTick = sr.readI64();
+        case Section_Assets:
+            while (rec.next()) {
+                if (rec.id() != kAssetsList) continue;
+                std::vector<AssetEntry> assets;
+                if (!record::readValue(rec, assets)) continue;
+                for (AssetEntry& a : assets) {
+                    // PORTABILITY: re-resolve a moved install's absolute path
+                    // from the assets/-relative one.
+                    if (!a.absolutePath.empty() && !std::filesystem::exists(a.absolutePath)) {
+                        auto resolved = AppPaths::assets() / a.path;
+                        if (std::filesystem::exists(resolved)) {
+                            a.absolutePath = std::filesystem::absolute(resolved);
+                            spdlog::info("AssetDatabase: re-resolved {} → {}",
+                                         pathToUtf8(a.path), pathToUtf8(a.absolutePath));
                         }
-                        track->addTransition(
-                            t, TrackMutationPolicy::BypassLock);
                     }
-
-                    relinkTransitionsByGeometry(*track);
-                    dedupeTransitions(*track);
-                }
-
-                tl->sortTracksByType();
-
-                // Clear any markers that were loaded from the legacy
-                // Section_Markers (which runs before Section_Sequences).
-                while (!tl->markers().empty())
-                    tl->removeMarker(0);
-
-                // Read markers for this sequence
-                const uint32_t markerCount = sr.readCount(kMaxMarkersPerSequence, 16);
-                for (uint32_t mi = 0; mi < markerCount && sr.ok(); ++mi)
-                {
-                    int64_t time     = sr.readI64();
-                    std::string label = sr.readString();
-                    uint32_t color   = sr.readU32();
-                    tl->addMarker(time, label, color);
-                }
-
-                // Per-sequence settings (v25+). Pre-v25 files have none — the
-                // post-load fallback below copies the project default into
-                // every sequence (matches the old global-settings behaviour).
-                if (version >= 25) {
-                    Settings ss;
-                    uint32_t sw = sr.readU32();
-                    uint32_t sh = sr.readU32();
-                    ss.setResolution(sw, sh);
-                    ss.setFrameRate(sr.readF64());
-                    ss.setColorSpace(static_cast<ColorSpace>(sr.readU8()));
-                    AudioFormat af;
-                    af.sampleRate = sr.readU32();
-                    af.bitDepth   = sr.readU32();
-                    af.channels   = sr.readU32();
-                    ss.setAudioFormat(af);
-                    ExportSettings es;
-                    es.codec        = sr.readString();
-                    es.quality      = sr.readU32();
-                    es.audioBitrate = sr.readU32();
-                    es.outputPath   = sr.readString();
-                    ss.setExportSettings(es);
-                    tl->setSettings(ss);
+                    project->assets()->addAsset(std::move(a));
                 }
             }
-
-            // Set active sequence
-            if (activeIndex < project->sequenceCount())
-                project->setActiveSequence(activeIndex);
-
-            spdlog::info("ProjectSerializer: loaded {} sequences (active={})",
-                         seqCount, activeIndex);
+            ok = rec.ok();
             break;
-        }
-
-        case Section_Assets: {
-            const uint32_t count = sr.readCount(kMaxAssets, 33);
-            for (uint32_t i = 0; i < count && sr.ok(); ++i)
-            {
-                AssetEntry a;
-                a.id           = sr.readU64();
-                a.type         = static_cast<AssetType>(sr.readU8());
-                a.name         = sr.readString();
-                a.path         = sr.readPath();
-                a.absolutePath = sr.readPath();
-                a.fileSize     = sr.readU64();
-                a.hash         = sr.readString();
-
-                // PORTABILITY: Re-resolve absolutePath from relativePath
-                // when the saved absolutePath no longer exists (folder moved
-                // to a different machine/drive). The relative path is always
-                // relative to assets/, so resolve it against this install.
-                if (!a.absolutePath.empty() && !std::filesystem::exists(a.absolutePath)) {
-                    auto resolved = AppPaths::assets() / a.path;
-                    if (std::filesystem::exists(resolved)) {
-                        a.absolutePath = std::filesystem::absolute(resolved);
-                        spdlog::info("AssetDatabase: re-resolved {} → {}",
-                                     pathToUtf8(a.path), pathToUtf8(a.absolutePath));
-                    }
-                }
-
-                project->assets()->addAsset(std::move(a));
-            }
-            break;
-        }
-
-        case Section_Characters: {
-            const uint32_t count = sr.readCount(kMaxCharacters, 16);
-            for (uint32_t i = 0; i < count && sr.ok(); ++i)
-            {
-                // Read and discard for backward compatibility.
-                // Characters are restored via AssetDatabase::scanCharacters().
-                sr.readString();  // name
-                sr.readPath();     // base path
-                const uint32_t outfitCount = sr.readCount(100000, 4);
-                for (uint32_t o = 0; o < outfitCount && sr.ok(); ++o) sr.readString();
-                const uint32_t stanceCount = sr.readCount(100000, 4);
-                for (uint32_t st = 0; st < stanceCount && sr.ok(); ++st) sr.readString();
-            }
-            break;
-        }
 
         case Section_BinState: {
-            const uint32_t fileCount = sr.readCount(
-                kMaxBinItems, version >= 14 ? 20 : 4);
-            std::vector<std::filesystem::path> binFiles;
-            binFiles.reserve(fileCount);
-            if (version >= 14) {
-                // Rich per-instance bin items.
-                std::vector<Project::BinItem> items;
-                items.reserve(fileCount);
-                for (uint32_t i = 0; i < fileCount && sr.ok(); ++i) {
-                    Project::BinItem bi;
-                    bi.id          = sr.readU64();
-                    bi.path        = sr.readPath();
-                    bi.displayName = sr.readString();
-                    bi.labelColor  = sr.readU32();
-                    binFiles.push_back(bi.path);
-                    items.push_back(std::move(bi));
+            BinStateRecord bin;
+            ok = binStateSchema().read(rec, bin);
+            std::vector<std::filesystem::path> files;
+            files.reserve(bin.items.size());
+            for (const auto& item : bin.items) files.push_back(item.path);
+            project->setBinItems(std::move(bin.items));
+            project->setBinFiles(std::move(files));
+            project->setBinFolders(std::move(bin.folders));
+            break;
+        }
+
+        case Section_AudioSync:
+            project->setAudioSyncBlob(std::vector<uint8_t>(payload, payload + size));
+            break;
+
+        case Section_WorkspaceState:
+            while (rec.next()) {
+                std::vector<uint64_t> open;
+                if (rec.id() == kWorkspaceOpenSequences && record::readValue(rec, open)) {
+                    openSequences.assign(open.begin(), open.end());
+                    hasWorkspaceState = true;
                 }
-                project->setBinItems(std::move(items));
-                project->setBinFiles(std::move(binFiles));
-            } else {
-                // Legacy: flat path list (no per-item identity).
-                for (uint32_t i = 0; i < fileCount && sr.ok(); ++i)
-                    binFiles.push_back(sr.readPath());
-                project->setBinFiles(std::move(binFiles));
             }
-
-            // Bin folder structure
-            const uint32_t folderCount = sr.readCount(
-                kMaxBinFolders, version >= 6 ? 9 : 8);
-            std::vector<Project::BinFolder> binFolders;
-            binFolders.reserve(folderCount);
-            for (uint32_t i = 0; i < folderCount && sr.ok(); ++i)
-            {
-                Project::BinFolder bf;
-                bf.name = sr.readString();
-                if (version >= 6)
-                    bf.expanded = (sr.readU8() != 0);
-                const uint32_t keyCount = sr.readCount(kMaxFolderChildren, 4);
-                bf.childKeys.reserve(keyCount);
-                for (uint32_t k = 0; k < keyCount && sr.ok(); ++k)
-                    bf.childKeys.push_back(sr.readString());
-                binFolders.push_back(std::move(bf));
-            }
-            project->setBinFolders(std::move(binFolders));
-
-            spdlog::info("ProjectSerializer: loaded bin state ({} files, {} folders)",
-                         fileCount, folderCount);
+            ok = rec.ok();
             break;
-        }
-
-        case Section_AudioSync: {
-            // Store the raw blob — AudioSync panel will deserialize it
-            const uint8_t* blobStart = data.data() + sectionStart;
-            std::vector<uint8_t> blob(blobStart, blobStart + size);
-            project->setAudioSyncBlob(std::move(blob));
-            spdlog::info("ProjectSerializer: loaded AudioSync blob ({} bytes)", size);
-            break;
-        }
-
-        case Section_ProjectMeta: {
-            project->setShow(sr.readString());
-            spdlog::info("ProjectSerializer: loaded project show '{}'", project->show());
-            break;
-        }
-
-        case Section_WorkspaceState: {
-            const uint32_t openCount = sr.readCount(kMaxSequences, 4);
-            savedOpenSequenceIndices.clear();
-            savedOpenSequenceIndices.reserve(openCount);
-            for (uint32_t i = 0; i < openCount && sr.ok(); ++i)
-                savedOpenSequenceIndices.push_back(sr.readU32());
-            hasWorkspaceStateSection = true;
-            break;
-        }
 
         default:
             spdlog::warn("ProjectSerializer: unknown section tag 0x{:02X}, skipping", tag);
             break;
         }
 
-        if (!sr.ok()) {
-            spdlog::error(
-                "ProjectSerializer: corrupt section {} at section byte {}",
-                tag, sr.errorPosition());
+        if (!ok) {
+            spdlog::error("ProjectSerializer: corrupt section {}", tag);
             return nullptr;
         }
     }
 
-    if (!r.ok()) {
-        spdlog::error("ProjectSerializer: corrupt section table at byte {}",
-                      r.errorPosition());
-        return nullptr;
+    // A project saved without tab state opens every sequence.
+    if (!hasWorkspaceState) {
+        openSequences.clear();
+        for (size_t i = 0; i < project->sequenceCount(); ++i) openSequences.push_back(i);
     }
+    project->setOpenSequenceIndices(std::move(openSequences));
 
-    // ── Pre-v25 per-sequence settings migration ─────────────────────────
-    // Before v25 there was a single global Settings shared by all sequences.
-    // Copy the loaded project default into every sequence so old projects keep
-    // their resolution/fps; from here each sequence's settings are independent.
-    if (version < 25) {
-        for (size_t si = 0; si < project->sequenceCount(); ++si)
-            if (Timeline* tl = project->sequence(si))
-                tl->setSettings(project->defaultSettings());
-    }
-
-    // Projects written before v43 had no persisted tab state and historically
-    // opened every sequence. Preserve that behavior for old files; new files
-    // restore the exact saved subset. The setter also filters stale indices
-    // and guarantees at least the active sequence remains open.
-    if (hasWorkspaceStateSection) {
-        project->setOpenSequenceIndices(std::move(savedOpenSequenceIndices));
-    } else {
-        std::vector<size_t> allSequenceIndices;
-        allSequenceIndices.reserve(project->sequenceCount());
-        for (size_t i = 0; i < project->sequenceCount(); ++i)
-            allSequenceIndices.push_back(i);
-        project->setOpenSequenceIndices(std::move(allSequenceIndices));
-    }
-
-    const int migratedMaskCount = migrateLegacyMasks(*project);
-    if (migratedMaskCount > 0) {
-        spdlog::info(
-            "ProjectSerializer: migrated {} legacy mask(s) to clip-local coordinates",
-            migratedMaskCount);
-    }
-
-    // One-time frame-align migration (see alignLegacyClipsToFrameGrid).
-    // v46+ files were edited on the canonical grid; re-snapping them on
-    // every load would keep moving deliberate sub-frame audio placements.
-    if (version < 46) {
-        const int aligned = alignLegacyClipsToFrameGrid(*project);
-        if (aligned > 0)
-            spdlog::info("ProjectSerializer: frame-aligned {} clip(s) from a v{} file",
-                         aligned, version);
-    }
+    // Masks still in legacy coordinates move once their clip's source size
+    // is known (it may have become known since the last save).
+    if (const int migrated = migrateLegacyMasks(*project); migrated > 0)
+        spdlog::info("ProjectSerializer: migrated {} legacy mask(s) to clip-local coordinates",
+                     migrated);
 
     project->setModified(false);
     return project;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// save() and load() are in ProjectSerializerIO.cpp
-// ═════════════════════════════════════════════════════════════════════════════
-// Lightweight metadata read (no full deserialization)
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
+// Lightweight metadata reads (no full load)
+// ═══════════════════════════════════════════════════════════════════════════
 
 bool ProjectSerializer::readMetadata(const std::filesystem::path& path, Metadata& out)
 {
@@ -1180,12 +775,24 @@ bool ProjectSerializer::readMetadata(const std::filesystem::path& path, Metadata
         BinaryReader sr(buf.data() + r.position(), size);
         r.skip(size);
 
-        if (tag == Section_Settings) {
+        const bool records = version > LAST_POSITIONAL_VERSION;
+        if (records && tag == Section_Settings) {
+            RecordReader rec(buf.data() + r.position() - size, size);
+            Settings settings;
+            if (!SchemaOf<Settings>::get().read(rec, settings)) return false;
+            out.resW = settings.resolution().width;
+            out.resH = settings.resolution().height;
+            out.fps  = settings.frameRate();
+            gotSettings = true;
+        } else if (records && tag == Section_ProjectMeta) {
+            RecordReader rec(buf.data() + r.position() - size, size);
+            gotName = peekField(rec, 1, out.name);
+        } else if (!records && tag == Section_Settings) {
             out.resW = sr.readU32();
             out.resH = sr.readU32();
             out.fps  = sr.readF64();
             gotSettings = sr.ok();
-        } else if (tag == Section_Timeline) {
+        } else if (!records && tag == Section_Timeline) {
             sr.readString(); // timeline name (skip)
             out.name = sr.readString(); // project name
             gotName = sr.ok();
@@ -1243,12 +850,18 @@ std::string ProjectSerializer::readProjectShow(const std::filesystem::path& path
             return {};
 
         if (tag == Section_ProjectMeta) {
-            if (size > BinaryReader::kMaxStringBytes + sizeof(uint32_t))
-                return {};
+            // v48+: a record of name and show; before: just the show string.
+            const bool records = version > LAST_POSITIONAL_VERSION;
+            if (size > 2 * BinaryReader::kMaxStringBytes + 64) return {};
             std::vector<uint8_t> data(size);
             file.read(reinterpret_cast<char*>(data.data()),
                       static_cast<std::streamsize>(size));
             if (!file) return {};
+            if (records) {
+                RecordReader rec(data.data(), data.size());
+                std::string show;
+                return peekField(rec, 2, show) ? show : std::string{};
+            }
             BinaryReader sr(data.data(), data.size());
             std::string show = sr.readString(); // first field of ProjectMeta = show
             return sr.ok() ? show : std::string{};
@@ -1258,5 +871,7 @@ std::string ProjectSerializer::readProjectShow(const std::filesystem::path& path
     }
     return {};
 }
+
+#undef RT_MEMBER
 
 } // namespace rt

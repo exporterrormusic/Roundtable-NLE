@@ -114,6 +114,12 @@ add_roundtable_test(test_record_io     LIBS roundtable_core)
 # never committed) unless ROUNDTABLE_PROJECT_CORPUS points elsewhere.
 target_compile_definitions(test_project_format PRIVATE
     ROUNDTABLE_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+# The frozen v47 writer (tests/support): the oracle for the v48 records and
+# the maker of old-version files for migration tests.
+foreach(_legacy_writer_test test_project test_project_format)
+    target_sources(${_legacy_writer_test} PRIVATE support/LegacyProjectWriterV47.cpp)
+    target_include_directories(${_legacy_writer_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endforeach()
 add_roundtable_test(test_performance_profile LIBS roundtable_gpu roundtable_core)
 add_roundtable_test(test_audio         LIBS roundtable_core)
 add_roundtable_test(test_spine         LIBS roundtable_core)

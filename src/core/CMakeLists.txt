@@ -8,7 +8,9 @@ add_library(roundtable_core STATIC
     project/Project.cpp
     project/ProjectSerializer.cpp
     project/ProjectSerializerIO.cpp
-    project/ClipSerialization.cpp
+    project/ProjectSerializerLegacy.cpp
+    project/ClipSerializationLegacy.cpp
+    project/VideoPathResolve.cpp
     project/schema/RecordIO.cpp
     project/schema/LeafSchemas.cpp
     project/schema/ClipSchemas.cpp

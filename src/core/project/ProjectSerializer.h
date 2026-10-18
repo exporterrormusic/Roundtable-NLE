@@ -1,23 +1,25 @@
 /*
- * ProjectSerializer — binary serialization for .rtp project files.
+ * ProjectSerializer — .rtp project files.
  *
  * File format:
  *   [Header]    Magic(8) + FormatVersion(4) + SectionCount(4) + Reserved(16)
- *   [Sections]  Each: TypeTag(4) + DataSize(4) + Data(N)
+ *   [Sections]  Each: TypeTag(4) + DataSize(4) + Data(N), little-endian
  *
- * Sections:
- *   0x01 = Settings (resolution, fps, audio, export)
- *   0x02 = Timeline metadata (name, playhead, in/out)
- *   0x03 = Tracks (type, name, muted, solo, locked, height)
- *   0x04 = Clips (per-track, fully self-describing)
- *   0x05 = Keyframe data (per-clip property tracks)
- *   0x06 = Asset entries
- *   0x07 = Character assets
- *   0x08 = Markers
- *   0x09 = Transitions
+ * Since v48 each section's data is a field-tagged record whose meaning is
+ * defined once, by schema tables (schema/Schema.h; clips in
+ * schema/ClipSchemas.cpp, the rest in schema/LeafSchemas.cpp and
+ * ProjectSerializer.cpp). Saving something new is one schema line; it does
+ * not change the version. Sections written by v48:
+ *   0x01 Settings      the project's default sequence settings (first, so
+ *                      readMetadata finds it in the first few KB)
+ *   0x0D ProjectMeta   name, show
+ *   0x0A Sequences     active index + every sequence (settings, tracks with
+ *                      clips and transitions, markers)
+ *   0x06 Assets   0x0B BinState   0x0C AudioSync (opaque blob)
+ *   0x0E WorkspaceState (open sequence tabs)
  *
- * All multi-byte values are little-endian. Strings are length-prefixed (uint32).
- *
+ * Files up to v47 are positional (every field in a fixed order) and load
+ * through the frozen ProjectSerializerLegacy.cpp; they are saved as v48.
  */
 
 #pragma once
@@ -73,7 +75,11 @@ public:
 
     // ── Format info ─────────────────────────────────────────────────────
     static constexpr uint8_t  MAGIC[8] = {'R','N','D','T','B','L','v','2'};
-    static constexpr uint32_t FORMAT_VERSION = 47;  // v47 = mask "unassigned" flag (Premiere 26 Unassigned Masks)
+    /// Bump ONLY when the meaning of saved data changes and old files need
+    /// converting after load (as v45/v46 did) — never to add a field.
+    static constexpr uint32_t FORMAT_VERSION = 48;  // v48 = field-tagged records (schema tables)
+    static constexpr uint32_t LAST_POSITIONAL_VERSION = 47;
+                                                    // v47 = mask "unassigned" flag (Premiere 26 Unassigned Masks)
                                                     // v46 = clips on the canonical frame grid (one-time align of older files)
                                                     // v45 = Premiere vignette (Amount sign, Roundness -100..100)
                                                     // v44 = clip A/V linkId
@@ -124,6 +130,12 @@ public:
         Section_ProjectMeta = 0x0D,   ///< Project-level metadata: show assignment (v23+)
         Section_WorkspaceState = 0x0E, ///< Open sequence tabs (v43+)
     };
+
+private:
+    /// Positional files (v1–47): ProjectSerializerLegacy.cpp, frozen.
+    [[nodiscard]] static std::unique_ptr<Project> deserializeLegacy(const std::vector<uint8_t>& data);
+    /// Record files (v48+).
+    [[nodiscard]] static std::unique_ptr<Project> deserializeRecords(const std::vector<uint8_t>& data);
 };
 
 } // namespace rt

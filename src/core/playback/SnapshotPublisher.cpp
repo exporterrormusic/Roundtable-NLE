@@ -5,7 +5,7 @@
 #include "playback/SnapshotPublisher.h"
 
 #include "project/BinaryIO.h"
-#include "project/ClipSerialization.h"
+#include "project/schema/ClipSchemas.h"
 #include "project/Project.h"
 #include "project/RenderStateHash.h"
 #include "timeline/Clip.h"
@@ -29,9 +29,7 @@ namespace {
 
 [[nodiscard]] std::vector<uint8_t> serializedClip(const Clip& clip)
 {
-    BinaryWriter w;
-    writeClip(w, clip);
-    return w.data();
+    return record::clipBytes(clip);
 }
 
 // Name the first thing that differs between a live sequence and its copy, so
