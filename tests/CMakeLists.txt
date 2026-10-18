@@ -108,6 +108,11 @@ add_roundtable_test(test_frame_time LIBS roundtable_core)
 add_roundtable_test(test_segment_render_cache LIBS roundtable_core)
 add_roundtable_test(test_command       LIBS roundtable_core)
 add_roundtable_test(test_project       LIBS roundtable_core)
+add_roundtable_test(test_project_format LIBS roundtable_core)
+# The corpus test reads real projects from projects/ and artifacts/ (local,
+# never committed) unless ROUNDTABLE_PROJECT_CORPUS points elsewhere.
+target_compile_definitions(test_project_format PRIVATE
+    ROUNDTABLE_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
 add_roundtable_test(test_performance_profile LIBS roundtable_gpu roundtable_core)
 add_roundtable_test(test_audio         LIBS roundtable_core)
 add_roundtable_test(test_spine         LIBS roundtable_core)
