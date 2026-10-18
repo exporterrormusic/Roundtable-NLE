@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "panels/timeline/TimelineDragTool.h"
 #include <QWidget>
 #include <QScrollArea>
 #include <QSplitter>
@@ -697,7 +698,6 @@ private:
     /// recording on release (move, roll) or applying nothing (click, marquee).
     [[nodiscard]] static bool dragRecordsIntoMacro(DragMode mode) noexcept;
     QPointF   m_dragStart;
-    QPointF   m_marqueeEnd;   // Current endpoint during marquee drag
     ClipRef   m_dragClipRef;
     int64_t   m_dragOriginalIn{0};
     int64_t   m_dragOriginalSourceIn{0};
@@ -805,17 +805,13 @@ private:
     void   updateReorderOverlay(const QPoint& globalMousePos);
     size_t computeReorderInsertionIndex(const QPoint& globalMousePos) const;
 
-    // Marquee rubber-band overlay (draws ON TOP of children)
-    QRubberBand* m_rubberBand{nullptr};
-
-    // Marquee state: prior selection captured at marquee start (for
-    // Shift+marquee additive selection — Premiere-style "add to set").
-    std::vector<ClipRef> m_marqueeBaseSelection;
-    // Auto-scroll while marquee drag pegs against left/right edge of
-    // the track area.  Repaints + scrolls every tick for as long as
-    // the cursor stays in the edge zone, like Premiere Pro.
-    QTimer*  m_marqueeScrollTimer{nullptr};
-    QPointF  m_marqueeLastMovePos;
+    // The drag in progress when it has been converted to a tool
+    // (TimelineDragTool); null for the drags still on the DragMode switch.
+    std::unique_ptr<TimelineDragTool> m_dragTool;
+    friend class TimelineMarqueeTool;
+    /// A press on empty space: a click clears the selection, a drag draws
+    /// a marquee (TimelineMarqueeTool).
+    void beginMarquee();
 
     // Auto-scroll while a clip-move/trim drag pegs against the viewport
     // edge.  Mirrors the marquee timer so the timeline follows the
@@ -932,9 +928,6 @@ private:
     /// shift-toggling carries the partner along with the toggled clip.
     void setLinkPartnersSelected(const ClipRef& seed, bool selected);
 
-    /// Recompute marquee selection from current m_dragStart/m_marqueeLastMovePos
-    /// (additively merging in m_marqueeBaseSelection if Shift+marquee).
-    void refreshMarqueeSelection();
 };
 
 } // namespace rt

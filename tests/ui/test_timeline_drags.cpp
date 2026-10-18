@@ -625,10 +625,7 @@ TEST(TimelineDrags, MarqueeSelectsTheClipsItTouches)
     EXPECT_EQ(rig.stack.undoCount(), 0u);
 }
 
-// Disabled: the marquee reads Shift from QApplication::keyboardModifiers()
-// (the live keyboard), which a test cannot set. The marquee tool (Stage 9
-// step 3) takes modifiers from its mouse events; enable this then.
-TEST(TimelineDrags, DISABLED_ShiftMarqueeAddsToTheSelection)
+TEST(TimelineDrags, ShiftMarqueeAddsToTheSelection)
 {
     DragRig rig;
     Track* v1 = rig.videoTrack("V1");

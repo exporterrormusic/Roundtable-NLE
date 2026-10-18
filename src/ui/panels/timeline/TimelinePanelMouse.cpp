@@ -4,6 +4,7 @@
  */
 
 #include "panels/timeline/TimelinePanel.h"
+#include "panels/timeline/TimelineMarqueeTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 #include "widgets/TimelineRuler.h"
@@ -247,7 +248,7 @@ void TimelinePanel::pressWithRazorTool(QMouseEvent* event, QPointF pos)
     }
     if (!didSplit) {
         // Empty-space click — deselect on release.
-        m_dragMode = DragMode::PendingMarquee;
+        beginMarquee();
     }
     event->accept();
     return;
@@ -760,7 +761,7 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
             // clears m_selection, which is already empty here).
             // If they drag, the PendingMarquee→MarqueeSelect transition
             // will clear the gap highlight via m_gapSelection.active.
-            m_dragMode = DragMode::PendingMarquee;
+            beginMarquee();
             emit selectionChanged();
         } else {
             // Clear any existing gap selection
@@ -769,7 +770,7 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                 m_trackWidgets[w]->setGapHighlight(-1, -1);
             m_lastClickedEdge.valid = false;
             // Don't clear selection yet — wait to see if user drags
-            m_dragMode = DragMode::PendingMarquee;
+            beginMarquee();
         }
     }
     event->accept();
@@ -815,7 +816,7 @@ void TimelinePanel::pressWithSlipTool(QMouseEvent* event, QPointF pos)
             m_commandStack->beginMacro("Slip clip");
     } else {
         // Empty-space click — deselect on release (Premiere style).
-        m_dragMode = DragMode::PendingMarquee;
+        beginMarquee();
     }
     event->accept();
     return;
@@ -859,7 +860,7 @@ void TimelinePanel::pressWithSlideTool(QMouseEvent* event, QPointF pos)
         if (m_commandStack)
             m_commandStack->beginMacro("Slide clip");
     } else {
-        m_dragMode = DragMode::PendingMarquee;
+        beginMarquee();
     }
     event->accept();
     return;
@@ -1023,7 +1024,7 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
         // release deselects any currently-selected clip.  This is what
         // resolves the "clips stay selected after rolling / clicking
         // empty space doesn't deselect" complaint.
-        m_dragMode = DragMode::PendingMarquee;
+        beginMarquee();
     }
     event->accept();
     return;
@@ -1059,7 +1060,7 @@ void TimelinePanel::pressWithRippleTool(QMouseEvent* event, QPointF pos)
         }
     } else {
         // Empty-space click — deselect on release.
-        m_dragMode = DragMode::PendingMarquee;
+        beginMarquee();
     }
     event->accept();
     return;
@@ -1160,5 +1161,11 @@ void TimelinePanel::pressWithTextTool(QMouseEvent* event, QPointF pos)
     return;
 }
 
+
+void TimelinePanel::beginMarquee()
+{
+    m_dragMode = DragMode::PendingMarquee;
+    m_dragTool = std::make_unique<TimelineMarqueeTool>(*this, m_dragStart);
+}
 
 } // namespace rt

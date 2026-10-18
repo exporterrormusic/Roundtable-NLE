@@ -467,15 +467,10 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
         }
     }
 
-    // ── PendingMarquee without drag: clear selection on empty-space click ──
-    if (m_dragMode == DragMode::PendingMarquee) {
-        m_selection.clear();
-        m_selectedTransitionTrack = SIZE_MAX;
-        m_selectedTransitionIndex = SIZE_MAX;
-        for (size_t w = 0; w < m_trackWidgets.size(); ++w)
-            m_trackWidgets[w]->setSelectedTransition(SIZE_MAX);
-        emit selectionChanged();
-    }
+    // Drags converted to tools finish their own release (a marquee that never
+    // moved clears the selection).
+    if (m_dragTool)
+        m_dragTool->release(*event);
 
     endDrag(DragEnd::Committed);
 
@@ -636,6 +631,7 @@ void TimelinePanel::endDrag(DragEnd how)
                 if (m_commandStack->undoCount() > before) m_commandStack->undo();
             }
         }   // marquee / pending click: nothing applied yet
+        if (m_dragTool) m_dragTool->cancel();
         // Restore anything the drag changed that the code above didn't (and
         // record nothing).
         cancelDragEditGesture();
@@ -651,6 +647,7 @@ void TimelinePanel::endDrag(DragEnd how)
             restoreRollingEditToOrigin();
             m_rollExtraSeams.clear();
         }
+        if (m_dragTool) m_dragTool->interrupt();
         // Close any dangling undo macro so future commands don't accumulate
         // into it, and keep what the drag applied as one step.
         if (m_commandStack && m_commandStack->isMacroActive())
@@ -669,17 +666,18 @@ void TimelinePanel::endDrag(DragEnd how)
 void TimelinePanel::resetDragState()
 {
     QToolTip::hideText();
+    if (m_dragTool) {
+        m_dragTool->finish();
+        m_dragTool.reset();
+    }
     m_dragMode = DragMode::None;
     m_dragClipRef = {};
     m_dragSelectedClips.clear();
     m_dragTargetTrack = SIZE_MAX;
     m_ghostTrackVisible = false;
     if (m_ghostOverlay) m_ghostOverlay->hide();
-    if (m_marqueeScrollTimer) m_marqueeScrollTimer->stop();
-    m_marqueeLastMovePos = QPointF();
     if (m_clipDragScrollTimer) m_clipDragScrollTimer->stop();
     m_clipDragLastMovePos = QPointF();
-    if (m_rubberBand) m_rubberBand->hide();
     setCursor(Qt::ArrowCursor);
     for (auto tw : m_trackWidgets)
         tw->setHoverEdgeTick(-1);
