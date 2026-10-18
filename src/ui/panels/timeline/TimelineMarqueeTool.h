@@ -30,7 +30,7 @@ public:
     TimelineMarqueeTool(TimelinePanel& panel, QPointF pressPos);
     ~TimelineMarqueeTool() override;
 
-    void move(const QMouseEvent& event) override;
+    void move(const QMouseEvent& event, int64_t tickDelta) override;
     void release(const QMouseEvent& event) override;
     void finish() override;
 

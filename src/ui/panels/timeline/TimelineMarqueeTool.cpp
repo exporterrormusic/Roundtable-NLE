@@ -30,7 +30,7 @@ TimelineMarqueeTool::TimelineMarqueeTool(TimelinePanel& panel, QPointF pressPos)
 
 TimelineMarqueeTool::~TimelineMarqueeTool() = default;
 
-void TimelineMarqueeTool::move(const QMouseEvent& event)
+void TimelineMarqueeTool::move(const QMouseEvent& event, int64_t /*tickDelta*/)
 {
     m_cursor = event.position();
     if (!m_started) {

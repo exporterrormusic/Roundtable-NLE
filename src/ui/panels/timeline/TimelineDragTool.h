@@ -12,6 +12,8 @@
  */
 #pragma once
 
+#include <cstdint>
+
 class QMouseEvent;
 
 namespace rt {
@@ -21,8 +23,10 @@ class TimelineDragTool
 public:
     virtual ~TimelineDragTool() = default;
 
-    /// Follow the cursor. The event carries the modifiers to use.
-    virtual void move(const QMouseEvent& event) = 0;
+    /// Follow the cursor. The event carries the modifiers to use;
+    /// `tickDelta` is the horizontal drag in ticks, quantized so the edge at
+    /// frameAnchor() lands on a frame start (whole frames when there is none).
+    virtual void move(const QMouseEvent& event, int64_t tickDelta) = 0;
     /// The button came up; runs before the panel commits the drag.
     virtual void release(const QMouseEvent& event) = 0;
     /// Esc: undo whatever this drag applied.
@@ -31,6 +35,8 @@ public:
     virtual void interrupt() {}
     /// Remove on-screen affordances; called once, however the drag ended.
     virtual void finish() {}
+    /// The tick of the edge this drag moves, or -1 when it moves none.
+    [[nodiscard]] virtual int64_t frameAnchor() const { return -1; }
 };
 
 } // namespace rt

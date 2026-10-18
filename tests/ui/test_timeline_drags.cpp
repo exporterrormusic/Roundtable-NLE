@@ -91,6 +91,7 @@ struct DragRig
         panel = std::make_unique<TimelinePanel>();
         panel->setCommandStack(&stack);
         panel->setTimeline(&timeline);
+        panel->setFrameRate(30.0);   // the panel's own grid (it defaults to 60)
         panel->resize(1600, 700);
         panel->show();
         QApplication::processEvents();
@@ -680,4 +681,69 @@ TEST(TimelineDrags, PressDuringAnUnfinishedTrimKeepsItAsOneStep)
 
     EXPECT_EQ(clipById(rig.timeline, id)->duration(), kSecond + 9 * kFrame);
     rig.expectOneExactUndoStep(before);
+}
+
+// ─── Ripple tool ─────────────────────────────────────────────────────────────
+
+// Pinned as found: the Ripple tool trims like the Selection tool and does
+// NOT shift the clips after the edit (B stays at 3 s). Reported to the owner
+// as a probable bug (rewrite roadmap, Stage 9).
+TEST(TimelineDrags, RippleToolTrimsTheTail)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(v1, 3 * kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->setActiveTool(EditTool::Ripple);
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(2 * kSecond - kFrame / 4, t),
+             rig.pointAt(2 * kSecond - kFrame / 4 + 9 * kFrame, t));
+
+    EXPECT_EQ(clipById(rig.timeline, a)->duration(), kSecond + 9 * kFrame);
+    EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), 3 * kSecond);
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, TrimMovesEverySelectedClipsEdge)
+{
+    // Two selected clips on two tracks: trimming one tail extends both by
+    // the same delta.
+    DragRig rig;
+    Track* v2 = rig.videoTrack("V2");
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(v2, kSecond, kSecond / 2)->id();
+    rig.show();
+    const size_t t1 = rig.indexOf(v1);
+    const size_t t2 = rig.indexOf(v2);
+    rig.panel->selection().selectClip({t1, a}, false);
+    rig.panel->selection().selectClip({t2, b}, true);
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(2 * kSecond - kFrame / 4, t1),
+             rig.pointAt(2 * kSecond - kFrame / 4 + 7 * kFrame, t1));
+
+    EXPECT_EQ(clipById(rig.timeline, a)->duration(), kSecond + 7 * kFrame);
+    EXPECT_EQ(clipById(rig.timeline, b)->duration(), kSecond / 2 + 7 * kFrame);
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, CtrlTrimDoesNotSnap)
+{
+    // The same drag as TrimSnapsToTheNeighboursEdge, with Ctrl held: the
+    // tail stops where the mouse is (frame-quantized), short of the head.
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    rig.addClip(v1, 3 * kSecond, kSecond);
+    rig.show();
+    const size_t t = rig.indexOf(v1);
+
+    QPointF to = rig.pointAt(3 * kSecond - kFrame, t);
+    rig.drag(rig.pointAt(2 * kSecond - kFrame / 4, t), to, Qt::ControlModifier);
+
+    EXPECT_EQ(clipById(rig.timeline, a)->timelineOut(), 3 * kSecond - kFrame);
 }

@@ -495,8 +495,6 @@ private:
     // mouseMoveEvent, one handler per long-running drag mode
     // (TimelinePanelMouseDragMove.cpp).
     void continueClipMoveDrag(QPointF pos, int64_t tickDelta);
-    void continueClipTrimHeadDrag(QPointF pos, int64_t tickDelta);
-    void continueClipTrimTailDrag(QPointF pos, int64_t tickDelta);
     void continueRollingEditDrag(int64_t tickDelta);
     void continuePendingClipClick(QPointF pos);
     void continueTransitionTrimDrag(QPointF pos);
@@ -809,6 +807,10 @@ private:
     // (TimelineDragTool); null for the drags still on the DragMode switch.
     std::unique_ptr<TimelineDragTool> m_dragTool;
     friend class TimelineMarqueeTool;
+    friend class TimelineTrimTool;
+    /// Starts trimming `edge` of m_dragClipRef (m_dragOriginalIn/Duration);
+    /// the other clips in m_dragSelectedClips trim along (TimelineTrimTool).
+    void beginTrim(ClipEdge edge);
     /// A press on empty space: a click clears the selection, a drag draws
     /// a marquee (TimelineMarqueeTool).
     void beginMarquee();

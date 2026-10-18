@@ -1057,6 +1057,8 @@ void TimelinePanel::pressWithRippleTool(QMouseEvent* event, QPointF pos)
             if (m_commandStack && (m_dragMode == DragMode::ClipTrimTail
                                    || m_dragMode == DragMode::ClipTrimHead))
                 m_commandStack->beginMacro("Ripple trim clip");
+            beginTrim(m_dragMode == DragMode::ClipTrimTail ? ClipEdge::Tail
+                                                           : ClipEdge::Head);
         }
     } else {
         // Empty-space click — deselect on release.

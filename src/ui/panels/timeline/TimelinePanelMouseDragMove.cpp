@@ -4,6 +4,7 @@
  */
 
 #include "panels/timeline/TimelinePanel.h"
+#include "panels/timeline/TimelineTrimTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 
@@ -26,6 +27,7 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <limits>
+#include <optional>
 
 namespace rt {
 
@@ -86,7 +88,10 @@ void TimelinePanel::updateClipDragAutoScroll(const QPointF& pos)
                              m_clipDragLastMovePos,
                              m_clipDragLastMovePos,
                              mapToGlobal(m_clipDragLastMovePos.toPoint()),
-                             Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                             Qt::LeftButton, Qt::LeftButton,
+                             // The keys still held: a trim reads Ctrl
+                             // (no snapping) from the move event.
+                             QApplication::keyboardModifiers());
             mouseMoveEvent(&fake);
         });
     }
@@ -267,14 +272,10 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         const double fps = m_layoutEngine.frameRate();
         if (fps > 0.0) {
             const RationalFrameRate grid = canonicalFrameRate(fps);
-            int64_t anchor = -1;
+            int64_t anchor = m_dragTool ? m_dragTool->frameAnchor() : -1;
             switch (m_dragMode) {
             case DragMode::ClipMove:
-            case DragMode::ClipTrimHead:
                 anchor = m_dragOriginalIn;
-                break;
-            case DragMode::ClipTrimTail:
-                anchor = m_dragOriginalIn + m_dragOriginalDuration;
                 break;
             case DragMode::RollingEdit:
                 anchor = m_rollOriginalEditPoint;
@@ -298,10 +299,8 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         continueClipMoveDrag(pos, tickDelta);
         break;
     case DragMode::ClipTrimHead:
-        continueClipTrimHeadDrag(pos, tickDelta);
-        break;
     case DragMode::ClipTrimTail:
-        continueClipTrimTailDrag(pos, tickDelta);
+        if (m_dragTool) m_dragTool->move(*event, tickDelta);
         break;
     case DragMode::SlipTool:
     {
@@ -358,7 +357,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
 
     case DragMode::PendingMarquee:
     case DragMode::MarqueeSelect:
-        if (m_dragTool) m_dragTool->move(*event);
+        if (m_dragTool) m_dragTool->move(*event, tickDelta);
         break;
     case DragMode::TransitionTrim:
         continueTransitionTrimDrag(pos);
@@ -679,168 +678,6 @@ void TimelinePanel::continueClipMoveDrag(QPointF pos, int64_t tickDelta)
     updateClipDragAutoScroll(pos);
 }
 
-void TimelinePanel::continueClipTrimHeadDrag(QPointF pos, int64_t tickDelta)
-{
-    // The edit-point bracket is a static "you clicked this edge"
-    // affordance; once the user actually drags to trim it should
-    // disappear (Premiere hides it during the trim).  Cheap + safe
-    // to call every tick — setEditPointTick early-returns at -1.
-    clearEditPointSelection();
-    int64_t newHead = m_dragOriginalIn + tickDelta;
-    const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
-    if (!ctrlHeld) {
-    auto result = m_snapEngine.snap(newHead);
-    if (result.didSnap) {
-        newHead = result.snappedTick;
-        setSnapIndicator(result.snappedTick);
-    } else {
-        setSnapIndicator(-1);
-    }
-    } else {
-        m_snapEngine.resetHysteresis();
-        setSnapIndicator(-1);
-    }
-
-    if (Track* tr = m_timeline->track(m_dragClipRef.trackIndex)) {
-        const int64_t origTail = m_dragOriginalIn + m_dragOriginalDuration;
-        int64_t leftLimit = std::numeric_limits<int64_t>::min();
-        for (size_t ci = 0; ci < tr->clipCount(); ++ci) {
-            const Clip* other = tr->clip(ci);
-            if (!other || other->id() == m_dragClipRef.clipId) continue;
-            if (other->timelineOut() <= m_dragOriginalIn &&
-                other->timelineOut() > leftLimit)
-                leftLimit = other->timelineOut();
-        }
-        if (newHead < leftLimit) newHead = leftLimit;
-        if (newHead >= origTail) newHead = origTail - 1;
-    }
-
-    int64_t headDelta = newHead - m_dragOriginalIn;
-
-    // Trim primary clip
-    {
-        auto cmd = EditOperations::trimClip(*m_timeline, m_dragClipRef.trackIndex,
-                                            m_dragClipRef.clipId,
-                                            ClipEdge::Head, newHead);
-        executeCommand(std::move(cmd));
-    }
-
-    // Trim other selected clips by the same delta — including clips on
-    // OTHER tracks (e.g. an audio clip on A1 paired with a video clip
-    // on V1).  Each clip is clamped independently to its own neighbour
-    // on the left and to its own original tail, so a shorter clip in
-    // the selection won't be over-trimmed.
-    for (const auto& dcs : m_dragSelectedClips) {
-        if (dcs.ref.clipId == m_dragClipRef.clipId &&
-            dcs.ref.trackIndex == m_dragClipRef.trackIndex) continue;
-        Track* selTr = m_timeline->track(dcs.ref.trackIndex);
-        if (!selTr) continue;
-        size_t si = selTr->findClipIndexById(dcs.ref.clipId);
-        if (si >= selTr->clipCount()) continue;
-        int64_t selNewHead = dcs.originalIn + headDelta;
-        int64_t selOrigTail = dcs.originalIn + dcs.originalDuration;
-        if (selNewHead < 0) selNewHead = 0;
-        if (selNewHead >= selOrigTail) selNewHead = selOrigTail - 1;
-        // also keep away from adjacent clip to the left
-        int64_t selLeftLimit = std::numeric_limits<int64_t>::min();
-        for (size_t ci = 0; ci < selTr->clipCount(); ++ci) {
-            const Clip* other = selTr->clip(ci);
-            if (!other || other->id() == dcs.ref.clipId) continue;
-            if (other->timelineOut() <= dcs.originalIn &&
-                other->timelineOut() > selLeftLimit)
-                selLeftLimit = other->timelineOut();
-        }
-        if (selNewHead < selLeftLimit) selNewHead = selLeftLimit;
-        auto selCmd = EditOperations::trimClip(*m_timeline, dcs.ref.trackIndex,
-                                                dcs.ref.clipId,
-                                                ClipEdge::Head, selNewHead);
-        executeCommand(std::move(selCmd));
-    }
-
-    for (auto tw : m_trackWidgets)
-        tw->setHoverEdgeTick(tw->trackIndex() == m_dragClipRef.trackIndex ? newHead : -1);
-    onScrollChanged();
-    updateClipDragAutoScroll(pos);
-}
-
-void TimelinePanel::continueClipTrimTailDrag(QPointF pos, int64_t tickDelta)
-{
-    // See ClipTrimHead: hide the edit-point bracket once trimming.
-    clearEditPointSelection();
-    int64_t newTail = m_dragOriginalIn + m_dragOriginalDuration + tickDelta;
-    const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
-    if (!ctrlHeld) {
-    auto result = m_snapEngine.snap(newTail);
-    if (result.didSnap) {
-        newTail = result.snappedTick;
-        setSnapIndicator(result.snappedTick);
-    } else {
-        setSnapIndicator(-1);
-    }
-    } else {
-        m_snapEngine.resetHysteresis();
-        setSnapIndicator(-1);
-    }
-
-    if (Track* tr = m_timeline->track(m_dragClipRef.trackIndex)) {
-        const int64_t origTail = m_dragOriginalIn + m_dragOriginalDuration;
-        int64_t rightLimit = std::numeric_limits<int64_t>::max();
-        for (size_t ci = 0; ci < tr->clipCount(); ++ci) {
-            const Clip* other = tr->clip(ci);
-            if (!other || other->id() == m_dragClipRef.clipId) continue;
-            if (other->timelineIn() >= origTail &&
-                other->timelineIn() < rightLimit)
-                rightLimit = other->timelineIn();
-        }
-        if (newTail > rightLimit) newTail = rightLimit;
-        if (newTail <= m_dragOriginalIn) newTail = m_dragOriginalIn + 1;
-    }
-
-    int64_t tailDelta = newTail - (m_dragOriginalIn + m_dragOriginalDuration);
-
-    // Trim primary clip
-    {
-        auto cmd = EditOperations::trimClip(*m_timeline, m_dragClipRef.trackIndex,
-                                            m_dragClipRef.clipId,
-                                            ClipEdge::Tail, newTail);
-        executeCommand(std::move(cmd));
-    }
-
-    // Trim other selected clips by the same delta — across tracks too
-    // (e.g. an A/V pair, or a V1+A1+A2 multi-selection).  Each clip is
-    // clamped to its own right-side neighbour and its own original head.
-    for (const auto& dcs : m_dragSelectedClips) {
-        if (dcs.ref.clipId == m_dragClipRef.clipId &&
-            dcs.ref.trackIndex == m_dragClipRef.trackIndex) continue;
-        Track* selTr = m_timeline->track(dcs.ref.trackIndex);
-        if (!selTr) continue;
-        size_t si = selTr->findClipIndexById(dcs.ref.clipId);
-        if (si >= selTr->clipCount()) continue;
-        int64_t selOrigTail = dcs.originalIn + dcs.originalDuration;
-        int64_t selNewTail = selOrigTail + tailDelta;
-        // keep away from adjacent clip to the right
-        int64_t selRightLimit = std::numeric_limits<int64_t>::max();
-        for (size_t ci = 0; ci < selTr->clipCount(); ++ci) {
-            const Clip* other = selTr->clip(ci);
-            if (!other || other->id() == dcs.ref.clipId) continue;
-            if (other->timelineIn() >= selOrigTail &&
-                other->timelineIn() < selRightLimit)
-                selRightLimit = other->timelineIn();
-        }
-        if (selNewTail > selRightLimit) selNewTail = selRightLimit;
-        if (selNewTail <= dcs.originalIn) selNewTail = dcs.originalIn + 1;
-        auto selCmd = EditOperations::trimClip(*m_timeline, dcs.ref.trackIndex,
-                                                dcs.ref.clipId,
-                                                ClipEdge::Tail, selNewTail);
-        executeCommand(std::move(selCmd));
-    }
-
-    for (auto tw : m_trackWidgets)
-        tw->setHoverEdgeTick(tw->trackIndex() == m_dragClipRef.trackIndex ? newTail : -1);
-    onScrollChanged();
-    updateClipDragAutoScroll(pos);
-}
-
 void TimelinePanel::continueRollingEditDrag(int64_t tickDelta)
 {
     // Snap first, but respect the precomputed clamp — never let the
@@ -951,7 +788,9 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
         double clipRight = m_layoutEngine.timeToPixelX(clip->timelineOut());
 
         const double kEdgeThreshold = edgeGrabPx(clipRight - clipLeft);
+        std::optional<ClipEdge> trimEdge;
         if (std::abs(clickPx - clipLeft) < kEdgeThreshold) {
+            trimEdge = ClipEdge::Head;
             m_dragMode = DragMode::ClipTrimHead;
             m_lastClickedEdge = { m_dragClipRef, ClipEdge::Head, true };
             // Wrap trim-move commands into a single undo step so one
@@ -960,6 +799,7 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
             if (m_commandStack)
                 m_commandStack->beginMacro("Trim clip head");
         } else if (std::abs(clickPx - clipRight) < kEdgeThreshold) {
+            trimEdge = ClipEdge::Tail;
             m_dragMode = DragMode::ClipTrimTail;
             m_lastClickedEdge = { m_dragClipRef, ClipEdge::Tail, true };
             if (m_commandStack)
@@ -1003,7 +843,21 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
                 excludeIds.push_back(sel.clipId);
             m_snapEngine.buildTargets(*m_timeline, m_playheadTick, 0.0, excludeIds);
         }
+        if (trimEdge)
+            beginTrim(*trimEdge);
     }
+}
+
+void TimelinePanel::beginTrim(ClipEdge edge)
+{
+    std::vector<TimelineTrimTool::ClipEdgeStart> others;
+    others.reserve(m_dragSelectedClips.size());
+    for (const auto& state : m_dragSelectedClips)
+        others.push_back({state.ref, state.originalIn, state.originalDuration});
+    m_dragTool = std::make_unique<TimelineTrimTool>(
+        *this, edge,
+        TimelineTrimTool::ClipEdgeStart{m_dragClipRef, m_dragOriginalIn, m_dragOriginalDuration},
+        std::move(others));
 }
 
 void TimelinePanel::continueTransitionTrimDrag(QPointF pos)
