@@ -34,10 +34,13 @@ Clip* Track::addClip(std::unique_ptr<Clip>&& clip, TrackMutationPolicy policy)
     if (!mutationAllowed(policy)) return nullptr;
     if (m_isDivider) return nullptr;  // Dividers cannot hold clips
 
-    // Insert maintaining sorted order by timelineIn
+    // Insert maintaining sorted order by timelineIn, after any clip that
+    // starts at the same tick: clips added in order keep that order, so a
+    // project loads its same-start clips as saved (they used to swap places
+    // on every load).
     int64_t newIn = clip->timelineIn();
-    auto it = std::lower_bound(m_clips.begin(), m_clips.end(), newIn,
-        [](const std::unique_ptr<Clip>& c, int64_t t) { return c->timelineIn() < t; }
+    auto it = std::upper_bound(m_clips.begin(), m_clips.end(), newIn,
+        [](int64_t t, const std::unique_ptr<Clip>& c) { return t < c->timelineIn(); }
     );
 
     auto* ptr = clip.get();

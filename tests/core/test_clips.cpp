@@ -620,6 +620,31 @@ TEST(TrackTest, ClipsSortedByTimelineIn)
     EXPECT_EQ(track.clip(1)->timelineIn(), 96000);
 }
 
+TEST(TrackTest, ClipsAddedAtTheSameStartKeepTheirOrder)
+{
+    // Loading adds clips in their saved order; same-start clips used to land
+    // reversed, so they swapped places on every save and reload.
+    Track track(TrackType::Audio, "A1");
+    std::vector<uint64_t> ids;
+    for (int i = 0; i < 3; ++i) {
+        auto clip = std::make_unique<AudioClip>();
+        clip->setTimelineIn(48000);
+        clip->setDuration(48000);
+        ids.push_back(clip->id());
+        track.addClip(std::move(clip));
+    }
+    auto early = std::make_unique<AudioClip>();
+    early->setTimelineIn(0);
+    early->setDuration(48000);
+    track.addClip(std::move(early));
+
+    ASSERT_EQ(track.clipCount(), 4u);
+    EXPECT_EQ(track.clip(0)->timelineIn(), 0);
+    EXPECT_EQ(track.clip(1)->id(), ids[0]);
+    EXPECT_EQ(track.clip(2)->id(), ids[1]);
+    EXPECT_EQ(track.clip(3)->id(), ids[2]);
+}
+
 TEST(TrackTest, RemoveClip)
 {
     Track track(TrackType::Video, "V1");
