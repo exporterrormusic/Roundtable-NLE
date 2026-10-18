@@ -495,7 +495,6 @@ private:
     // mouseMoveEvent, one handler per long-running drag mode
     // (TimelinePanelMouseDragMove.cpp).
     void continueClipMoveDrag(QPointF pos, int64_t tickDelta);
-    void continueRollingEditDrag(int64_t tickDelta);
     void continuePendingClipClick(QPointF pos);
     void continueTransitionTrimDrag(QPointF pos);
     void continueTransitionHandleDrag(QPointF pos);
@@ -533,7 +532,6 @@ private:
     /// Put live-dragged clips / rolled seams back at their drag-start state
     /// (shared by release, Esc-cancel and interrupted-drag cleanup).
     void restoreClipMoveToOrigin();
-    void restoreRollingEditToOrigin();
     std::unique_ptr<QObject> m_dragEscapeFilter;   // app filter: Esc cancels a drag
 
     // One recorded undo step per drag (EditSession.h): opened before the
@@ -703,42 +701,6 @@ private:
     int64_t   m_dragLastAppliedDelta{0};
     size_t    m_dragOriginalTrack{0};
 
-    // Rolling edit drag state
-    uint64_t  m_rollLeftClipId{0};
-    uint64_t  m_rollRightClipId{0};
-    size_t    m_rollTrackIndex{0};
-    int64_t   m_rollOriginalEditPoint{0};
-    // Original clip states for direct-manipulation rolling edit
-    int64_t   m_rollLeftOrigIn{0};
-    int64_t   m_rollLeftOrigDur{0};
-    int64_t   m_rollLeftOrigSrcIn{0};
-    int64_t   m_rollRightOrigIn{0};
-    int64_t   m_rollRightOrigDur{0};
-    int64_t   m_rollRightOrigSrcIn{0};
-    // Precomputed live-drag bounds for the seam — mirrors the commit
-    // clamp in EditOperations::rollingEdit so the seam stops at the
-    // same tick during drag as it lands on at release. Without this,
-    // the live preview can slide past the source-media or right-clip-
-    // head limits and then snap back on release.
-    int64_t   m_rollMinEditPoint{0};
-    int64_t   m_rollMaxEditPoint{0};
-    // Premiere-style multi-track roll: when the grabbed cut involves a
-    // selected clip, the cut on every OTHER track with a selected clip
-    // (the one nearest the grabbed cut) rolls by the same delta.  The
-    // primary seam's min/max above are already narrowed so every extra
-    // seam stays within its own limits.
-    struct RollSeam {
-        size_t  trackIndex{0};
-        uint64_t leftClipId{0}, rightClipId{0};
-        int64_t origEditPoint{0};
-        int64_t leftOrigIn{0}, leftOrigDur{0}, leftOrigSrcIn{0};
-        int64_t rightOrigIn{0}, rightOrigDur{0}, rightOrigSrcIn{0};
-    };
-    std::vector<RollSeam> m_rollExtraSeams;
-    /// Live-apply a roll of one seam to `newEditPoint` (clip bounds plus any
-    /// transition anchored at the seam).  Shared by the primary and extra seams.
-    void applyRollSeamLive(const RollSeam& seam, int64_t newEditPoint);
-
     // Transition trim drag state
     size_t  m_transTrimTrackIndex{0};
     size_t  m_transTrimIndex{0};       // index in track->transitions()
@@ -808,6 +770,7 @@ private:
     std::unique_ptr<TimelineDragTool> m_dragTool;
     friend class TimelineMarqueeTool;
     friend class TimelineTrimTool;
+    friend class TimelineRollTool;
     /// Starts trimming `edge` of m_dragClipRef (m_dragOriginalIn/Duration);
     /// the other clips in m_dragSelectedClips trim along (TimelineTrimTool).
     void beginTrim(ClipEdge edge);

@@ -277,9 +277,6 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
             case DragMode::ClipMove:
                 anchor = m_dragOriginalIn;
                 break;
-            case DragMode::RollingEdit:
-                anchor = m_rollOriginalEditPoint;
-                break;
             default:
                 break;
             }
@@ -349,7 +346,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         break;
     }
     case DragMode::RollingEdit:
-        continueRollingEditDrag(tickDelta);
+        if (m_dragTool) m_dragTool->move(*event, tickDelta);
         break;
     case DragMode::PendingClipClick:
         continuePendingClipClick(pos);
@@ -676,88 +673,6 @@ void TimelinePanel::continueClipMoveDrag(QPointF pos, int64_t tickDelta)
         }
     }
     updateClipDragAutoScroll(pos);
-}
-
-void TimelinePanel::continueRollingEditDrag(int64_t tickDelta)
-{
-    // Snap first, but respect the precomputed clamp — never let the
-    // snap drag the seam past a source-content limit, otherwise the
-    // indicator would appear at a tick the seam can't actually reach.
-    const int64_t rawEditPoint = m_rollOriginalEditPoint + tickDelta;
-    int64_t newEditPoint = rawEditPoint;
-    const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
-    if (!ctrlHeld) {
-    auto snapResult = m_snapEngine.snap(rawEditPoint);
-    if (snapResult.didSnap
-        && snapResult.snappedTick >= m_rollMinEditPoint
-        && snapResult.snappedTick <= m_rollMaxEditPoint)
-    {
-        newEditPoint = snapResult.snappedTick;
-        setSnapIndicator(snapResult.snappedTick);
-    }
-    else
-    {
-        setSnapIndicator(-1);
-        newEditPoint = std::clamp(rawEditPoint,
-                                  m_rollMinEditPoint, m_rollMaxEditPoint);
-    }
-    } else {
-        m_snapEngine.resetHysteresis();
-        setSnapIndicator(-1);
-        newEditPoint = std::clamp(rawEditPoint,
-                                  m_rollMinEditPoint, m_rollMaxEditPoint);
-    }
-
-    RollSeam primary;
-    primary.trackIndex     = m_rollTrackIndex;
-    primary.leftClipId     = m_rollLeftClipId;
-    primary.rightClipId    = m_rollRightClipId;
-    primary.origEditPoint  = m_rollOriginalEditPoint;
-    primary.leftOrigIn     = m_rollLeftOrigIn;
-    primary.rightOrigIn    = m_rollRightOrigIn;
-    primary.rightOrigDur   = m_rollRightOrigDur;
-    primary.rightOrigSrcIn = m_rollRightOrigSrcIn;
-    applyRollSeamLive(primary, newEditPoint);
-    // Other selected tracks' seams move by the same delta (the press
-    // already narrowed the min/max so each stays within its own limits).
-    const int64_t delta = newEditPoint - m_rollOriginalEditPoint;
-    for (const auto& seam : m_rollExtraSeams)
-        applyRollSeamLive(seam, seam.origEditPoint + delta);
-
-    // Slide the edit-point brackets along with the seam so the user has a
-    // stable visual anchor for where the cut is landing.
-    setEditPointSelection(m_rollTrackIndex, newEditPoint, EditPointSide::Both);
-    onScrollChanged();
-}
-
-void TimelinePanel::applyRollSeamLive(const RollSeam& seam, int64_t newEditPoint)
-{
-    Track* track = m_timeline->track(seam.trackIndex);
-    if (!track || track->isLocked()) return;
-    const size_t li = track->findClipIndexById(seam.leftClipId);
-    const size_t ri = track->findClipIndexById(seam.rightClipId);
-    if (li >= track->clipCount() || ri >= track->clipCount()) return;
-
-    const int64_t rightEnd = seam.rightOrigIn + seam.rightOrigDur;
-    Clip* lc = track->clip(li);
-    Clip* rc = track->clip(ri);
-    lc->setDuration(newEditPoint - seam.leftOrigIn);
-    rc->setTimelineIn(newEditPoint);
-    rc->setDuration(rightEnd - newEditPoint);
-    rc->setSourceIn(seam.rightOrigSrcIn + (newEditPoint - seam.rightOrigIn));
-
-    // Live-update any transition anchored to this edit point (cross-dissolve
-    // between L/R, or single-sided fade on either side) so the transition
-    // slides with the seam instead of waiting for the commit.
-    for (auto& t : track->transitions()) {
-        const bool touchesLeft  = (t.leftClipId  == seam.leftClipId);
-        const bool touchesRight = (t.rightClipId == seam.rightClipId);
-        const bool leftFadeOut  = touchesLeft  && t.rightClipId == 0;
-        const bool rightFadeIn  = touchesRight && t.leftClipId  == 0;
-        const bool dissolve     = touchesLeft  && touchesRight;
-        if (dissolve || leftFadeOut || rightFadeIn)
-            t.editPointTick = newEditPoint;
-    }
 }
 
 void TimelinePanel::continuePendingClipClick(QPointF pos)

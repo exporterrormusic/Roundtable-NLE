@@ -747,3 +747,66 @@ TEST(TimelineDrags, CtrlTrimDoesNotSnap)
 
     EXPECT_EQ(clipById(rig.timeline, a)->timelineOut(), 3 * kSecond - kFrame);
 }
+
+TEST(TimelineDrags, PressDuringAnUnfinishedRollPutsTheCutBack)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    rig.addClip(v1, kSecond, kSecond);
+    rig.addClip(v1, 2 * kSecond, kSecond);
+    rig.show();
+    rig.panel->setActiveTool(EditTool::Rolling);
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(2 * kSecond, t), rig.pointAt(2 * kSecond + 6 * kFrame, t),
+             Qt::NoModifier, /*releaseAtEnd=*/false);
+    ASSERT_NE(rig.state(), before);
+    rig.click(rig.pointAt(6 * kSecond, t));
+
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(TimelineDrags, RollingEditCarriesTheDissolveOnTheCut)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(v1, 2 * kSecond, kSecond)->id();
+    Transition dissolve;
+    dissolve.duration = 10 * kFrame;
+    dissolve.leftClipId = a;
+    dissolve.rightClipId = b;
+    dissolve.editPointTick = 2 * kSecond;
+    v1->addTransition(dissolve);
+    rig.show();
+    rig.panel->setActiveTool(EditTool::Rolling);
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(2 * kSecond, t), rig.pointAt(2 * kSecond - 5 * kFrame, t));
+
+    ASSERT_EQ(rig.timeline.track(t)->transitionCount(), 1u);
+    EXPECT_EQ(rig.timeline.track(t)->transition(0)->editPointTick, 2 * kSecond - 5 * kFrame);
+    EXPECT_EQ(clipById(rig.timeline, a)->timelineOut(), 2 * kSecond - 5 * kFrame);
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, RollingEditStopsAtTheRightClipsSourceStart)
+{
+    // The right clip's media starts 4 frames before its in-point: the cut
+    // can roll left by at most 4 frames.
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(v1, 2 * kSecond, kSecond, 4 * kFrame)->id();
+    rig.show();
+    rig.panel->setActiveTool(EditTool::Rolling);
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(2 * kSecond, t), rig.pointAt(2 * kSecond - 15 * kFrame, t));
+
+    EXPECT_EQ(clipById(rig.timeline, a)->timelineOut(), 2 * kSecond - 4 * kFrame);
+    EXPECT_EQ(clipById(rig.timeline, b)->sourceIn(), 0);
+}

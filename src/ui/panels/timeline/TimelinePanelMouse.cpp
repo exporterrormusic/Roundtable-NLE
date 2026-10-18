@@ -5,6 +5,7 @@
 
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelineMarqueeTool.h"
+#include "panels/timeline/TimelineRollTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 #include "widgets/TimelineRuler.h"
@@ -930,25 +931,28 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
 
         if (bestLeft != 0) {
             m_dragMode = DragMode::RollingEdit;
-            m_rollLeftClipId = bestLeft;
-            m_rollRightClipId = bestRight;
-            m_rollTrackIndex = ti;
-            m_rollOriginalEditPoint = bestEditPt;
-            m_rollExtraSeams.clear();
+            TimelineRollTool::Seam primary;
+            primary.trackIndex = ti;
+            primary.leftClipId = bestLeft;
+            primary.rightClipId = bestRight;
+            primary.origEditPoint = bestEditPt;
+            std::vector<TimelineRollTool::Seam> extras;
+            int64_t minEditPoint = bestEditPt;
+            int64_t maxEditPoint = bestEditPt;
             // Capture original clip states for direct manipulation
             size_t li2 = track->findClipIndexById(bestLeft);
             size_t ri2 = track->findClipIndexById(bestRight);
             if (li2 < track->clipCount() && ri2 < track->clipCount()) {
                 const Clip* lc = track->clip(li2);
                 const Clip* rc = track->clip(ri2);
-                m_rollLeftOrigIn     = lc->timelineIn();
-                m_rollLeftOrigDur    = lc->duration();
-                m_rollLeftOrigSrcIn  = lc->sourceIn();
-                m_rollRightOrigIn    = rc->timelineIn();
-                m_rollRightOrigDur   = rc->duration();
-                m_rollRightOrigSrcIn = rc->sourceIn();
-                std::tie(m_rollMinEditPoint, m_rollMaxEditPoint) =
-                    rollSeamBounds(lc, rc, m_rollOriginalEditPoint);
+                primary.leftOrigIn     = lc->timelineIn();
+                primary.leftOrigDur    = lc->duration();
+                primary.leftOrigSrcIn  = lc->sourceIn();
+                primary.rightOrigIn    = rc->timelineIn();
+                primary.rightOrigDur   = rc->duration();
+                primary.rightOrigSrcIn = rc->sourceIn();
+                std::tie(minEditPoint, maxEditPoint) =
+                    rollSeamBounds(lc, rc, primary.origEditPoint);
 
                 // Multi-track roll (Premiere): grabbing a cut of a selected
                 // clip also rolls, on every other track holding a selected
@@ -958,8 +962,8 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
                 const bool grabbedSelected =
                     m_selection.isSelected(ClipRef{ti, bestLeft}) ||
                     m_selection.isSelected(ClipRef{ti, bestRight});
-                int64_t minDelta = m_rollMinEditPoint - m_rollOriginalEditPoint;
-                int64_t maxDelta = m_rollMaxEditPoint - m_rollOriginalEditPoint;
+                int64_t minDelta = minEditPoint - primary.origEditPoint;
+                int64_t maxDelta = maxEditPoint - primary.origEditPoint;
                 for (size_t t2 = 0; grabbedSelected && t2 < m_timeline->trackCount(); ++t2) {
                     const Track* other = m_timeline->track(t2);
                     if (t2 == ti || !other || other->isLocked()) continue;
@@ -980,7 +984,7 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
                         }
                     }
                     if (!bestL) continue;
-                    RollSeam seam;
+                    TimelineRollTool::Seam seam;
                     seam.trackIndex    = t2;
                     seam.leftClipId    = bestL->id();
                     seam.rightClipId   = bestR->id();
@@ -994,28 +998,30 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
                     const auto [lo, hi] = rollSeamBounds(bestL, bestR, seam.origEditPoint);
                     minDelta = std::max(minDelta, lo - seam.origEditPoint);
                     maxDelta = std::min(maxDelta, hi - seam.origEditPoint);
-                    m_rollExtraSeams.push_back(seam);
+                    extras.push_back(seam);
                 }
                 if (minDelta > maxDelta) minDelta = maxDelta = 0;
-                m_rollMinEditPoint = m_rollOriginalEditPoint + minDelta;
-                m_rollMaxEditPoint = m_rollOriginalEditPoint + maxDelta;
+                minEditPoint = primary.origEditPoint + minDelta;
+                maxEditPoint = primary.origEditPoint + maxDelta;
             }
 
             // Show the edit-point brackets immediately at the seam so
             // the user has a visible "you grabbed this edit point"
             // affordance from the first frame of the drag.
-            setEditPointSelection(m_rollTrackIndex, m_rollOriginalEditPoint,
+            setEditPointSelection(primary.trackIndex, primary.origEditPoint,
                                    EditPointSide::Both);
 
             // Initialize snap engine for rolling edit (ignoring every
             // clip being rolled, so no seam snaps to itself).
-            std::vector<uint64_t> rollIds{m_rollLeftClipId, m_rollRightClipId};
-            for (const auto& seam : m_rollExtraSeams) {
+            std::vector<uint64_t> rollIds{primary.leftClipId, primary.rightClipId};
+            for (const auto& seam : extras) {
                 rollIds.push_back(seam.leftClipId);
                 rollIds.push_back(seam.rightClipId);
             }
             m_snapEngine.setPixelsPerSecond(m_layoutEngine.pixelsPerSecond());
             m_snapEngine.buildTargets(*m_timeline, m_playheadTick, 0.0, rollIds);
+            m_dragTool = std::make_unique<TimelineRollTool>(
+                *this, primary, std::move(extras), minEditPoint, maxEditPoint);
         }
     }
     if (m_dragMode != DragMode::RollingEdit) {

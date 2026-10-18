@@ -406,41 +406,6 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
         }
     }
 
-    // ── Rolling edit: commit as a single undoable command ────────────────
-    if (m_dragMode == DragMode::RollingEdit && m_timeline) {
-        Track* rollTrack = m_timeline->track(m_rollTrackIndex);
-        if (rollTrack) {
-            size_t li = rollTrack->findClipIndexById(m_rollLeftClipId);
-            size_t ri = rollTrack->findClipIndexById(m_rollRightClipId);
-            if (li < rollTrack->clipCount() && ri < rollTrack->clipCount()) {
-                int64_t finalEditPoint = rollTrack->clip(li)->timelineOut();
-
-                // Every rolled seam back to the original model, so each
-                // rollingEdit below starts from it.
-                restoreRollingEditToOrigin();
-
-                const int64_t delta = finalEditPoint - m_rollOriginalEditPoint;
-                if (delta != 0) {
-                    // Every seam rolls by the same delta: one undo step.
-                    const bool multi = !m_rollExtraSeams.empty() && m_commandStack;
-                    if (multi) m_commandStack->beginMacro("Rolling edit");
-                    auto cmd = EditOperations::rollingEdit(
-                        *m_timeline, m_rollTrackIndex,
-                        m_rollLeftClipId, m_rollRightClipId, finalEditPoint);
-                    if (cmd) executeCommand(std::move(cmd));
-                    for (const auto& seam : m_rollExtraSeams) {
-                        auto extra = EditOperations::rollingEdit(
-                            *m_timeline, seam.trackIndex, seam.leftClipId,
-                            seam.rightClipId, seam.origEditPoint + delta);
-                        if (extra) executeCommand(std::move(extra));
-                    }
-                    if (multi) m_commandStack->endMacro();
-                }
-            }
-        }
-        m_rollExtraSeams.clear();
-    }
-
     // ── PendingClipClick: user clicked an already-selected clip without dragging ──
     if (m_dragMode == DragMode::PendingClipClick) {
         // If this was an edge click (m_lastClickedEdge.valid is true),
@@ -468,7 +433,7 @@ void TimelinePanel::mouseReleaseEvent(QMouseEvent* event)
     }
 
     // Drags converted to tools finish their own release (a marquee that never
-    // moved clears the selection).
+    // moved clears the selection; a roll records itself).
     if (m_dragTool)
         m_dragTool->release(*event);
 
@@ -547,36 +512,6 @@ void TimelinePanel::restoreClipMoveToOrigin()
     }
 }
 
-void TimelinePanel::restoreRollingEditToOrigin()
-{
-    if (!m_timeline) return;
-    const auto restoreSeam = [this](size_t trackIndex, uint64_t leftId, uint64_t rightId,
-                                    int64_t leftIn, int64_t leftDur, int64_t leftSrcIn,
-                                    int64_t rightIn, int64_t rightDur, int64_t rightSrcIn) {
-        Track* t = m_timeline->track(trackIndex);
-        if (!t) return;
-        const size_t li = t->findClipIndexById(leftId);
-        const size_t ri = t->findClipIndexById(rightId);
-        if (li >= t->clipCount() || ri >= t->clipCount()) return;
-        Clip* lc = t->clip(li);
-        Clip* rc = t->clip(ri);
-        lc->setTimelineIn(leftIn);
-        lc->setDuration(leftDur);
-        lc->setSourceIn(leftSrcIn);
-        rc->setTimelineIn(rightIn);
-        rc->setDuration(rightDur);
-        rc->setSourceIn(rightSrcIn);
-    };
-    restoreSeam(m_rollTrackIndex, m_rollLeftClipId, m_rollRightClipId,
-                m_rollLeftOrigIn, m_rollLeftOrigDur, m_rollLeftOrigSrcIn,
-                m_rollRightOrigIn, m_rollRightOrigDur, m_rollRightOrigSrcIn);
-    // The other tracks' live-rolled seams too.
-    for (const auto& seam : m_rollExtraSeams)
-        restoreSeam(seam.trackIndex, seam.leftClipId, seam.rightClipId,
-                    seam.leftOrigIn, seam.leftOrigDur, seam.leftOrigSrcIn,
-                    seam.rightOrigIn, seam.rightOrigDur, seam.rightOrigSrcIn);
-}
-
 bool TimelinePanel::cancelActiveDrag()
 {
     if (!m_timeline || m_dragMode == DragMode::None) return false;
@@ -619,9 +554,6 @@ void TimelinePanel::endDrag(DragEnd how)
         // records nothing.
         if (m_dragMode == DragMode::ClipMove) {
             restoreClipMoveToOrigin();   // live preview, never recorded
-        } else if (m_dragMode == DragMode::RollingEdit) {
-            restoreRollingEditToOrigin();
-            m_rollExtraSeams.clear();
         } else if (dragRecordsIntoMacro(m_dragMode)) {
             // These execute real commands into an open macro: close it and
             // undo it — but only if the drag actually recorded something.
@@ -641,12 +573,8 @@ void TimelinePanel::endDrag(DragEnd how)
         // A press arrived before the release (lost mouse capture). Moves and
         // rolls are applied live and only RECORDED on release: put them back
         // (as Esc does) rather than leave clips moved with no undo step.
-        if (m_dragMode == DragMode::ClipMove) {
+        if (m_dragMode == DragMode::ClipMove)
             restoreClipMoveToOrigin();
-        } else if (m_dragMode == DragMode::RollingEdit) {
-            restoreRollingEditToOrigin();
-            m_rollExtraSeams.clear();
-        }
         if (m_dragTool) m_dragTool->interrupt();
         // Close any dangling undo macro so future commands don't accumulate
         // into it, and keep what the drag applied as one step.
