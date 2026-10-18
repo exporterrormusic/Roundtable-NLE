@@ -469,10 +469,9 @@ TEST(TimelineDrags, SlipShiftsOnlyTheSource)
     const Clip* clip = clipById(rig.timeline, id);
     EXPECT_EQ(clip->timelineIn(), kSecond);
     EXPECT_EQ(clip->duration(), kSecond);
-    // Today a drag to the right shows LATER source frames (the delta is
-    // added to the source in-point). Pinned as-is; the direction is an open
-    // question for the owner (see the rewrite roadmap).
-    EXPECT_EQ(clip->sourceIn(), 2 * kSecond + 5 * kFrame);
+    // The source moves with the mouse (Premiere): a drag to the right shows
+    // earlier source frames.
+    EXPECT_EQ(clip->sourceIn(), 2 * kSecond - 5 * kFrame);
     rig.expectOneExactUndoStep(before);
 }
 

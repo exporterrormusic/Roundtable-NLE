@@ -1,9 +1,10 @@
 /*
  * TimelineSlipSlideTool.h — the Slip and Slide tools dragging a clip.
  *
- * Slip shifts which part of the source the clip shows, leaving it in place;
- * slide moves the clip between its neighbours, which give or take the
- * difference. Every selected clip (the grabbed one plus link partners) goes
+ * Slip shifts which part of the source the clip shows, leaving it in place
+ * (the source moves with the mouse, so a drag to the right shows earlier
+ * frames, as in Premiere); slide moves the clip between its neighbours,
+ * which give or take the difference. Every selected clip (the grabbed one plus link partners) goes
  * by the same whole-frame delta, or none does when any of them can't. Each
  * move records into the undo macro the press opened; the panel closes it
  * (one step) or undoes it (Esc) when the drag ends.
