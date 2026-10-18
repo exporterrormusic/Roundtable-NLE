@@ -8,6 +8,7 @@
 #include "panels/timeline/TimelineRollTool.h"
 #include "panels/timeline/TimelineSlipSlideTool.h"
 #include "panels/timeline/TimelineTransitionTool.h"
+#include "panels/timeline/TimelineClipMoveTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 #include "widgets/TimelineRuler.h"
@@ -641,15 +642,9 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                     m_dragOriginalIn       = trimClip->timelineIn();
                     m_dragOriginalSourceIn = trimClip->sourceIn();
                     m_dragOriginalDuration = trimClip->duration();
-                    m_dragOriginalTrack    = trimTrackIdx;
                     m_dragMode             = DragMode::PendingClipClick;
                     m_lastClickedEdge      = { m_dragClipRef, trimEdge, true };
 
-                    // Clear any stale drag-snapshot so the promotion
-                    // path starts fresh (m_dragSelectedClips was
-                    // already cleared at press-start).
-                    m_dragSelectedClips.clear();
-                    m_dragTargetTrack = trimTrackIdx;
 
                     event->accept();
                     return;
@@ -1022,7 +1017,7 @@ void TimelinePanel::pressWithRippleTool(QMouseEvent* event, QPointF pos)
                                    || m_dragMode == DragMode::ClipTrimHead))
                 m_commandStack->beginMacro("Ripple trim clip");
             beginTrim(m_dragMode == DragMode::ClipTrimTail ? ClipEdge::Tail
-                                                           : ClipEdge::Head);
+                                                           : ClipEdge::Head, {});
         }
     } else {
         // Empty-space click — deselect on release.

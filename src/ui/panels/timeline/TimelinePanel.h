@@ -23,7 +23,7 @@
 #include "timeline/TimelineLayoutEngine.h"
 #include "timeline/EditOperations.h"
 #include "timeline/Clip.h"
-#include "timeline/Transition.h"  // for DragClipState::originalTransitions
+#include "timeline/Transition.h"
 #include "widgets/TimelineTrackWidget.h"  // for EditPointSide enum used below
 
 #include <atomic>
@@ -38,6 +38,8 @@ class QTimer;
 class QImage;
 
 namespace rt {
+
+struct TimelineDragClip;
 
 class Timeline;
 class TimelineRuler;
@@ -495,7 +497,6 @@ private:
 
     // mouseMoveEvent, one handler per long-running drag mode
     // (TimelinePanelMouseDragMove.cpp).
-    void continueClipMoveDrag(QPointF pos, int64_t tickDelta);
     void continuePendingClipClick(QPointF pos);
 
     // dragMoveEvent, one handler per dragged payload type
@@ -526,9 +527,6 @@ private:
     void externalFileDrop(QDropEvent* event, const GhostDropState& ghost);
     void treeWidgetDrop(QDropEvent* event, const GhostDropState& ghost);
 
-    /// Put live-dragged clips / rolled seams back at their drag-start state
-    /// (shared by release, Esc-cancel and interrupted-drag cleanup).
-    void restoreClipMoveToOrigin();
     std::unique_ptr<QObject> m_dragEscapeFilter;   // app filter: Esc cancels a drag
 
     // One recorded undo step per drag (EditSession.h): opened before the
@@ -695,29 +693,11 @@ private:
     int64_t   m_dragOriginalIn{0};
     int64_t   m_dragOriginalSourceIn{0};
     int64_t   m_dragOriginalDuration{0};
-    size_t    m_dragOriginalTrack{0};
 
 
     // Last clicked edge (for Ctrl+T transitions) — uses public ClickedEdge struct
     ClickedEdge m_lastClickedEdge;
 
-    // Multi-clip drag state: stores each selected clip's original position
-    // and the transitions on its source track that reference it. The
-    // live-drag preview moves clips by removeClip()+addClip(), which drops
-    // transitions referencing the moved clip on the source track. We
-    // capture them at drag-start so the mouse-release restore pass can
-    // put them back on the original track before the actual move command
-    // runs (otherwise moveClipToTrack has no transitions to carry over).
-    struct DragClipState {
-        ClipRef ref;
-        int64_t originalIn{0};
-        int64_t originalDuration{0};
-        int64_t originalSourceIn{0};
-        size_t  originalTrack{0};
-        std::vector<Transition> originalTransitions; // refs originalTrack, ref.clipId
-    };
-    std::vector<DragClipState> m_dragSelectedClips;
-    size_t m_dragTargetTrack{SIZE_MAX};  // track under cursor during drag
 
     // ── Ghost track (drag-to-create new track, Premiere Pro style) ──
     bool   m_ghostTrackVisible{false};
@@ -759,9 +739,10 @@ private:
     friend class TimelineRollTool;
     friend class TimelineSlipSlideTool;
     friend class TimelineTransitionTool;
+    friend class TimelineClipMoveTool;
     /// Starts trimming `edge` of m_dragClipRef (m_dragOriginalIn/Duration);
-    /// the other clips in m_dragSelectedClips trim along (TimelineTrimTool).
-    void beginTrim(ClipEdge edge);
+    /// the other clips in `clips` trim along (TimelineTrimTool).
+    void beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>& clips);
     /// A press on empty space: a click clears the selection, a drag draws
     /// a marquee (TimelineMarqueeTool).
     void beginMarquee();

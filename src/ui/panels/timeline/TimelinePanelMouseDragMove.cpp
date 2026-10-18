@@ -5,6 +5,7 @@
 
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelineTrimTool.h"
+#include "panels/timeline/TimelineClipMoveTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 
@@ -272,14 +273,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         const double fps = m_layoutEngine.frameRate();
         if (fps > 0.0) {
             const RationalFrameRate grid = canonicalFrameRate(fps);
-            int64_t anchor = m_dragTool ? m_dragTool->frameAnchor() : -1;
-            switch (m_dragMode) {
-            case DragMode::ClipMove:
-                anchor = m_dragOriginalIn;
-                break;
-            default:
-                break;
-            }
+            const int64_t anchor = m_dragTool ? m_dragTool->frameAnchor() : -1;
             tickDelta = (anchor >= 0)
                 ? snapTickToNearestFrame(anchor + tickDelta, grid) - anchor
                 : snapTickToNearestFrame(tickDelta, grid);   // whole frames
@@ -293,7 +287,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     switch (m_dragMode)
     {
     case DragMode::ClipMove:
-        continueClipMoveDrag(pos, tickDelta);
+        if (m_dragTool) m_dragTool->move(*event, tickDelta);
         break;
     case DragMode::ClipTrimHead:
     case DragMode::ClipTrimTail:
@@ -323,312 +317,6 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
     event->accept();
 }
 
-void TimelinePanel::continueClipMoveDrag(QPointF pos, int64_t tickDelta)
-{
-    int64_t newIn = m_dragOriginalIn + tickDelta;
-    if (newIn < 0) newIn = 0;
-
-    // Snap every head + tail of every dragged clip (the primary alone for
-    // a single-clip drag; all of them for a multi-clip / linked A/V drag,
-    // so clips on other tracks magnetise too). snapEdges is STICKY: once
-    // an edge seats against a target it holds until the nearest edge is
-    // dragged past the release zone, so the lock no longer drops the
-    // moment a tail edge (or a linked clip's edge) is the one that snapped.
-    // Holding Ctrl suppresses magnetism entirely for precision moves.
-    const bool ctrlHeld = (QApplication::keyboardModifiers() & Qt::ControlModifier);
-    if (!ctrlHeld) {
-        const int64_t baseDelta = newIn - m_dragOriginalIn;
-        std::vector<int64_t> edges;
-        if (m_dragSelectedClips.size() > 1) {
-            edges.reserve(m_dragSelectedClips.size() * 2);
-            for (const auto& dcs : m_dragSelectedClips) {
-                const int64_t cIn = dcs.originalIn + baseDelta;
-                edges.push_back(cIn);
-                edges.push_back(cIn + dcs.originalDuration);
-            }
-        } else {
-            edges = { newIn, newIn + m_dragOriginalDuration };
-        }
-        auto result = m_snapEngine.snapEdges(edges);
-        if (result.didSnap) {
-            newIn += result.delta;
-            if (newIn < 0) newIn = 0;
-            setSnapIndicator(result.snappedTick);
-        } else {
-            setSnapIndicator(-1);
-        }
-    } else {
-        // Ctrl held: suppress magnetism, reset sticky state so
-        // releasing Ctrl doesn't cause a sudden jump to a stale target.
-        m_snapEngine.resetHysteresis();
-        setSnapIndicator(-1);
-    }
-
-    // Compute the actual delta applied to the primary clip
-    int64_t actualDelta = newIn - m_dragOriginalIn;
-
-    // EDIT INVARIANT (see CommandStack.h "EDIT DISCIPLINE"):
-    // Group-floor clamp: when multiple clips are dragged left as a
-    // unit, raise the GROUP delta so the leftmost selected clip lands at
-    // tick 0 instead of every clip individually clamping to 0 and
-    // collapsing into an overlap (rightmost ends up overwriting the
-    // leftmost).
-    {
-        int64_t minSelOrig = std::numeric_limits<int64_t>::max();
-        for (const auto& dcs : m_dragSelectedClips)
-            minSelOrig = std::min(minSelOrig, dcs.originalIn);
-        if (minSelOrig != std::numeric_limits<int64_t>::max()
-                && actualDelta < -minSelOrig) {
-            actualDelta = -minSelOrig;
-            newIn = m_dragOriginalIn + actualDelta;
-        }
-    }
-
-    // Determine the dragged clip's track type up front — it drives both
-    // the cross-track target and the new-track ghost zones below.
-    TrackType dragType = TrackType::Video;
-    if (!m_dragSelectedClips.empty()) {
-        Track* srcTr = m_timeline->track(m_dragSelectedClips[0].ref.trackIndex);
-        if (srcTr) dragType = srcTr->type();
-    }
-
-    // ── New-VIDEO-track-above zone ──────────────────────────────────────
-    // The track column is top-aligned with a bottom stretch (see
-    // TimelinePanelTracks.cpp), and the ruler is a separate widget, so there
-    // is cursor-reachable empty space BELOW the bottom track (the audio-
-    // below ghost zone) but NONE above the top track — a strict "cursor
-    // above the first track" test can never be reached.  So treat a thin
-    // band at the TOP EDGE of the top-most real video track as the
-    // new-track-above zone when dragging a video clip.  (Skip dividers + the
-    // pinned caption track so the band anchors to a real, media-hosting
-    // video track.)
-    double topVideoTop = -1.0;
-    size_t topVideoIdx = SIZE_MAX;
-    int    topVideoH   = 80;
-    for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
-        Track* t = m_timeline->track(i);
-        if (!t || t->isDivider() || t->isCaptionTrack()) continue;
-        if (t->type() == TrackType::Video) {
-            topVideoIdx = i;
-            if (i < m_trackWidgets.size()) {
-                topVideoTop = m_trackWidgets[i]->mapTo(this, QPoint(0, 0)).y();
-                topVideoH   = m_trackWidgets[i]->height();
-            }
-            break;
-        }
-    }
-    const int  newTrackBand = std::min(14, std::max(6, topVideoH / 3));
-    const bool videoAboveZone =
-        (dragType == TrackType::Video && topVideoTop >= 0.0 &&
-         pos.y() < topVideoTop + newTrackBand);
-
-    // Detect cross-track target
-    size_t targetTrack = hitTestTrack(pos.y());
-    if (!videoAboveZone && targetTrack < m_timeline->trackCount()) {
-        m_dragTargetTrack = targetTrack;
-        m_ghostTrackVisible = false;
-        if (m_ghostOverlay) m_ghostOverlay->hide();
-    } else if (!m_trackWidgets.empty()) {
-        // ── Ghost track detection (Premiere Pro-style) ──────────────
-        // Cursor is outside any track, OR inside the new-video-track-above
-        // band at the top edge of the top video track.
-        auto lastTw  = m_trackWidgets.back();
-        QPoint lastBot  = lastTw->mapTo(this, QPoint(0, lastTw->height()));
-
-        // Last audio track index (for the audio-below zone). Skip divider
-        // rows — they're TrackType::Video but not real audio tracks.
-        size_t lastAudioIdx = SIZE_MAX;
-        for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
-            Track* t = m_timeline->track(i);
-            if (!t || t->isDivider()) continue;
-            if (t->type() != TrackType::Video)
-                lastAudioIdx = i;
-        }
-
-        // Scroll area X position
-        QPoint scrollOrig = m_verticalScroll->mapTo(this, QPoint(0, 0));
-        int ghostX = scrollOrig.x();
-        int ghostW = m_verticalScroll->width();
-
-        if (videoAboveZone && topVideoIdx < m_trackWidgets.size()) {
-            m_ghostTrackVisible = true;
-            m_ghostTrackIsAbove = true;
-            m_ghostTrackHeight = m_trackWidgets[topVideoIdx]->height();
-            m_ghostTrackY = static_cast<int>(topVideoTop) - m_ghostTrackHeight;
-            if (m_ghostOverlay) {
-                m_ghostOverlay->isAbove = true;
-                m_ghostOverlay->onExistingTrack = false;  // new-track preview
-                m_ghostOverlay->setGeometry(ghostX, m_ghostTrackY, ghostW, m_ghostTrackHeight);
-                m_ghostOverlay->raise();
-                m_ghostOverlay->show();
-                m_ghostOverlay->update();
-            }
-        } else if (dragType == TrackType::Audio && pos.y() > lastBot.y() &&
-                   lastAudioIdx < m_trackWidgets.size()) {
-            m_ghostTrackVisible = true;
-            m_ghostTrackIsAbove = false;
-            m_ghostTrackHeight = lastTw->height();
-            m_ghostTrackY = lastBot.y();
-            if (m_ghostOverlay) {
-                m_ghostOverlay->isAbove = false;
-                m_ghostOverlay->onExistingTrack = false;  // new-track preview
-                m_ghostOverlay->setGeometry(ghostX, m_ghostTrackY, ghostW, m_ghostTrackHeight);
-                m_ghostOverlay->raise();
-                m_ghostOverlay->show();
-                m_ghostOverlay->update();
-            }
-        } else {
-            m_ghostTrackVisible = false;
-            if (m_ghostOverlay) m_ghostOverlay->hide();
-        }
-    }
-
-    // Compute per-clip cross-track delta from the primary clip.
-    int trackDeltaLive = 0;
-    if (m_dragTargetTrack != SIZE_MAX && !m_dragSelectedClips.empty()) {
-        trackDeltaLive = static_cast<int>(m_dragTargetTrack)
-                       - static_cast<int>(m_dragOriginalTrack);
-    }
-
-    // ── Y deadzone for cross-track shifts ───────────────────────────
-    constexpr double kTrackShiftDeadzone = 18.0;
-    if (std::abs(pos.y() - m_dragStart.y()) < kTrackShiftDeadzone)
-        trackDeltaLive = 0;
-
-    // ── Shift held = constrain to current track (Premiere-style) ───
-    // Lets the user nudge a clip horizontally without worrying about
-    // accidentally bumping it to a neighbouring track. Checked live
-    // so toggling Shift mid-drag also toggles the constraint.
-    if (QApplication::keyboardModifiers() & Qt::ShiftModifier) {
-        trackDeltaLive = 0;
-        m_ghostTrackVisible = false;
-        if (m_ghostOverlay) m_ghostOverlay->hide();
-    }
-
-    // ── Group-safety clamp ──────────────────────────────────────────
-    if (trackDeltaLive != 0) {
-        size_t minOrig = SIZE_MAX, maxOrig = 0;
-        for (const auto& dcs : m_dragSelectedClips) {
-            minOrig = std::min(minOrig, dcs.originalTrack);
-            maxOrig = std::max(maxOrig, dcs.originalTrack);
-        }
-        if (minOrig != SIZE_MAX) {
-            const int lastTrack = static_cast<int>(m_timeline->trackCount()) - 1;
-            const int minAllowed = -static_cast<int>(minOrig);
-            const int maxAllowed = lastTrack - static_cast<int>(maxOrig);
-            trackDeltaLive = std::clamp(trackDeltaLive, minAllowed, maxAllowed);
-        }
-    }
-
-    // Move clips DIRECTLY in the data model (no commands) for live visual feedback.
-    for (auto& dcs : m_dragSelectedClips) {
-        // No per-clip max(0,...): actualDelta is already group-floored
-        // above so the leftmost clip lands at tick 0 without others
-        // collapsing onto it.
-        int64_t clipNewIn = dcs.originalIn + actualDelta;
-        if (clipNewIn < 0) clipNewIn = 0;
-
-        int dst = static_cast<int>(dcs.originalTrack) + trackDeltaLive;
-
-        Track* srcTr = m_timeline->track(dcs.ref.trackIndex);
-        if (!srcTr) continue;
-        // Clamp onto the nearest track that can host this clip's kind. A
-        // video clip dragged down into the audio section (or onto the V/A
-        // divider) lands on the lowest video track instead of being
-        // rejected — and this matches where the release commits it, so the
-        // preview and the committed result agree. clampTrackToHostTrack
-        // already excludes dividers + the caption track and keeps the
-        // index in array bounds.
-        size_t dstTrack = clampTrackToHostTrack(dst, srcTr);
-        if (dstTrack == SIZE_MAX) dstTrack = dcs.ref.trackIndex;
-        Track* dstTr = m_timeline->track(dstTrack);
-        // Never relinquish the source clip unless the destination can
-        // actually own it. Track::addClip takes unique ownership even when
-        // it rejects a divider, which previously destroyed the clip while
-        // the pointer crossed an organizational divider row.
-        if (!dstTr || dstTr->isDivider() || dstTr->isCaptionTrack()
-                || dstTr->type() != srcTr->type()) {
-            continue;
-        }
-
-        size_t curTrack = dcs.ref.trackIndex;
-
-        if (dstTrack != curTrack) {
-            Track* curTr = m_timeline->track(curTrack);
-            size_t idx = curTr->findClipIndexById(dcs.ref.clipId);
-            if (idx >= curTr->clipCount()) continue;
-            auto clipPtr = curTr->removeClip(idx);
-            if (!clipPtr) continue;
-            clipPtr->setTimelineIn(clipNewIn);
-            dstTr->addClip(std::move(clipPtr));
-            dcs.ref.trackIndex = dstTrack;
-        } else {
-            Track* tr = m_timeline->track(curTrack);
-            size_t idx = tr->findClipIndexById(dcs.ref.clipId);
-            if (idx >= tr->clipCount()) continue;
-            tr->moveClip(idx, clipNewIn);
-        }
-    }
-    onScrollChanged();
-
-    // Update ghost overlay clip previews when ghost track is visible.
-    // Filter by the GHOST's direction so a linked A/V pair doesn't
-    // stuff both clips into the same row: the audio-below ghost shows
-    // only the audio companion, and video-above shows only the video.
-    // The other side stays drawn on its existing track via normal clip
-    // rendering (it didn't actually move, so the rendering is correct).
-    if (m_ghostTrackVisible && m_ghostOverlay) {
-        const TrackType ghostType = m_ghostTrackIsAbove
-                                    ? TrackType::Video
-                                    : TrackType::Audio;
-        std::vector<GhostTrackOverlay::GhostClipPreview> previews;
-        for (const auto& dcs : m_dragSelectedClips) {
-            Track* trk = m_timeline->track(dcs.ref.trackIndex);
-            if (!trk) continue;
-            if (trk->type() != ghostType) continue;  // wrong side, skip
-            if (trk->isDivider()) continue;
-            size_t idx = trk->findClipIndexById(dcs.ref.clipId);
-            if (idx >= trk->clipCount()) continue;
-            const Clip* clip = trk->clip(idx);
-            double px = m_layoutEngine.timeToPixelX(clip->timelineIn());
-            double pw = m_layoutEngine.timeToPixelX(clip->timelineIn() + clip->duration()) - px;
-            if (pw <= 0) continue;
-
-            GhostTrackOverlay::GhostClipPreview gp;
-            gp.x = static_cast<int>(px);
-            gp.width = static_cast<int>(pw);
-            gp.color = (ghostType == TrackType::Video) ? 0x4A90D9FF : 0x3CA05AFF;
-            gp.label = QString::fromStdString(clip->label());
-            previews.push_back(gp);
-        }
-        m_ghostOverlay->setClipPreviews(previews);
-    } else if (m_ghostOverlay) {
-        m_ghostOverlay->setClipPreviews({});
-    }
-
-    // Sync selection + drag state
-    {
-        std::vector<std::vector<size_t>> perTrack(m_trackWidgets.size());
-        for (const auto& dcs : m_dragSelectedClips) {
-            size_t ti = dcs.ref.trackIndex;
-            if (ti < m_trackWidgets.size()) {
-                Track* trk = m_timeline->track(ti);
-                if (trk) {
-                    size_t idx = trk->findClipIndexById(dcs.ref.clipId);
-                    if (idx < trk->clipCount())
-                        perTrack[ti].push_back(idx);
-                }
-            }
-        }
-        for (size_t ti = 0; ti < m_trackWidgets.size(); ++ti) {
-            m_trackWidgets[ti]->setSelectedClips(perTrack[ti]);
-            m_trackWidgets[ti]->setDraggedClips(perTrack[ti]);
-            m_trackWidgets[ti]->setGhostDragActive(m_ghostTrackVisible && !perTrack[ti].empty());
-        }
-    }
-    updateClipDragAutoScroll(pos);
-}
-
 void TimelinePanel::continuePendingClipClick(QPointF pos)
 {
     QPointF delta = pos - m_dragStart;
@@ -648,7 +336,6 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
         m_dragOriginalIn = clip->timelineIn();
         m_dragOriginalSourceIn = clip->sourceIn();
         m_dragOriginalDuration = clip->duration();
-        m_dragOriginalTrack = m_dragClipRef.trackIndex;
 
         // Use the drag-start position (where user first clicked) to
         // determine edge proximity — not the current mouse position.
@@ -682,14 +369,13 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
         // (used by both ClipMove and multi-clip trim).  Also snapshot
         // any transitions referencing each clip — see mouse-press
         // path for rationale (live-drag drops them on cross-track).
-        m_dragSelectedClips.clear();
-        m_dragTargetTrack = m_dragClipRef.trackIndex;
+        std::vector<TimelineDragClip> clips;
         for (const auto& sel : m_selection.clips()) {
             Track* selTrack = m_timeline->track(sel.trackIndex);
             if (!selTrack || selTrack->isLocked()) continue;
             size_t si = selTrack->findClipIndexById(sel.clipId);
             if (si < selTrack->clipCount()) {
-                DragClipState dcs;
+                TimelineDragClip dcs;
                 dcs.ref = sel;
                 dcs.originalIn = selTrack->clip(si)->timelineIn();
                 dcs.originalDuration = selTrack->clip(si)->duration();
@@ -700,7 +386,7 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
                      || t.rightClipId == sel.clipId)
                         dcs.originalTransitions.push_back(t);
                 }
-                m_dragSelectedClips.push_back(dcs);
+                clips.push_back(std::move(dcs));
             }
         }
 
@@ -713,16 +399,20 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
             m_snapEngine.buildTargets(*m_timeline, m_playheadTick, 0.0, excludeIds);
         }
         if (trimEdge)
-            beginTrim(*trimEdge);
+            beginTrim(*trimEdge, clips);
+        else
+            m_dragTool = std::make_unique<TimelineClipMoveTool>(
+                *this, m_dragOriginalIn, m_dragOriginalDuration,
+                m_dragClipRef.trackIndex, std::move(clips));
     }
 }
 
-void TimelinePanel::beginTrim(ClipEdge edge)
+void TimelinePanel::beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>& clips)
 {
     std::vector<TimelineTrimTool::ClipEdgeStart> others;
-    others.reserve(m_dragSelectedClips.size());
-    for (const auto& state : m_dragSelectedClips)
-        others.push_back({state.ref, state.originalIn, state.originalDuration});
+    others.reserve(clips.size());
+    for (const auto& clip : clips)
+        others.push_back({clip.ref, clip.originalIn, clip.originalDuration});
     m_dragTool = std::make_unique<TimelineTrimTool>(
         *this, edge,
         TimelineTrimTool::ClipEdgeStart{m_dragClipRef, m_dragOriginalIn, m_dragOriginalDuration},

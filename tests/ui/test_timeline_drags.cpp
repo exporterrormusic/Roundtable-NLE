@@ -883,3 +883,84 @@ TEST(TimelineDrags, FadeOutEdgeTrimFollowsTheCursor)
     EXPECT_EQ(rig.timeline.track(t)->transition(0)->duration, 14 * kFrame);
     rig.expectOneExactUndoStep(before);
 }
+
+TEST(TimelineDrags, AltDragCopiesTheClip)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t id = rig.addClip(v1, kSecond, kSecond)->id();
+    rig.show();
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, t),
+             rig.pointAt(3 * kSecond + kSecond / 2, t), Qt::AltModifier);
+
+    const Track* track = rig.timeline.track(t);
+    ASSERT_EQ(track->clipCount(), 2u) << "Alt-drag should leave the original and add a copy";
+    EXPECT_EQ(clipById(rig.timeline, id)->timelineIn(), kSecond);
+    bool copyAtThree = false;
+    for (size_t i = 0; i < track->clipCount(); ++i)
+        copyAtThree |= track->clip(i)->id() != id && track->clip(i)->timelineIn() == 3 * kSecond;
+    EXPECT_TRUE(copyAtThree);
+    rig.expectOneExactUndoStep(before);
+}
+
+namespace {
+/// A clip on V1 with a 10-frame fade-in, and an empty V2 above.
+struct FadedClipScene
+{
+    uint64_t clip{0};
+    size_t v1{0}, v2{0};
+
+    explicit FadedClipScene(DragRig& rig)
+    {
+        Track* top = rig.videoTrack("V2");
+        Track* bottom = rig.videoTrack("V1");
+        clip = rig.addClip(bottom, kSecond, kSecond)->id();
+        Transition fade;
+        fade.duration = 10 * kFrame;
+        fade.leftClipId = 0;
+        fade.rightClipId = clip;
+        fade.editPointTick = kSecond;
+        bottom->addTransition(fade);
+        rig.show();
+        v1 = rig.indexOf(bottom);
+        v2 = rig.indexOf(top);
+    }
+};
+} // namespace
+
+TEST(TimelineDrags, CrossTrackMoveCarriesTheClipsTransition)
+{
+    DragRig rig;
+    FadedClipScene scene(rig);
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, scene.v1),
+             rig.pointAt(kSecond + kSecond / 2, scene.v2));
+
+    size_t track = SIZE_MAX;
+    ASSERT_NE(clipById(rig.timeline, scene.clip, &track), nullptr);
+    EXPECT_EQ(track, scene.v2);
+    EXPECT_EQ(rig.timeline.track(scene.v2)->transitionCount(), 1u);
+    EXPECT_EQ(rig.timeline.track(scene.v1)->transitionCount(), 0u);
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, EscapeAfterACrossTrackMoveRestoresTheTransition)
+{
+    DragRig rig;
+    FadedClipScene scene(rig);
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, scene.v1),
+             rig.pointAt(kSecond + kSecond / 2, scene.v2), Qt::NoModifier,
+             /*releaseAtEnd=*/false);
+    ASSERT_TRUE(rig.panel->isDragInProgress());
+    rig.escape();
+
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.timeline.track(scene.v1)->transitionCount(), 1u);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
