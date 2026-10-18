@@ -6,6 +6,7 @@
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelineMarqueeTool.h"
 #include "panels/timeline/TimelineRollTool.h"
+#include "panels/timeline/TimelineSlipSlideTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 #include "widgets/TimelineRuler.h"
@@ -780,91 +781,55 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
 
 void TimelinePanel::pressWithSlipTool(QMouseEvent* event, QPointF pos)
 {
-    auto hitRef = hitTestClip(pos);
-    Track* track = hitRef ? m_timeline->track(hitRef->trackIndex) : nullptr;
-    if (hitRef && track && !track->isLocked())
-    {
-        m_selection.clear();
-        m_selection.selectClip(*hitRef, false);
-        if (!(event->modifiers() & Qt::AltModifier))
-            setLinkPartnersSelected(*hitRef, true);
-        m_dragSelectedClips.clear();
-        for (const auto& selected : m_selection.clips()) {
-            Track* selectedTrack = m_timeline->track(selected.trackIndex);
-            if (!selectedTrack || selectedTrack->isLocked()) {
-                m_dragSelectedClips.clear();
-                m_dragMode = DragMode::None;
-                event->accept();
-                return;
-            }
-            const size_t selectedIndex = selectedTrack->findClipIndexById(selected.clipId);
-            if (selectedIndex < selectedTrack->clipCount()) {
-                const Clip* selectedClip = selectedTrack->clip(selectedIndex);
-                m_dragSelectedClips.push_back({selected, selectedClip->timelineIn(),
-                    selectedClip->duration(), selectedClip->sourceIn(),
-                    selected.trackIndex, {}});
-            }
-        }
-        m_dragClipRef = *hitRef;
-        m_dragMode = DragMode::SlipTool;
-        m_dragLastAppliedDelta = 0;
-        size_t idx = track->findClipIndexById(hitRef->clipId);
-        if (idx < track->clipCount())
-            m_dragOriginalSourceIn = track->clip(idx)->sourceIn();
-
-        // Wrap all slip commands into a single undo step.
-        if (m_commandStack)
-            m_commandStack->beginMacro("Slip clip");
-    } else {
-        // Empty-space click — deselect on release (Premiere style).
-        beginMarquee();
-    }
-    event->accept();
-    return;
+    pressWithSlipOrSlideTool(event, pos, /*slip=*/true);
 }
 
 void TimelinePanel::pressWithSlideTool(QMouseEvent* event, QPointF pos)
 {
+    pressWithSlipOrSlideTool(event, pos, /*slip=*/false);
+}
+
+void TimelinePanel::pressWithSlipOrSlideTool(QMouseEvent* event, QPointF pos, bool slip)
+{
     auto hitRef = hitTestClip(pos);
     Track* track = hitRef ? m_timeline->track(hitRef->trackIndex) : nullptr;
-    if (hitRef && track && !track->isLocked())
-    {
-        m_selection.clear();
-        m_selection.selectClip(*hitRef, false);
-        if (!(event->modifiers() & Qt::AltModifier))
-            setLinkPartnersSelected(*hitRef, true);
-        m_dragSelectedClips.clear();
-        for (const auto& selected : m_selection.clips()) {
-            Track* selectedTrack = m_timeline->track(selected.trackIndex);
-            if (!selectedTrack || selectedTrack->isLocked()) {
-                m_dragSelectedClips.clear();
-                m_dragMode = DragMode::None;
-                event->accept();
-                return;
-            }
-            const size_t selectedIndex = selectedTrack->findClipIndexById(selected.clipId);
-            if (selectedIndex < selectedTrack->clipCount()) {
-                const Clip* selectedClip = selectedTrack->clip(selectedIndex);
-                m_dragSelectedClips.push_back({selected, selectedClip->timelineIn(),
-                    selectedClip->duration(), selectedClip->sourceIn(),
-                    selected.trackIndex, {}});
-            }
-        }
-        m_dragClipRef = *hitRef;
-        m_dragMode = DragMode::SlideTool;
-        m_dragLastAppliedDelta = 0;
-        size_t idx = track->findClipIndexById(hitRef->clipId);
-        if (idx < track->clipCount())
-            m_dragOriginalIn = track->clip(idx)->timelineIn();
-
-        // Wrap all slide commands into a single undo step.
-        if (m_commandStack)
-            m_commandStack->beginMacro("Slide clip");
-    } else {
+    if (!hitRef || !track || track->isLocked()) {
+        // Empty-space click — deselect on release (Premiere style).
         beginMarquee();
+        event->accept();
+        return;
     }
+
+    m_selection.clear();
+    m_selection.selectClip(*hitRef, false);
+    if (!(event->modifiers() & Qt::AltModifier))
+        setLinkPartnersSelected(*hitRef, true);
+    // Every selected clip (the grabbed one and its link partners) goes along;
+    // one on a locked track stops the whole drag.
+    std::vector<ClipRef> clips;
+    for (const auto& selected : m_selection.clips()) {
+        Track* selectedTrack = m_timeline->track(selected.trackIndex);
+        if (!selectedTrack || selectedTrack->isLocked()) {
+            m_dragMode = DragMode::None;
+            event->accept();
+            return;
+        }
+        if (selectedTrack->findClipIndexById(selected.clipId) < selectedTrack->clipCount())
+            clips.push_back(selected);
+    }
+    m_dragClipRef = *hitRef;
+    m_dragMode = slip ? DragMode::SlipTool : DragMode::SlideTool;
+    const size_t idx = track->findClipIndexById(hitRef->clipId);
+    const Clip* grabbed = idx < track->clipCount() ? track->clip(idx) : nullptr;
+    const int64_t origin = !grabbed ? 0 : slip ? grabbed->sourceIn() : grabbed->timelineIn();
+
+    // Wrap all slip/slide commands into a single undo step.
+    if (m_commandStack)
+        m_commandStack->beginMacro(slip ? "Slip clip" : "Slide clip");
+    m_dragTool = std::make_unique<TimelineSlipSlideTool>(
+        *this, slip ? TimelineSlipSlideTool::Kind::Slip : TimelineSlipSlideTool::Kind::Slide,
+        *hitRef, origin, std::move(clips));
     event->accept();
-    return;
 }
 
 void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)

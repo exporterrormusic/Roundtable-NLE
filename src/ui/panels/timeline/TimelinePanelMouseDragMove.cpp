@@ -300,51 +300,7 @@ void TimelinePanel::mouseMoveEvent(QMouseEvent* event)
         if (m_dragTool) m_dragTool->move(*event, tickDelta);
         break;
     case DragMode::SlipTool:
-    {
-        const int64_t snappedDelta = m_layoutEngine.snapToFrame(tickDelta);
-        const int64_t incrementalDelta = snappedDelta - m_dragLastAppliedDelta;
-        std::vector<std::unique_ptr<Command>> commands;
-        for (const auto& state : m_dragSelectedClips) {
-            auto command = EditOperations::slipClip(*m_timeline, state.ref.trackIndex,
-                                                    state.ref.clipId, incrementalDelta);
-            if (!command) { commands.clear(); break; }
-            commands.push_back(std::move(command));
-        }
-        if (!commands.empty()) {
-            for (auto& command : commands) executeCommand(std::move(command));
-            if (auto* track = m_timeline->track(m_dragClipRef.trackIndex)) {
-                const size_t index = track->findClipIndexById(m_dragClipRef.clipId);
-                if (index < track->clipCount())
-                    m_dragLastAppliedDelta = track->clip(index)->sourceIn()
-                        - m_dragOriginalSourceIn;
-            }
-        }
-        onScrollChanged();
-        break;
-    }
     case DragMode::SlideTool:
-    {
-        const int64_t snappedDelta = m_layoutEngine.snapToFrame(tickDelta);
-        const int64_t incrementalDelta = snappedDelta - m_dragLastAppliedDelta;
-        std::vector<std::unique_ptr<Command>> commands;
-        for (const auto& state : m_dragSelectedClips) {
-            auto command = EditOperations::slideClip(*m_timeline, state.ref.trackIndex,
-                                                     state.ref.clipId, incrementalDelta);
-            if (!command) { commands.clear(); break; }
-            commands.push_back(std::move(command));
-        }
-        if (!commands.empty()) {
-            for (auto& command : commands) executeCommand(std::move(command));
-            if (auto* track = m_timeline->track(m_dragClipRef.trackIndex)) {
-                const size_t index = track->findClipIndexById(m_dragClipRef.clipId);
-                if (index < track->clipCount())
-                    m_dragLastAppliedDelta = track->clip(index)->timelineIn()
-                        - m_dragOriginalIn;
-            }
-        }
-        onScrollChanged();
-        break;
-    }
     case DragMode::RollingEdit:
         if (m_dragTool) m_dragTool->move(*event, tickDelta);
         break;

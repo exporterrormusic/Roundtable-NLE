@@ -487,6 +487,7 @@ private:
     void pressWithSelectionTool(QMouseEvent* event, QPointF pos);
     void pressWithSlipTool(QMouseEvent* event, QPointF pos);
     void pressWithSlideTool(QMouseEvent* event, QPointF pos);
+    void pressWithSlipOrSlideTool(QMouseEvent* event, QPointF pos, bool slip);
     void pressWithRollingTool(QMouseEvent* event, QPointF pos);
     void pressWithRippleTool(QMouseEvent* event, QPointF pos);
     void pressWithZoomTool(QMouseEvent* event, QPointF pos);
@@ -698,7 +699,6 @@ private:
     int64_t   m_dragOriginalIn{0};
     int64_t   m_dragOriginalSourceIn{0};
     int64_t   m_dragOriginalDuration{0};
-    int64_t   m_dragLastAppliedDelta{0};
     size_t    m_dragOriginalTrack{0};
 
     // Transition trim drag state
@@ -771,6 +771,7 @@ private:
     friend class TimelineMarqueeTool;
     friend class TimelineTrimTool;
     friend class TimelineRollTool;
+    friend class TimelineSlipSlideTool;
     /// Starts trimming `edge` of m_dragClipRef (m_dragOriginalIn/Duration);
     /// the other clips in m_dragSelectedClips trim along (TimelineTrimTool).
     void beginTrim(ClipEdge edge);
