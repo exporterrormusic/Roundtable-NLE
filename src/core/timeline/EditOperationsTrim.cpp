@@ -604,31 +604,27 @@ std::unique_ptr<Command> EditOperations::rippleTrim(
         return nullptr;
 
     const Clip* clip = track->clip(idx);
-    int64_t oldOut = clip->timelineOut();
-    int64_t oldIn  = clip->timelineIn();
+    const int64_t oldOut = clip->timelineOut();
+    const int64_t oldIn  = clip->timelineIn();
+
+    // The trim as trimClip clamps it (minimum length, source extent).
+    auto trimCmd = trimClip(timeline, trackIndex, clipId, edge, newEdgeTime);
+    const auto* trim = dynamic_cast<const TrimClipCommand*>(trimCmd.get());
+    if (!trim) return nullptr;
+    // Everything after the clip moves by how much its length changes.
+    const int64_t rippleDelta = trim->newDuration() - clip->duration();
 
     auto compound = std::make_unique<CompoundCommand>("Ripple trim");
-
-    // First, do the normal trim
-    auto trimCmd = trimClip(timeline, trackIndex, clipId, edge, newEdgeTime);
-    if (!trimCmd) return nullptr;
-    compound->addCommand(std::move(trimCmd));
-
-    // Calculate the ripple delta
-    int64_t rippleDelta = 0;
-    if (edge == ClipEdge::Tail)
-    {
-        int64_t newOut = newEdgeTime;
-        if (newOut - oldIn < kMinClipDuration)
-            newOut = oldIn + kMinClipDuration;
-        rippleDelta = newOut - oldOut;
-    }
-    else
-    {
-        int64_t newIn = newEdgeTime;
-        if (oldOut - newIn < kMinClipDuration)
-            newIn = oldOut - kMinClipDuration;
-        rippleDelta = newIn - oldIn;
+    if (edge == ClipEdge::Tail) {
+        compound->addCommand(std::move(trimCmd));
+    } else {
+        // A head ripple keeps the edit point where it is (Premiere's Ripple
+        // tool and Q): the clip stays at its start with its new source
+        // in-point and length, and what follows closes up or opens. Trimming
+        // the head in place used to leave a gap before the clip and push the
+        // later clips the wrong way.
+        compound->addCommand(std::make_unique<TrimClipCommand>(
+            track, clipId, oldIn, trim->newDuration(), trim->newSourceIn()));
     }
 
     // Shift all subsequent clips
@@ -638,12 +634,7 @@ std::unique_ptr<Command> EditOperations::rippleTrim(
         {
             const Clip* subsequent = track->clip(ci);
             if (subsequent->id() == clipId) continue;
-
-            bool isAfter = (edge == ClipEdge::Tail)
-                ? subsequent->timelineIn() >= oldOut
-                : subsequent->timelineIn() > oldIn;
-
-            if (isAfter)
+            if (subsequent->timelineIn() >= oldOut)
             {
                 compound->addCommand(std::make_unique<MoveClipCommand>(
                     track, subsequent->id(),

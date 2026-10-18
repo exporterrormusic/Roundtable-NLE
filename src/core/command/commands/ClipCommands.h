@@ -138,6 +138,12 @@ public:
     [[nodiscard]] int typeId() const override { return static_cast<int>(CommandTypeId::TrimClipLeft); }
     bool mergeWith(const Command& next) override;
 
+    /// What the trim will set (EditOperations::rippleTrim reads the clamped
+    /// result of trimClip from these).
+    [[nodiscard]] int64_t newTimelineIn() const noexcept { return m_newTimelineIn; }
+    [[nodiscard]] int64_t newDuration() const noexcept { return m_newDuration; }
+    [[nodiscard]] int64_t newSourceIn() const noexcept { return m_newSourceIn; }
+
 private:
     Track*   m_track;
     uint64_t m_clipId;

@@ -684,11 +684,10 @@ TEST(TimelineDrags, PressDuringAnUnfinishedTrimKeepsItAsOneStep)
 
 // ─── Ripple tool ─────────────────────────────────────────────────────────────
 
-// Pinned as found: the Ripple tool trims like the Selection tool and does
-// NOT shift the clips after the edit (B stays at 3 s). Reported to the owner
-// as a probable bug (rewrite roadmap, Stage 9).
-TEST(TimelineDrags, RippleToolTrimsTheTail)
+TEST(TimelineDrags, RippleToolTailPushesTheClipsAfter)
 {
+    // The tail follows the mouse and the next clip moves with it (it used to
+    // stay put: the Ripple tool trimmed like the Selection tool).
     DragRig rig;
     Track* v1 = rig.videoTrack("V1");
     const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
@@ -702,8 +701,53 @@ TEST(TimelineDrags, RippleToolTrimsTheTail)
              rig.pointAt(2 * kSecond - kFrame / 4 + 9 * kFrame, t));
 
     EXPECT_EQ(clipById(rig.timeline, a)->duration(), kSecond + 9 * kFrame);
-    EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), 3 * kSecond);
+    EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), 3 * kSecond + 9 * kFrame);
     rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, RippleToolHeadStaysAndPullsTheClipsAfter)
+{
+    // The head stays at 1 s while the drag cuts 6 frames of source there;
+    // the next clip closes up by 6 frames.
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(v1, 3 * kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->setActiveTool(EditTool::Ripple);
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(kSecond + kFrame / 4, t),
+             rig.pointAt(kSecond + kFrame / 4 + 6 * kFrame, t));
+
+    const Clip* clip = clipById(rig.timeline, a);
+    EXPECT_EQ(clip->timelineIn(), kSecond);
+    EXPECT_EQ(clip->duration(), kSecond - 6 * kFrame);
+    EXPECT_EQ(clip->sourceIn(), kSecond + 6 * kFrame);
+    EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), 3 * kSecond - 6 * kFrame);
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, EscapeDuringARippleTrimRestoresAndRecordsNothing)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    rig.addClip(v1, kSecond, kSecond);
+    rig.addClip(v1, 3 * kSecond, kSecond);
+    rig.show();
+    rig.panel->setActiveTool(EditTool::Ripple);
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(2 * kSecond - kFrame / 4, t),
+             rig.pointAt(2 * kSecond + 9 * kFrame, t), Qt::NoModifier,
+             /*releaseAtEnd=*/false);
+    ASSERT_NE(rig.state(), before);
+    rig.escape();
+
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
 }
 
 TEST(TimelineDrags, TrimMovesEverySelectedClipsEdge)

@@ -13,6 +13,7 @@
 
 #include <QMouseEvent>
 
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -20,8 +21,9 @@ namespace rt {
 
 TimelineTrimTool::TimelineTrimTool(TimelinePanel& panel, ClipEdge edge,
                                    ClipEdgeStart primary,
-                                   std::vector<ClipEdgeStart> others)
-    : m_panel(panel), m_edge(edge), m_primary(primary), m_others(std::move(others))
+                                   std::vector<ClipEdgeStart> others, bool ripple)
+    : m_panel(panel), m_edge(edge), m_primary(primary), m_others(std::move(others)),
+      m_ripple(ripple)
 {
 }
 
@@ -36,7 +38,9 @@ void TimelineTrimTool::move(const QMouseEvent& event, int64_t tickDelta)
     // once the user actually drags to trim it disappears (Premiere hides it
     // during the trim). Cheap to call every tick.
     m_panel.clearEditPointSelection();
-    if (m_edge == ClipEdge::Head)
+    if (m_ripple)
+        moveRipple(event, tickDelta);
+    else if (m_edge == ClipEdge::Head)
         moveHead(event, tickDelta);
     else
         moveTail(event, tickDelta);
@@ -54,6 +58,42 @@ int64_t TimelineTrimTool::snapEdge(const QMouseEvent& event, int64_t tick)
     const auto result = m_panel.m_snapEngine.snap(tick);
     m_panel.setSnapIndicator(result.didSnap ? result.snappedTick : -1);
     return result.didSnap ? result.snappedTick : tick;
+}
+
+void TimelineTrimTool::moveRipple(const QMouseEvent& event, int64_t tickDelta)
+{
+    Timeline& timeline = *m_panel.m_timeline;
+    const ClipRef& ref = m_primary.ref;
+    Track* track = timeline.track(ref.trackIndex);
+    const size_t index = track ? track->findClipIndexById(ref.clipId) : SIZE_MAX;
+    if (!track || index >= track->clipCount()) return;
+    const Clip* clip = track->clip(index);
+    const int64_t origTail = m_primary.in + m_primary.duration;
+
+    int64_t edgeTick = m_primary.in;
+    if (m_edge == ClipEdge::Tail) {
+        // The tail follows the mouse; what follows goes with it.
+        int64_t newTail = snapEdge(event, origTail + tickDelta);
+        if (newTail <= m_primary.in) newTail = m_primary.in + 1;
+        m_panel.executeCommand(EditOperations::rippleTrim(
+            timeline, ref.trackIndex, ref.clipId, ClipEdge::Tail, newTail));
+        edgeTick = clip->timelineOut();
+    } else {
+        // The head stays put: the drag says how much source to cut at the
+        // head (negative: restore), and rippleTrim applies the difference
+        // from what is cut already. Nothing to snap: the edge doesn't move.
+        m_panel.m_snapEngine.resetHysteresis();
+        m_panel.setSnapIndicator(-1);
+        const int64_t cut = std::min(tickDelta, m_primary.duration - 1);
+        const int64_t alreadyCut = m_primary.duration - clip->duration();
+        if (cut != alreadyCut)
+            m_panel.executeCommand(EditOperations::rippleTrim(
+                timeline, ref.trackIndex, ref.clipId, ClipEdge::Head,
+                clip->timelineIn() + (cut - alreadyCut)));
+    }
+
+    for (auto tw : m_panel.m_trackWidgets)
+        tw->setHoverEdgeTick(tw->trackIndex() == ref.trackIndex ? edgeTick : -1);
 }
 
 void TimelineTrimTool::moveHead(const QMouseEvent& event, int64_t tickDelta)

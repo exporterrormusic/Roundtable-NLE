@@ -407,7 +407,8 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
     }
 }
 
-void TimelinePanel::beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>& clips)
+void TimelinePanel::beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>& clips,
+                              bool ripple)
 {
     std::vector<TimelineTrimTool::ClipEdgeStart> others;
     others.reserve(clips.size());
@@ -416,7 +417,7 @@ void TimelinePanel::beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>
     m_dragTool = std::make_unique<TimelineTrimTool>(
         *this, edge,
         TimelineTrimTool::ClipEdgeStart{m_dragClipRef, m_dragOriginalIn, m_dragOriginalDuration},
-        std::move(others));
+        std::move(others), ripple);
 }
 
 

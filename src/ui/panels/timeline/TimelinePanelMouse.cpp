@@ -1016,8 +1016,14 @@ void TimelinePanel::pressWithRippleTool(QMouseEvent* event, QPointF pos)
             if (m_commandStack && (m_dragMode == DragMode::ClipTrimTail
                                    || m_dragMode == DragMode::ClipTrimHead))
                 m_commandStack->beginMacro("Ripple trim clip");
+            // Snap to the other clips' edges and the playhead, not this
+            // clip's own (the selection path builds the same targets).
+            m_snapEngine.setPixelsPerSecond(m_layoutEngine.pixelsPerSecond());
+            m_snapEngine.buildTargets(*m_timeline, m_playheadTick, 0.0,
+                                      std::vector<uint64_t>{hitRef->clipId});
             beginTrim(m_dragMode == DragMode::ClipTrimTail ? ClipEdge::Tail
-                                                           : ClipEdge::Head, {});
+                                                           : ClipEdge::Head,
+                      {}, /*ripple=*/true);
         }
     } else {
         // Empty-space click — deselect on release.

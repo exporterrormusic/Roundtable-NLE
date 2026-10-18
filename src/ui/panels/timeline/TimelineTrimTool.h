@@ -7,6 +7,12 @@
  * clamped to its own neighbour. Each move records a trim command into the
  * undo macro the panel opened; the panel closes it (one step) or undoes it
  * (Esc) when the drag ends.
+ *
+ * Ripple (the Ripple tool): the clips after the trimmed clip move with the
+ * change in its length instead of the edge stopping at a neighbour. A tail
+ * follows the mouse and pushes or pulls what follows; a head stays where it
+ * is while the drag cuts or restores source at it, and what follows closes
+ * up or opens (Premiere).
  */
 #pragma once
 
@@ -30,9 +36,10 @@ public:
         int64_t duration{0};
     };
 
-    /// `others` may include the primary clip; it is skipped.
+    /// `others` may include the primary clip; it is skipped. A ripple trim
+    /// moves only the primary clip's edge.
     TimelineTrimTool(TimelinePanel& panel, ClipEdge edge, ClipEdgeStart primary,
-                     std::vector<ClipEdgeStart> others);
+                     std::vector<ClipEdgeStart> others, bool ripple = false);
 
     void move(const QMouseEvent& event, int64_t tickDelta) override;
     void release(const QMouseEvent& /*event*/) override {}
@@ -41,12 +48,14 @@ public:
 private:
     void moveHead(const QMouseEvent& event, int64_t tickDelta);
     void moveTail(const QMouseEvent& event, int64_t tickDelta);
+    void moveRipple(const QMouseEvent& event, int64_t tickDelta);
     int64_t snapEdge(const QMouseEvent& event, int64_t tick);
 
     TimelinePanel& m_panel;
     ClipEdge m_edge;
     ClipEdgeStart m_primary;
     std::vector<ClipEdgeStart> m_others;
+    bool m_ripple;
 };
 
 } // namespace rt

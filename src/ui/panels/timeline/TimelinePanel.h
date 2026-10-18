@@ -742,7 +742,8 @@ private:
     friend class TimelineClipMoveTool;
     /// Starts trimming `edge` of m_dragClipRef (m_dragOriginalIn/Duration);
     /// the other clips in `clips` trim along (TimelineTrimTool).
-    void beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>& clips);
+    void beginTrim(ClipEdge edge, const std::vector<TimelineDragClip>& clips,
+                   bool ripple = false);
     /// A press on empty space: a click clears the selection, a drag draws
     /// a marquee (TimelineMarqueeTool).
     void beginMarquee();

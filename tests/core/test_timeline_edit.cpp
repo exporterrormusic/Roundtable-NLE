@@ -643,6 +643,62 @@ TEST(EditOperations, RippleTrimTail)
     EXPECT_EQ(tt.vTrack->clip(ci)->timelineIn(), clipCOrigIn - 1 * TPS);
 }
 
+// A ripple trim of a HEAD keeps the edit point where it is: the clip stays
+// at its start, its source in-point moves, and everything after it closes
+// up (Premiere's Ripple tool and Q). It used to leave a gap before the clip
+// and push the later clips right.
+TEST(EditOperations, RippleTrimHeadShortensInPlaceAndPullsLaterClips)
+{
+    TestTimeline tt;   // [A 0-2s] [B 2-5s] [C 5-8s]
+
+    auto cmd = rt::EditOperations::rippleTrim(tt.timeline, 0, tt.clipB,
+                                               rt::ClipEdge::Head, 3 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    tt.stack.execute(std::move(cmd));
+
+    const rt::Clip* b = tt.vTrack->clip(tt.vTrack->findClipIndexById(tt.clipB));
+    const rt::Clip* c = tt.vTrack->clip(tt.vTrack->findClipIndexById(tt.clipC));
+    EXPECT_EQ(b->timelineIn(), 2 * TPS);
+    EXPECT_EQ(b->duration(), 2 * TPS);
+    EXPECT_EQ(b->sourceIn(), 1 * TPS);
+    EXPECT_EQ(c->timelineIn(), 4 * TPS);
+
+    tt.stack.undo();
+    EXPECT_EQ(b->timelineIn(), 2 * TPS);
+    EXPECT_EQ(b->duration(), 3 * TPS);
+    EXPECT_EQ(b->sourceIn(), 0);
+    EXPECT_EQ(c->timelineIn(), 5 * TPS);
+}
+
+TEST(EditOperations, RippleTrimHeadLengthensInPlaceAndPushesLaterClips)
+{
+    TestTimeline tt;   // [A 0-2s] [B 2-5s] [C 5-8s], B's source starts at 1s
+    rt::Clip* b = tt.vTrack->clip(tt.vTrack->findClipIndexById(tt.clipB));
+    b->setSourceIn(1 * TPS);
+
+    // Bring back the 1 s of source before B's head: B grows to 4 s in place
+    // (A is untouched), C moves 1 s later.
+    auto cmd = rt::EditOperations::rippleTrim(tt.timeline, 0, tt.clipB,
+                                               rt::ClipEdge::Head, 1 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    tt.stack.execute(std::move(cmd));
+
+    const rt::Clip* a = tt.vTrack->clip(tt.vTrack->findClipIndexById(tt.clipA));
+    const rt::Clip* c = tt.vTrack->clip(tt.vTrack->findClipIndexById(tt.clipC));
+    EXPECT_EQ(a->timelineIn(), 0);
+    EXPECT_EQ(a->duration(), 2 * TPS);
+    EXPECT_EQ(b->timelineIn(), 2 * TPS);
+    EXPECT_EQ(b->duration(), 4 * TPS);
+    EXPECT_EQ(b->sourceIn(), 0);
+    EXPECT_EQ(c->timelineIn(), 6 * TPS);
+
+    tt.stack.undo();
+    EXPECT_EQ(b->timelineIn(), 2 * TPS);
+    EXPECT_EQ(b->duration(), 3 * TPS);
+    EXPECT_EQ(b->sourceIn(), 1 * TPS);
+    EXPECT_EQ(c->timelineIn(), 5 * TPS);
+}
+
 TEST(EditOperations, RippleDelete)
 {
     TestTimeline tt;
