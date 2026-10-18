@@ -409,6 +409,105 @@ TEST(MonitorOverlayDrags, MaskDragReportsTheMaskAsItWasAtThePress)
     EXPECT_NEAR(rig.masks[0].base.vertices[0].x, 0.35f, 0.001f);
 }
 
+namespace {
+
+OpacityMask parametricMask(MaskShape shape)
+{
+    OpacityMask mask;
+    mask.shape = shape;
+    mask.base.centerX = 0.5f;
+    mask.base.centerY = 0.5f;
+    mask.base.width = 0.4f;
+    mask.base.height = 0.4f;
+    return mask;
+}
+
+} // namespace
+
+TEST(MonitorOverlayDrags, EllipseSideHandleWidensSymmetrically)
+{
+    ensureApp();
+    MaskRig rig;
+    rig.masks[0] = parametricMask(MaskShape::Ellipse);
+    // The right handle at x = 0.7 (widget 448); 32 px is 0.05 of the frame,
+    // added on both sides.
+    rig.overlay->press({448, 180});
+    rig.overlay->move({480, 180});
+    rig.overlay->release({480, 180});
+
+    EXPECT_EQ(rig.log, (OverlayRig::Log{"started", "mask live", "mask done 0", "ended"}));
+    EXPECT_NEAR(rig.masks[0].base.width, 0.5f, 0.001f);
+    EXPECT_NEAR(rig.masks[0].base.height, 0.4f, 0.001f);
+    EXPECT_NEAR(rig.masks[0].base.centerX, 0.5f, 0.001f);
+}
+
+TEST(MonitorOverlayDrags, ShiftEllipseSideHandleKeepsTheAspect)
+{
+    ensureApp();
+    MaskRig rig;
+    rig.masks[0] = parametricMask(MaskShape::Ellipse);
+    rig.overlay->press({448, 180}, Qt::ShiftModifier);
+    rig.overlay->move({480, 180}, Qt::ShiftModifier);
+    rig.overlay->release({480, 180}, Qt::ShiftModifier);
+
+    EXPECT_NEAR(rig.masks[0].base.width, 0.5f, 0.001f);
+    EXPECT_NEAR(rig.masks[0].base.height, 0.5f, 0.001f);
+}
+
+TEST(MonitorOverlayDrags, RectangleCornerResizesBothAxes)
+{
+    ensureApp();
+    MaskRig rig;
+    rig.masks[0] = parametricMask(MaskShape::Rectangle);
+    // Bottom-right corner at (0.7, 0.7): widget (448, 252).
+    rig.overlay->press({448, 252});
+    rig.overlay->move({480, 270});
+    rig.overlay->release({480, 270});
+
+    EXPECT_EQ(rig.log, (OverlayRig::Log{"started", "mask live", "mask done 0", "ended"}));
+    EXPECT_NEAR(rig.masks[0].base.width, 0.5f, 0.001f);
+    EXPECT_NEAR(rig.masks[0].base.height, 0.5f, 0.001f);
+    EXPECT_NEAR(rig.masks[0].base.centerX, 0.5f, 0.001f);
+}
+
+TEST(MonitorOverlayDrags, TangentHandleDragMirrorsTheOtherHandle)
+{
+    ensureApp();
+    MaskRig rig;
+    auto& v0 = rig.masks[0].base.vertices[0];
+    v0.outTanX = 0.05f;   // out handle at widget (224, 108)
+    v0.inTanX = -0.05f;
+    rig.overlay->press({224, 108});
+    rig.overlay->move({224, 126});
+    rig.overlay->release({224, 126});
+
+    // The in handle points the opposite way and keeps its length (96 source
+    // px): -(96, 54) / |(96, 54)| * 96, back in frame units.
+    const auto& v = rig.masks[0].base.vertices[0];
+    EXPECT_NEAR(v.outTanX, 0.05f, 0.001f);
+    EXPECT_NEAR(v.outTanY, 0.05f, 0.001f);
+    EXPECT_NEAR(v.inTanX, -0.0436f, 0.001f);
+    EXPECT_NEAR(v.inTanY, -0.0436f, 0.001f);
+    EXPECT_NEAR(v.x, 0.3f, 0.001f);
+}
+
+TEST(MonitorOverlayDrags, AltTangentHandleDragBreaksTheHandles)
+{
+    ensureApp();
+    MaskRig rig;
+    auto& v0 = rig.masks[0].base.vertices[0];
+    v0.outTanX = 0.05f;
+    v0.inTanX = -0.05f;
+    rig.overlay->press({224, 108}, Qt::AltModifier);
+    rig.overlay->move({224, 126}, Qt::AltModifier);
+    rig.overlay->release({224, 126}, Qt::AltModifier);
+
+    const auto& v = rig.masks[0].base.vertices[0];
+    EXPECT_NEAR(v.outTanY, 0.05f, 0.001f);
+    EXPECT_NEAR(v.inTanX, -0.05f, 0.001f);
+    EXPECT_NEAR(v.inTanY, 0.0f, 0.001f);
+}
+
 TEST(MonitorOverlayDrags, ShapeMaskToolDrawsOneMaskWithoutADragBracket)
 {
     // Drawing a new mask is reported by maskCreated, which the workspace
