@@ -221,6 +221,9 @@ struct FieldDef
     void (*write)(RecordWriter& w, uint32_t id, const T& object);
     /// False: the field's kind doesn't fit (skipped as unknown).
     bool (*read)(RecordReader& r, T& object);
+    /// When set, the field is written only for objects it applies to (a
+    /// LUT path only on a LUT effect).
+    bool (*applies)(const T& object) = nullptr;
 };
 
 /// A value got through a getter and put back through a setter. The value
@@ -261,6 +264,14 @@ FieldDef<T> custom(uint32_t id, const char* name,
     return {id, name, write, read};
 }
 
+/// `def`, written only for objects where `applies` holds.
+template <class T>
+FieldDef<T> when(bool (*applies)(const T&), FieldDef<T> def)
+{
+    def.applies = applies;
+    return def;
+}
+
 template <class T>
 class Schema
 {
@@ -287,6 +298,7 @@ public:
     void write(RecordWriter& w, const T& object) const
     {
         for (const auto& f : m_fields) {
+            if (f.applies && !f.applies(object)) continue;
             f.write(w, f.id, object);
             if (FieldLog* log = w.log()) log->wrote(m_name, f.id);
         }

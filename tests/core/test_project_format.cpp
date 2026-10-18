@@ -45,6 +45,9 @@
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/Dynamics.h"
 #include "PathUtils.h"
+#include "project/BinaryIO.h"
+#include "project/ClipSerialization.h"
+#include "project/schema/LeafSchemas.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -689,4 +692,194 @@ TEST(ProjectFormat, CorpusProjectsSaveTheSameBytesAfterAReload)
         summary += " v" + std::to_string(version) + "x" + std::to_string(count);
     std::printf("[corpus] %zu projects:%s, %d not stable\n", files.size(),
                 summary.c_str(), failures);
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  Leaf schemas (v48 records): each type survives a record round trip, and
+//  re-encoding what was read gives the same bytes, so the reader takes in
+//  every field the writer emits.
+// ═════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+template <class V>
+std::vector<uint8_t> recordBytes(const V& value)
+{
+    record::RecordWriter w;
+    record::SchemaOf<V>::get().write(w, value);
+    return w.take();
+}
+
+template <class V>
+void readRecordInto(const std::vector<uint8_t>& bytes, V& out)
+{
+    record::RecordReader r(bytes);
+    EXPECT_TRUE(record::SchemaOf<V>::get().read(r, out));
+}
+
+std::vector<uint8_t> legacyTrackBytes(const KeyframeTrack<float>& track)
+{
+    BinaryWriter w;
+    writeKeyframeTrack(w, track);
+    return w.data();
+}
+
+std::vector<uint8_t> effectBytes(const Effect& effect)
+{
+    record::RecordWriter w;
+    record::writeEffect(w, effect);
+    return w.take();
+}
+
+} // namespace
+
+TEST(LeafSchemas, KeyframeTracksKeepEveryKeyframeField)
+{
+    KeyframeTrack<float> animated(0.5f);
+    animate(animated, -2.0f, 7.0f);
+    KeyframeTrack<float> still(3.25f);
+    for (const KeyframeTrack<float>* track : {&animated, &still}) {
+        const auto bytes = recordBytes(*track);
+        KeyframeTrack<float> back(99.0f);
+        back.addKeyframe(5, 5.0f);   // whatever was there is replaced
+        readRecordInto(bytes, back);
+        EXPECT_EQ(legacyTrackBytes(back), legacyTrackBytes(*track));
+        EXPECT_EQ(back.defaultValue(), track->defaultValue());
+        EXPECT_EQ(recordBytes(back), bytes);
+    }
+}
+
+TEST(LeafSchemas, MasksKeepEveryFieldAndTheirId)
+{
+    for (MaskShape shape : {MaskShape::Ellipse, MaskShape::Rectangle, MaskShape::FreeDrawBezier}) {
+        const OpacityMask mask = everyMaskField(shape);
+        const auto bytes = recordBytes(mask);
+        OpacityMask back;
+        readRecordInto(bytes, back);
+        EXPECT_EQ(back.maskId, mask.maskId);
+        EXPECT_EQ(back.shape, shape);
+        EXPECT_EQ(back.name, mask.name);
+        EXPECT_TRUE(back.unassigned);
+        ASSERT_EQ(back.pathKeys.size(), 2u);
+        EXPECT_EQ(back.pathKeys[1].geometry.vertices.size(), 3u);
+        EXPECT_EQ(legacyTrackBytes(back.feather), legacyTrackBytes(mask.feather));
+        EXPECT_EQ(recordBytes(back), bytes);
+    }
+    // A reloaded id is reserved: masks made afterwards never reuse it.
+    OpacityMask saved = everyMaskField(MaskShape::Ellipse);
+    saved.maskId = 1u << 30;
+    OpacityMask back;
+    readRecordInto(recordBytes(saved), back);
+    EXPECT_GT(OpacityMask{}.maskId, saved.maskId);
+}
+
+TEST(LeafSchemas, TextRunsAndParagraphsRoundTrip)
+{
+    const TextStyleRun run = everyRunField(3);
+    TextStyleRun runBack;
+    readRecordInto(recordBytes(run), runBack);
+    EXPECT_EQ(runBack, run);
+
+    TextParagraphStyle paragraph;
+    paragraph.start = 2;
+    paragraph.length = 9;
+    paragraph.alignment = GTextAlign::Justify;
+    paragraph.rightToLeft = true;
+    TextParagraphStyle paragraphBack;
+    readRecordInto(recordBytes(paragraph), paragraphBack);
+    EXPECT_EQ(paragraphBack, paragraph);
+}
+
+TEST(LeafSchemas, SettingsTransitionsAndMarkersRoundTrip)
+{
+    Settings settings;
+    setEverySettingsField(settings, 1080, 1920, 23.976);
+    Settings settingsBack;
+    readRecordInto(recordBytes(settings), settingsBack);
+    EXPECT_EQ(settingsBack, settings);
+    EXPECT_EQ(settingsBack.exportSettings().outputPath, settings.exportSettings().outputPath);
+
+    Transition t;
+    t.type = TransitionType::WipeUp;
+    t.duration = 4800; t.offset = -2400;
+    t.leftClipId = 3; t.rightClipId = 4; t.editPointTick = 96000;
+    t.param1 = 0.3f; t.param2 = 0.6f;
+    Transition tb;
+    readRecordInto(recordBytes(t), tb);
+    EXPECT_EQ(recordBytes(tb), recordBytes(t));
+    EXPECT_EQ(tb.editPointTick, 96000);
+    EXPECT_EQ(tb.type, TransitionType::WipeUp);
+
+    Marker m{12345, "Cue", 0xFF00FF00u};
+    Marker mb;
+    readRecordInto(recordBytes(m), mb);
+    EXPECT_EQ(mb.time, m.time);
+    EXPECT_EQ(mb.label, m.label);
+    EXPECT_EQ(mb.color, m.color);
+}
+
+TEST(LeafSchemas, EveryEffectKeepsItsParametersAndExtraState)
+{
+    VideoClip host;
+    addEveryEffect(host, writeCubeFile());
+    ASSERT_GE(host.effects().effectCount(), 4u);
+    for (size_t i = 0; i < host.effects().effectCount(); ++i) {
+        const Effect& fx = host.effects().effect(i);
+        SCOPED_TRACE(fx.name());
+        const auto bytes = effectBytes(fx);
+        record::RecordReader r(bytes);
+        const auto back = record::readEffect(r);
+        ASSERT_NE(back, nullptr);
+        EXPECT_TRUE(r.ok());
+        EXPECT_EQ(back->effectType(), fx.effectType());
+        EXPECT_EQ(back->isEnabled(), fx.isEnabled());
+        ASSERT_EQ(back->paramCount(), fx.paramCount());
+        for (size_t p = 0; p < fx.paramCount(); ++p)
+            EXPECT_EQ(legacyTrackBytes(back->param(p).track), legacyTrackBytes(fx.param(p).track));
+        EXPECT_EQ(back->maskCount(), fx.maskCount());
+        EXPECT_EQ(effectBytes(*back), bytes);
+    }
+}
+
+TEST(LeafSchemas, AnEffectOfAnUnknownTypeIsLeftOut)
+{
+    record::RecordWriter w;
+    w.writeVarint(1, 250);         // a type from a newer build
+    w.writeBool(2, true);
+    record::RecordReader r(w.data());
+    EXPECT_EQ(record::readEffect(r), nullptr);
+    EXPECT_TRUE(r.ok());
+}
+
+TEST(LeafSchemas, TheAudioFxChainKeepsEveryProcessor)
+{
+    const auto project = makeEverythingProject();
+    const AudioClip* audio = nullptr;
+    const Timeline* tl = project->timeline();
+    for (size_t ti = 0; ti < tl->trackCount() && !audio; ++ti)
+        for (size_t ci = 0; ci < tl->track(ti)->clipCount(); ++ci)
+            if (tl->track(ti)->clip(ci)->clipType() == ClipType::Audio)
+                audio = static_cast<const AudioClip*>(tl->track(ti)->clip(ci));
+    ASSERT_NE(audio, nullptr);
+
+    record::RecordWriter w;
+    record::writeFxChain(w, 1, audio->audioFx());
+    record::RecordReader r(w.data());
+    ASSERT_TRUE(r.next());
+    audiofx::FxChain back;
+    back.add(audiofx::ProcessorKind::Dynamics);   // replaced, not appended to
+    ASSERT_TRUE(record::readFxChain(r, back));
+    ASSERT_EQ(back.size(), 2u);
+    const auto* eq = dynamic_cast<const audiofx::ParametricEQ*>(&back.at(0));
+    ASSERT_NE(eq, nullptr);
+    EXPECT_TRUE(eq->lowPassOn());
+    EXPECT_FLOAT_EQ(eq->band(0).gainDb, 4.5f);
+    const auto* dyn = dynamic_cast<const audiofx::Dynamics*>(&back.at(1));
+    ASSERT_NE(dyn, nullptr);
+    EXPECT_FALSE(dyn->isEnabled());
+    EXPECT_FLOAT_EQ(dyn->compressor().makeupDb, 4.0f);
+
+    record::RecordWriter again;
+    record::writeFxChain(again, 1, back);
+    EXPECT_EQ(again.data(), w.data());
 }
