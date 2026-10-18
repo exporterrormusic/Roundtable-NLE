@@ -158,6 +158,7 @@ add_roundtable_test(test_notification_center LIBS roundtable_ui roundtable_core 
 add_roundtable_test(test_project_bin     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_properties      LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_edit_gestures   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+add_roundtable_test(test_timeline_drags  LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_shot_composer   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_waveform        LIBS roundtable_ui roundtable_gpu roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_keyframe_editor LIBS roundtable_ui roundtable_core USES_QT GROUP ui)

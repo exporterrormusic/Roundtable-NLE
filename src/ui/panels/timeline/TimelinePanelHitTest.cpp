@@ -68,6 +68,13 @@ size_t TimelinePanel::hitTestTrack(double y) const
     return SIZE_MAX;
 }
 
+QRect TimelinePanel::trackRowRect(size_t trackIndex) const
+{
+    if (trackIndex >= m_trackWidgets.size()) return {};
+    const auto tw = m_trackWidgets[trackIndex];
+    return QRect(tw->mapTo(this, QPoint(0, 0)), tw->size());
+}
+
 std::optional<ClipRef> TimelinePanel::hitTestEdgeHalo(size_t ti, double px) const
 {
     if (!m_timeline || ti >= m_timeline->trackCount()) return std::nullopt;

@@ -249,6 +249,10 @@ public:
     /// Current width of the track header column (dynamic, resizable via splitter).
     int headerWidth() const;
 
+    /// Track `trackIndex`'s row in panel coordinates (the band hitTestTrack
+    /// maps to that track); empty when it has no row.
+    QRect trackRowRect(size_t trackIndex) const;
+
     // ── Step 13: Editing ────────────────────────────────────────────────
 
     /// Set the command stack for undo/redo.
