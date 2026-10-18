@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -81,6 +82,7 @@ namespace detail {
 
 /// Element field id inside a list record.
 inline constexpr uint32_t kListElement = 1;
+
 
 template <class V>
 void writeList(RecordWriter& w, uint32_t id, const V& list)
@@ -272,6 +274,49 @@ FieldDef<T> when(bool (*applies)(const T&), FieldDef<T> def)
     return def;
 }
 
+/// A schema's name and field ids.
+struct SchemaInfo
+{
+    const char* name;
+    std::vector<uint32_t> fieldIds;
+};
+
+namespace detail {
+
+class SchemaRegistry
+{
+public:
+    void add(SchemaInfo info)
+    {
+        std::lock_guard lock(m_mutex);
+        m_entries.push_back(std::move(info));
+    }
+    [[nodiscard]] std::vector<SchemaInfo> list()
+    {
+        std::lock_guard lock(m_mutex);
+        return m_entries;
+    }
+
+private:
+    std::mutex m_mutex;
+    std::vector<SchemaInfo> m_entries;
+};
+
+inline SchemaRegistry& registry()
+{
+    static SchemaRegistry r;
+    return r;
+}
+
+} // namespace detail
+
+/// Every schema built so far in this process (schemas are built on first
+/// use): the coverage test checks a save emits each one's every field.
+inline std::vector<SchemaInfo> registeredSchemas()
+{
+    return detail::registry().list();
+}
+
 template <class T>
 class Schema
 {
@@ -280,8 +325,10 @@ public:
            std::vector<uint32_t> retired = {})
         : m_name(name), m_fields(std::move(fields)), m_retired(std::move(retired))
     {
+        std::vector<uint32_t> ids;
         for (size_t i = 0; i < m_fields.size(); ++i) {
             const uint32_t id = m_fields[i].id;
+            ids.push_back(id);
             if (id == 0 || id > kMaxFieldId)
                 throw std::logic_error(std::string(name) + ": field id out of range");
             for (size_t j = 0; j < i; ++j)
@@ -293,6 +340,7 @@ public:
                     throw std::logic_error(std::string(name) + ": field id "
                                            + std::to_string(id) + " is retired");
         }
+        detail::registry().add({name, std::move(ids)});
     }
 
     void write(RecordWriter& w, const T& object) const

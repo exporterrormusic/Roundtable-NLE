@@ -51,6 +51,10 @@
 #include "project/schema/ClipSchemas.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <set>
+#include <utility>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -981,4 +985,147 @@ TEST(ClipSchemas, AReloadedClipIdIsNotHandedOutAgain)
     ASSERT_NE(back, nullptr);
     EXPECT_EQ(back->id(), clip.id());
     EXPECT_GT(VideoClip{}.id(), clip.id());
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  The v48 switch: whatever a project held, a v48 save and reload holds the
+//  same. Checked through the frozen v47 writer (independent of the schemas):
+//  its bytes for the project before and after the v48 trip must match.
+// ═════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+struct SweepTotals
+{
+    size_t projects = 0;
+    size_t v47Bytes = 0;
+    size_t v48Bytes = 0;
+    double v47LoadMs = 0.0;
+    double v48LoadMs = 0.0;
+};
+
+double millisecondsSince(std::chrono::steady_clock::time_point start)
+{
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+        .count();
+}
+
+void expectV48KeepsEverything(const Project& project, SweepTotals& totals)
+{
+    const ProjectSerializer serializer;
+    const std::vector<uint8_t> before = legacy_v47::serialize(project);
+    const std::vector<uint8_t> v48 = serializer.serialize(project);
+    ASSERT_EQ(fileVersion(v48), ProjectSerializer::FORMAT_VERSION);
+
+    auto start = std::chrono::steady_clock::now();
+    const auto reloaded = serializer.deserialize(v48);
+    totals.v48LoadMs += millisecondsSince(start);
+    ASSERT_NE(reloaded, nullptr);
+
+    const std::vector<uint8_t> after = legacy_v47::serialize(*reloaded);
+    EXPECT_TRUE(after == before) << firstDifference(before, after);
+    ASSERT_EQ(reloaded->sequenceCount(), project.sequenceCount());
+    for (size_t i = 0; i < project.sequenceCount(); ++i)
+        EXPECT_EQ(hashTimelineState(*reloaded->sequence(i)),
+                  hashTimelineState(*project.sequence(i)))
+            << "sequence " << i;
+    EXPECT_TRUE(serializer.serialize(*reloaded) == v48) << "v48 save is not stable";
+
+    start = std::chrono::steady_clock::now();
+    (void)serializer.deserialize(before);
+    totals.v47LoadMs += millisecondsSince(start);
+    totals.v47Bytes += before.size();
+    totals.v48Bytes += v48.size();
+    ++totals.projects;
+}
+
+} // namespace
+
+TEST(ProjectFormat, TheEverythingProjectKeepsEverythingThroughV48)
+{
+    SweepTotals totals;
+    expectV48KeepsEverything(*makeEverythingProject(), totals);
+}
+
+TEST(ProjectFormat, CorpusProjectsKeepEverythingThroughV48)
+{
+    const std::vector<fs::path> files = corpusFiles();
+    if (files.empty())
+        GTEST_SKIP() << "no project corpus (set ROUNDTABLE_PROJECT_CORPUS)";
+    const ProjectSerializer serializer;
+    SweepTotals totals;
+    for (const fs::path& file : files) {
+        SCOPED_TRACE(pathToUtf8(file));
+        const auto project = serializer.deserialize(readFile(file));
+        ASSERT_NE(project, nullptr);
+        expectV48KeepsEverything(*project, totals);
+        if (HasFailure()) break;   // one file's report is enough
+    }
+    std::printf("[corpus] %zu projects through v48: v47 %.1f MB loaded in %.0f ms, "
+                "v48 %.1f MB loaded in %.0f ms\n",
+                totals.projects, totals.v47Bytes / 1048576.0, totals.v47LoadMs,
+                totals.v48Bytes / 1048576.0, totals.v48LoadMs);
+}
+
+TEST(ProjectFormat, SavingTheEverythingProjectWritesEveryField)
+{
+    // A schema field the everything project never writes is untested: add
+    // data for it to makeEverythingProject().
+    struct Log final : record::FieldLog
+    {
+        std::set<std::pair<std::string, uint32_t>> seen;
+        void wrote(const char* schema, uint32_t id) override { seen.insert({schema, id}); }
+    } log;
+    const ProjectSerializer serializer;
+    (void)serializer.serialize(*makeEverythingProject(), &log);
+
+    std::string missing;
+    size_t fields = 0;
+    for (const record::SchemaInfo& schema : record::registeredSchemas()) {
+        for (uint32_t id : schema.fieldIds) {
+            ++fields;
+            if (!log.seen.count({schema.name, id}))
+                missing += std::string(" ") + schema.name + "." + std::to_string(id);
+        }
+    }
+    EXPECT_TRUE(missing.empty()) << "never written:" << missing;
+    EXPECT_GT(fields, 300u);
+}
+
+TEST(ProjectFormat, CorruptFilesFailToLoadInsteadOfThrowing)
+{
+    // Random single-byte damage, v48 and v47 alike: the loader returns a
+    // project or nothing, never throws (a corrupt path string used to throw
+    // out of the path conversion).
+    const ProjectSerializer serializer;
+    const auto project = makeEverythingProject();
+    for (const std::vector<uint8_t>& bytes :
+         {serializer.serialize(*project), legacy_v47::serialize(*project)}) {
+        SCOPED_TRACE(fileVersion(bytes));
+        uint32_t seed = 20261018u;
+        auto nextRandom = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        int rejected = 0;
+        for (int i = 0; i < 3000; ++i) {
+            std::vector<uint8_t> broken = bytes;
+            const size_t pos = 12 + nextRandom() % (broken.size() - 12);
+            broken[pos] ^= static_cast<uint8_t>(1 + nextRandom() % 255);
+            std::unique_ptr<Project> loaded;
+            EXPECT_NO_THROW(loaded = serializer.deserialize(broken)) << "byte " << pos;
+            if (!loaded) ++rejected;
+        }
+        EXPECT_GT(rejected, 0);
+    }
+}
+
+TEST(ProjectFormat, ASectionFromANewerBuildIsSkipped)
+{
+    const ProjectSerializer serializer;
+    const auto project = makeEverythingProject();
+    std::vector<uint8_t> bytes = serializer.serialize(*project);
+    const std::vector<uint8_t> extra = {0x7F, 0x00, 0x00, 0x00, 3, 0, 0, 0, 0x08, 0x2A, 0x00};
+    bytes.insert(bytes.end(), extra.begin(), extra.end());   // tag 0x7F, 3 bytes
+    bytes[12] = static_cast<uint8_t>(bytes[12] + 1);          // one more section
+    const auto loaded = serializer.deserialize(bytes);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_TRUE(legacy_v47::serialize(*loaded) == legacy_v47::serialize(*project));
 }

@@ -33,6 +33,7 @@
 namespace rt {
 
 class Project;
+namespace record { class FieldLog; }
 
 class ProjectSerializer
 {
@@ -52,6 +53,10 @@ public:
     // ── In-memory round-trip (for testing) ──────────────────────────────
     /// Serialize to a byte buffer.
     [[nodiscard]] std::vector<uint8_t> serialize(const Project& project) const;
+    /// Same, telling `log` every record field written (the format tests'
+    /// coverage check).
+    [[nodiscard]] std::vector<uint8_t> serialize(const Project& project,
+                                                 record::FieldLog* log) const;
 
     /// Deserialize from a byte buffer.
     [[nodiscard]] std::unique_ptr<Project> deserialize(const std::vector<uint8_t>& data) const;

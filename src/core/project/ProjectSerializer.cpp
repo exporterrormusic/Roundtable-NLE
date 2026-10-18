@@ -31,6 +31,7 @@
 #include <cstring>
 #include <filesystem>
 #include <algorithm>
+#include <stdexcept>
 #include <unordered_map>
 #include <spdlog/spdlog.h>
 
@@ -479,6 +480,12 @@ constexpr uint32_t kWorkspaceOpenSequences = 1;
 
 std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
 {
+    return serialize(project, nullptr);
+}
+
+std::vector<uint8_t> ProjectSerializer::serialize(const Project& project,
+                                                  record::FieldLog* log) const
+{
     BinaryWriter out;
     out.writeBytes(MAGIC, 8);
     out.writeU32(FORMAT_VERSION);
@@ -494,17 +501,17 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
 
     // Settings and ProjectMeta first: readMetadata reads only the start.
     {
-        RecordWriter w;
+        RecordWriter w(log);
         SchemaOf<Settings>::get().write(w, project.defaultSettings());
         section(Section_Settings, w.data());
     }
     {
-        RecordWriter w;
+        RecordWriter w(log);
         projectMetaSchema().write(w, project);
         section(Section_ProjectMeta, w.data());
     }
     {
-        RecordWriter w;
+        RecordWriter w(log);
         w.writeVarint(kSequencesActive, project.activeSequenceIndex());
         RecordWriter list = w.nested();
         for (size_t i = 0; i < project.sequenceCount(); ++i) {
@@ -522,7 +529,7 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
                        AssetType::Video, AssetType::Image, AssetType::Font})
             for (const AssetEntry* a : project.assets()->findByType(t))
                 assets.push_back(*a);
-        RecordWriter w;
+        RecordWriter w(log);
         record::writeValue(w, kAssetsList, assets);
         section(Section_Assets, w.data());
     }
@@ -537,7 +544,7 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
                 bin.items.push_back({synthId++, f, std::string{}, 0xFF888888u});
         }
         bin.folders = project.binFolders();
-        RecordWriter w;
+        RecordWriter w(log);
         binStateSchema().write(w, bin);
         section(Section_BinState, w.data());
     }
@@ -546,7 +553,7 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project) const
     {
         std::vector<uint64_t> open(project.openSequenceIndices().begin(),
                                    project.openSequenceIndices().end());
-        RecordWriter w;
+        RecordWriter w(log);
         record::writeValue(w, kWorkspaceOpenSequences, open);
         section(Section_WorkspaceState, w.data());
     }
@@ -580,8 +587,15 @@ std::unique_ptr<Project> ProjectSerializer::deserialize(const std::vector<uint8_
                       FORMAT_VERSION);
         return nullptr;
     }
-    return version <= LAST_POSITIONAL_VERSION ? deserializeLegacy(data)
-                                              : deserializeRecords(data);
+    // A damaged file must fail to load, not throw: corrupt strings can make
+    // path conversion or filesystem calls throw deep inside the readers.
+    try {
+        return version <= LAST_POSITIONAL_VERSION ? deserializeLegacy(data)
+                                                  : deserializeRecords(data);
+    } catch (const std::exception& e) {
+        spdlog::error("ProjectSerializer: corrupt project (v{}): {}", version, e.what());
+        return nullptr;
+    }
 }
 
 std::unique_ptr<Project> ProjectSerializer::deserializeRecords(const std::vector<uint8_t>& data)
