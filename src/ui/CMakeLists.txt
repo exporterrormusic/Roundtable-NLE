@@ -47,6 +47,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelineTrimTool.cpp
     panels/timeline/TimelineRollTool.cpp
     panels/timeline/TimelineSlipSlideTool.cpp
+    panels/timeline/TimelineTransitionTool.cpp
     panels/timeline/TimelinePanelMouseDragMove.cpp
     panels/timeline/TimelinePanelMouseDragRelease.cpp
     panels/timeline/TimelinePanelDragDrop.cpp

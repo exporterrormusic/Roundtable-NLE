@@ -497,10 +497,6 @@ private:
     // (TimelinePanelMouseDragMove.cpp).
     void continueClipMoveDrag(QPointF pos, int64_t tickDelta);
     void continuePendingClipClick(QPointF pos);
-    void continueTransitionTrimDrag(QPointF pos);
-    void continueTransitionHandleDrag(QPointF pos);
-    /// Live duration readout next to the cursor during a transition drag.
-    void showTransitionDurationTip(QPointF pos, int64_t duration);
 
     // dragMoveEvent, one handler per dragged payload type
     // (TimelinePanelDragDrop.cpp).
@@ -701,16 +697,6 @@ private:
     int64_t   m_dragOriginalDuration{0};
     size_t    m_dragOriginalTrack{0};
 
-    // Transition trim drag state
-    size_t  m_transTrimTrackIndex{0};
-    size_t  m_transTrimIndex{0};       // index in track->transitions()
-    bool    m_transTrimIsStart{false}; // dragging the start or end of the transition?
-    int64_t m_transTrimOrigDuration{0};
-    int64_t m_transTrimOrigEditPoint{0};
-
-    // Transition handle pressed (DragMode::TransitionHandle); becomes a
-    // TransitionTrim of the new transition once the drag passes a deadzone.
-    TransitionHandleHit m_handleDrag;
 
     // Last clicked edge (for Ctrl+T transitions) — uses public ClickedEdge struct
     ClickedEdge m_lastClickedEdge;
@@ -772,6 +758,7 @@ private:
     friend class TimelineTrimTool;
     friend class TimelineRollTool;
     friend class TimelineSlipSlideTool;
+    friend class TimelineTransitionTool;
     /// Starts trimming `edge` of m_dragClipRef (m_dragOriginalIn/Duration);
     /// the other clips in m_dragSelectedClips trim along (TimelineTrimTool).
     void beginTrim(ClipEdge edge);

@@ -810,3 +810,76 @@ TEST(TimelineDrags, RollingEditStopsAtTheRightClipsSourceStart)
     EXPECT_EQ(clipById(rig.timeline, a)->timelineOut(), 2 * kSecond - 4 * kFrame);
     EXPECT_EQ(clipById(rig.timeline, b)->sourceIn(), 0);
 }
+
+namespace {
+/// The transition handle on the tail of the clip ending at `tail`.
+QPointF tailHandle(DragRig& rig, int64_t tail, size_t track)
+{
+    QPointF p = rig.pointAt(tail, track);
+    p.rx() -= 5.0;
+    p.setY(rig.panel->trackRowRect(track).top() + 6);
+    return p;
+}
+} // namespace
+
+TEST(TimelineDrags, ClickOnATransitionHandleAddsNothing)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    rig.addClip(v1, kSecond, kSecond);
+    rig.addClip(v1, 2 * kSecond, kSecond);
+    rig.show();
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.click(tailHandle(rig, 2 * kSecond, t));
+
+    EXPECT_EQ(rig.timeline.track(t)->transitionCount(), 0u);
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(TimelineDrags, EscapeDuringATransitionHandleDragAddsNothing)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    rig.addClip(v1, kSecond, kSecond);
+    rig.addClip(v1, 2 * kSecond, kSecond);
+    rig.show();
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    const QPointF from = tailHandle(rig, 2 * kSecond, t);
+    rig.drag(from, from - QPointF(80.0, 0.0), Qt::NoModifier, /*releaseAtEnd=*/false);
+    ASSERT_EQ(rig.timeline.track(t)->transitionCount(), 1u) << "the drag should add it live";
+    rig.escape();
+
+    EXPECT_EQ(rig.timeline.track(t)->transitionCount(), 0u);
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(TimelineDrags, FadeOutEdgeTrimFollowsTheCursor)
+{
+    // A fade-out on a lone clip's tail: its start edge sits at the tail minus
+    // the duration; dragging it left lengthens the fade.
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(v1, kSecond, kSecond)->id();
+    Transition fade;
+    fade.duration = 10 * kFrame;
+    fade.leftClipId = a;
+    fade.rightClipId = 0;
+    fade.editPointTick = 2 * kSecond;
+    v1->addTransition(fade);
+    rig.show();
+    const uint64_t before = rig.state();
+    const size_t t = rig.indexOf(v1);
+
+    rig.drag(rig.pointAt(2 * kSecond - 10 * kFrame, t),
+             rig.pointAt(2 * kSecond - 14 * kFrame, t));
+
+    ASSERT_EQ(rig.timeline.track(t)->transitionCount(), 1u);
+    EXPECT_EQ(rig.timeline.track(t)->transition(0)->duration, 14 * kFrame);
+    rig.expectOneExactUndoStep(before);
+}

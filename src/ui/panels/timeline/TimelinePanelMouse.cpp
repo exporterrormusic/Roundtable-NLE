@@ -7,6 +7,7 @@
 #include "panels/timeline/TimelineMarqueeTool.h"
 #include "panels/timeline/TimelineRollTool.h"
 #include "panels/timeline/TimelineSlipSlideTool.h"
+#include "panels/timeline/TimelineTransitionTool.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
 #include "widgets/TimelineRuler.h"
@@ -283,11 +284,8 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
 
                 if (canDragStart && std::abs(px - pxStart) < kHandleThreshold) {
                     m_dragMode = DragMode::TransitionTrim;
-                    m_transTrimTrackIndex  = ti;
-                    m_transTrimIndex       = trI;
-                    m_transTrimIsStart     = true;
-                    m_transTrimOrigDuration   = trans->duration;
-                    m_transTrimOrigEditPoint  = trans->editPointTick;
+                    m_dragTool = TimelineTransitionTool::edge(
+                        *this, ti, trI, trans->duration);
                     // Re-select the grabbed transition (press-start
                     // cleared it) so the indicator follows the click
                     // to this transition instead of staying stuck.
@@ -305,11 +303,8 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                 }
                 if (canDragEnd && std::abs(px - pxEnd) < kHandleThreshold) {
                     m_dragMode = DragMode::TransitionTrim;
-                    m_transTrimTrackIndex  = ti;
-                    m_transTrimIndex       = trI;
-                    m_transTrimIsStart     = false;
-                    m_transTrimOrigDuration   = trans->duration;
-                    m_transTrimOrigEditPoint  = trans->editPointTick;
+                    m_dragTool = TimelineTransitionTool::edge(
+                        *this, ti, trI, trans->duration);
                     // Re-select the grabbed transition (press-start
                     // cleared it) so the indicator follows the click
                     // to this transition instead of staying stuck.
@@ -332,7 +327,7 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
     // ── Transition handle (top inner corner, edge without a transition) ──
     // The press selects that edge exactly like an edge click, so a plain
     // click still primes Ctrl+T. Dragging inward past a small deadzone adds
-    // the default transition and sizes it live (continueTransitionHandleDrag).
+    // the default transition and sizes it live (TimelineTransitionTool).
     if (!(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier
                                 | Qt::AltModifier))) {
         if (const auto handle = hitTestTransitionHandle(pos)) {
@@ -358,8 +353,9 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                 setEditPointSelection(handle->trackIndex, atEdge.editPointTick, side);
                 m_lastClickedEdge = { ClipRef{handle->trackIndex, handle->clipId},
                                       handle->edge, true };
-                m_handleDrag = *handle;
                 m_dragMode = DragMode::TransitionHandle;
+                m_dragTool = TimelineTransitionTool::handle(
+                    *this, handle->trackIndex, handle->clipId, handle->edge, pos);
                 event->accept();
                 return;
             }
@@ -584,11 +580,8 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                             bool nearEnd   = canDragE && std::abs(pxLocal - pxE) < kTransHandleFb;
                             if (nearStart || nearEnd) {
                                 m_dragMode = DragMode::TransitionTrim;
-                                m_transTrimTrackIndex  = hitRef->trackIndex;
-                                m_transTrimIndex       = trI;
-                                m_transTrimIsStart     = nearStart;
-                                m_transTrimOrigDuration   = trans->duration;
-                                m_transTrimOrigEditPoint  = trans->editPointTick;
+                                m_dragTool = TimelineTransitionTool::edge(
+                                    *this, hitRef->trackIndex, trI, trans->duration);
                                 m_selection.clear();
                                 if (m_gapSelection.active) {
                                     m_gapSelection.active = false;
