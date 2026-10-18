@@ -129,38 +129,8 @@ void TimelinePanel::mousePressEvent(QMouseEvent* event)
     // (e.g., lost mouse capture, interrupted drag). This prevents being
     // stuck in a mode that ignores subsequent input.  Also clean up any
     // visible artifacts left behind by an interrupted drag.
-    if (m_dragMode != DragMode::None) {
-        // Moves and rolls are applied live and only RECORDED on release:
-        // an interrupted one would leave clips moved with no undo step, so
-        // put them back (as Esc does).
-        if (m_dragMode == DragMode::ClipMove) restoreClipMoveToOrigin();
-        else if (m_dragMode == DragMode::RollingEdit) {
-            restoreRollingEditToOrigin();
-            m_rollExtraSeams.clear();
-        }
-        // Close any dangling undo macro from the interrupted drag so
-        // future commands don't accumulate into a stale macro.
-        if (m_commandStack && m_commandStack->isMacroActive()) {
-            m_commandStack->endMacro();
-        }
-        // Same for its edit gesture: keep what was applied as one step.
-        commitDragEditGesture();
-        m_dragMode = DragMode::None;
-        m_dragClipRef = {};
-        m_dragSelectedClips.clear();
-        m_dragTargetTrack = SIZE_MAX;
-        m_ghostTrackVisible = false;
-        if (m_ghostOverlay) m_ghostOverlay->hide();
-        if (m_marqueeScrollTimer) m_marqueeScrollTimer->stop();
-        m_marqueeLastMovePos = QPointF();
-        if (m_clipDragScrollTimer) m_clipDragScrollTimer->stop();
-        m_clipDragLastMovePos = QPointF();
-        if (m_rubberBand) m_rubberBand->hide();
-        setCursor(Qt::ArrowCursor);
-        for (auto tw : m_trackWidgets)
-            tw->setHoverEdgeTick(-1);
-    }
-    m_dragMode = DragMode::None;
+    if (m_dragMode != DragMode::None)
+        endDrag(DragEnd::Interrupted);
 
     // The Zoom tool is a pure view operation (like in Premiere): a
     // zoom-in/out click must NOT disturb any selection.  Clip selection

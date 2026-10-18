@@ -680,6 +680,22 @@ private:
                           PendingClipClick,
                           TransitionHandle };  // pressed a handle, not dragged yet
     DragMode  m_dragMode{DragMode::None};
+
+    /// How a drag ends. Every path runs through endDrag, which does the
+    /// shared cleanup once:
+    ///  - Committed: the release finished it; the edit gesture and any open
+    ///    macro become one undo step.
+    ///  - Cancelled: Esc; everything goes back as it was, nothing recorded.
+    ///  - Interrupted: a press arrived before the release; live moves/rolls
+    ///    go back, anything already recorded is kept as one step.
+    enum class DragEnd { Committed, Cancelled, Interrupted };
+    void endDrag(DragEnd how);
+    /// Clears every piece of drag state and its on-screen affordances.
+    void resetDragState();
+    /// Drags that record their commands into an open undo macro as they go
+    /// (trims, slip, slide, transitions), as opposed to applying live and
+    /// recording on release (move, roll) or applying nothing (click, marquee).
+    [[nodiscard]] static bool dragRecordsIntoMacro(DragMode mode) noexcept;
     QPointF   m_dragStart;
     QPointF   m_marqueeEnd;   // Current endpoint during marquee drag
     ClipRef   m_dragClipRef;
