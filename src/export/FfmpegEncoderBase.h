@@ -47,6 +47,10 @@ public:
     bool encodeFrame16f(const uint16_t* rgba16f, int srcStrideBytes,
                         int64_t frameIndex) override;
     [[nodiscard]] bool is10BitTarget() const noexcept override;
+    [[nodiscard]] bool acceptsNv12() const noexcept override;
+    bool encodeFrameNv12(const uint8_t* y, int yStride,
+                         const uint8_t* uv, int uvStride,
+                         int64_t frameIndex) override;
     int  flush() override;
     void shutdown() override;
 

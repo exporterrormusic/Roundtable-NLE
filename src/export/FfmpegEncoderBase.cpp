@@ -11,6 +11,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
@@ -359,6 +360,56 @@ bool FfmpegEncoderBase::is10BitTarget() const noexcept
     }
 }
 
+bool FfmpegEncoderBase::acceptsNv12() const noexcept
+{
+    return m_initialized && m_frame &&
+           (m_config.width % 2) == 0 && (m_config.height % 2) == 0 &&
+           (m_frame->format == AV_PIX_FMT_YUV420P || m_frame->format == AV_PIX_FMT_NV12);
+}
+
+bool FfmpegEncoderBase::encodeFrameNv12(const uint8_t* y, int yStride,
+                                        const uint8_t* uv, int uvStride,
+                                        int64_t frameIndex)
+{
+    if (!acceptsNv12() || !y || !uv) {
+        m_lastError = std::string(logName()) + ": invalid NV12 frame input";
+        m_failed = true;
+        spdlog::error("{}", m_lastError);
+        return false;
+    }
+    if (av_frame_make_writable(m_frame) < 0) {
+        m_lastError = std::string(logName()) + ": frame buffer is not writable";
+        m_failed = true;
+        return false;
+    }
+
+    // Already YUV: copy the planes (rows past the configured height, which
+    // NVENC alignment can add, stay as allocated, like encodeFrame's).
+    {
+        ExportStageTimer timer(exportStageTimes().encodeConvertUs);
+        const int width = static_cast<int>(m_config.width);
+        const int rows = std::min(static_cast<int>(m_config.height), m_frame->height);
+        for (int r = 0; r < rows; ++r)
+            std::memcpy(m_frame->data[0] + static_cast<ptrdiff_t>(r) * m_frame->linesize[0],
+                        y + static_cast<ptrdiff_t>(r) * yStride, static_cast<size_t>(width));
+        for (int r = 0; r < rows / 2; ++r) {
+            const uint8_t* src = uv + static_cast<ptrdiff_t>(r) * uvStride;
+            if (m_frame->format == AV_PIX_FMT_NV12) {
+                std::memcpy(m_frame->data[1] + static_cast<ptrdiff_t>(r) * m_frame->linesize[1],
+                            src, static_cast<size_t>(width));
+                continue;
+            }
+            uint8_t* u = m_frame->data[1] + static_cast<ptrdiff_t>(r) * m_frame->linesize[1];
+            uint8_t* v = m_frame->data[2] + static_cast<ptrdiff_t>(r) * m_frame->linesize[2];
+            for (int x = 0; x < width / 2; ++x) {
+                u[x] = src[2 * x];
+                v[x] = src[2 * x + 1];
+            }
+        }
+    }
+    return finishFrame(frameIndex);
+}
+
 bool FfmpegEncoderBase::encodeFrame16f(const uint16_t* rgba16f, int srcStrideBytes,
                                        int64_t frameIndex)
 {
@@ -549,6 +600,8 @@ void FfmpegEncoderBase::shutdown()
 FfmpegEncoderBase::~FfmpegEncoderBase() = default;
 bool FfmpegEncoderBase::encodeFrame(const uint8_t*, int64_t) { return false; }
 bool FfmpegEncoderBase::encodeFrame16f(const uint16_t*, int, int64_t) { return false; }
+bool FfmpegEncoderBase::acceptsNv12() const noexcept { return false; }
+bool FfmpegEncoderBase::encodeFrameNv12(const uint8_t*, int, const uint8_t*, int, int64_t) { return false; }
 bool FfmpegEncoderBase::is10BitTarget() const noexcept { return false; }
 int  FfmpegEncoderBase::flush() { return 0; }
 void FfmpegEncoderBase::shutdown() {}

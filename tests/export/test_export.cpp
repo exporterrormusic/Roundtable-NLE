@@ -195,13 +195,27 @@ namespace {
 
 struct Yuv { int y, cb, cr; };
 
-/// Encode a solid BGRA colour with the CPU H.264 encoder, decode the stream
-/// and return the YUV of the centre pixel of the last frame.
-bool encodeSolidH264(uint8_t b, uint8_t g, uint8_t r, Yuv& out)
+/// A decoded YUV420P picture.
+struct Picture
+{
+    int width{0}, height{0};
+    std::vector<uint8_t> y, u, v;   // tight planes
+    Yuv at(int x, int yy) const
+    {
+        return {y[yy * width + x], u[(yy / 2) * (width / 2) + x / 2],
+                v[(yy / 2) * (width / 2) + x / 2]};
+    }
+};
+
+/// Encode `frames` frames with the CPU H.264 encoder, submitting each through
+/// `submit`, decode the stream and return its last picture.
+bool encodeH264AndDecode(int width, int height, int frames,
+                         const std::function<void(Encoder&, int)>& submit,
+                         Picture& out)
 {
     EncoderConfig cfg;
-    cfg.width   = 64;
-    cfg.height  = 64;
+    cfg.width   = static_cast<uint32_t>(width);
+    cfg.height  = static_cast<uint32_t>(height);
     cfg.fpsNum  = 30;
     cfg.fpsDen  = 1;
     cfg.codec   = EncoderCodec::H264;
@@ -211,16 +225,15 @@ bool encodeSolidH264(uint8_t b, uint8_t g, uint8_t r, Yuv& out)
     auto enc = Encoder::create(EncoderCodec::H264, HardwareAccel::None);
     if (!enc || !enc->init(cfg)) return false;
 
-    std::vector<uint8_t> bgra(static_cast<size_t>(cfg.width) * cfg.height * 4);
-    for (size_t i = 0; i < bgra.size(); i += 4) {
-        bgra[i] = b; bgra[i + 1] = g; bgra[i + 2] = r; bgra[i + 3] = 255;
-    }
     std::vector<std::vector<uint8_t>> packets;
     auto keep = [&](const EncodedPacket& p) {
         if (p.data && p.size > 0) packets.emplace_back(p.data, p.data + p.size);
     };
-    for (int i = 0; i < 3; ++i) {
-        if (enc->encodeFrame(bgra.data(), i)) keep(enc->lastPacket());
+    for (int i = 0; i < frames; ++i) {
+        const int64_t before = enc->framesEncoded();
+        submit(*enc, i);
+        if (enc->hasFatalError()) return false;
+        if (enc->framesEncoded() > before) keep(enc->lastPacket());
         for (const auto& p : enc->pendingPackets()) keep(p);
     }
     enc->flush();
@@ -242,10 +255,17 @@ bool encodeSolidH264(uint8_t b, uint8_t g, uint8_t r, Yuv& out)
     bool got = false;
     auto drain = [&] {
         while (avcodec_receive_frame(dctx, frame) == 0) {
-            const int cx = frame->width / 2, cy = frame->height / 2;
-            out.y  = frame->data[0][cy * frame->linesize[0] + cx];
-            out.cb = frame->data[1][(cy / 2) * frame->linesize[1] + cx / 2];
-            out.cr = frame->data[2][(cy / 2) * frame->linesize[2] + cx / 2];
+            out.width = frame->width;
+            out.height = frame->height;
+            auto copyPlane = [&](int plane, int w, int h, std::vector<uint8_t>& dst) {
+                dst.resize(static_cast<size_t>(w) * h);
+                for (int r = 0; r < h; ++r)
+                    std::memcpy(dst.data() + static_cast<size_t>(r) * w,
+                                frame->data[plane] + r * frame->linesize[plane], w);
+            };
+            copyPlane(0, frame->width, frame->height, out.y);
+            copyPlane(1, frame->width / 2, frame->height / 2, out.u);
+            copyPlane(2, frame->width / 2, frame->height / 2, out.v);
             got = true;
         }
     };
@@ -263,6 +283,28 @@ bool encodeSolidH264(uint8_t b, uint8_t g, uint8_t r, Yuv& out)
     avcodec_free_context(&dctx);
     enc->shutdown();
     return ok && got;
+}
+
+std::vector<uint8_t> solidBgra(int w, int h, uint8_t b, uint8_t g, uint8_t r)
+{
+    std::vector<uint8_t> bgra(static_cast<size_t>(w) * h * 4);
+    for (size_t i = 0; i < bgra.size(); i += 4) {
+        bgra[i] = b; bgra[i + 1] = g; bgra[i + 2] = r; bgra[i + 3] = 255;
+    }
+    return bgra;
+}
+
+/// Encode a solid BGRA colour and return the decoded centre pixel.
+bool encodeSolidH264(uint8_t b, uint8_t g, uint8_t r, Yuv& out)
+{
+    const auto bgra = solidBgra(64, 64, b, g, r);
+    Picture pic;
+    if (!encodeH264AndDecode(64, 64, 3,
+                             [&](Encoder& enc, int i) { enc.encodeFrame(bgra.data(), i); },
+                             pic))
+        return false;
+    out = pic.at(32, 32);
+    return true;
 }
 
 } // namespace
@@ -285,6 +327,68 @@ TEST(ExportEncoder, BgraFramesEncodeAsBt709LimitedRange)
         EXPECT_NEAR(got.cb, c.want.cb, 2) << c.name << " Cb";
         EXPECT_NEAR(got.cr, c.want.cr, 2) << c.name << " Cr";
     }
+}
+
+TEST(ExportEncoder, Nv12FramesEncodeTheirOwnPlanes)
+{
+    // encodeFrameNv12 hands the planes to the encoder as they are: the
+    // decoded picture matches the NV12 input up to compression noise (a
+    // wrong row pitch or Cb/Cr de-interleave would be off by tens).
+    constexpr int w = 96, h = 64, stride = 100;   // padded rows, as the GPU writes
+    std::vector<uint8_t> nv12(static_cast<size_t>(stride) * h * 3 / 2, 0);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+            nv12[y * stride + x] = static_cast<uint8_t>(16 + 219 * x / (w - 1));
+    for (int y = 0; y < h / 2; ++y)
+        for (int x = 0; x < w / 2; ++x) {
+            nv12[stride * h + y * stride + 2 * x]     = static_cast<uint8_t>(16 + 224 * y / (h / 2 - 1));
+            nv12[stride * h + y * stride + 2 * x + 1] = static_cast<uint8_t>(240 - 224 * x / (w / 2 - 1));
+        }
+
+    Picture pic;
+    ASSERT_TRUE(encodeH264AndDecode(w, h, 3,
+        [&](Encoder& enc, int i) {
+            ASSERT_TRUE(enc.acceptsNv12());
+            enc.encodeFrameNv12(nv12.data(), stride, nv12.data() + stride * h, stride, i);
+        }, pic));
+    double sumY = 0, sumC = 0;
+    int peak = 0;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const int d = std::abs(pic.y[y * w + x] - nv12[y * stride + x]);
+            sumY += d;
+            peak = std::max(peak, d);
+        }
+    for (int y = 0; y < h / 2; ++y)
+        for (int x = 0; x < w / 2; ++x) {
+            const int du = std::abs(pic.u[y * (w / 2) + x] - nv12[stride * h + y * stride + 2 * x]);
+            const int dv = std::abs(pic.v[y * (w / 2) + x] - nv12[stride * h + y * stride + 2 * x + 1]);
+            sumC += du + dv;
+            peak = std::max({peak, du, dv});
+        }
+    EXPECT_LT(sumY / (w * h), 1.0);
+    EXPECT_LT(sumC / (w * h / 2), 1.0);
+    EXPECT_LE(peak, 6);
+}
+
+TEST(ExportEncoder, Nv12SolidColoursDecodeExactly)
+{
+    // BT.709 red as NV12 (Y=63, Cb=102, Cr=240) decodes to the same values.
+    constexpr int w = 64, h = 64;
+    std::vector<uint8_t> nv12(static_cast<size_t>(w) * h * 3 / 2, 63);
+    for (size_t i = static_cast<size_t>(w) * h; i < nv12.size(); i += 2) {
+        nv12[i] = 102;
+        nv12[i + 1] = 240;
+    }
+    Picture pic;
+    ASSERT_TRUE(encodeH264AndDecode(w, h, 3,
+        [&](Encoder& enc, int i) {
+            enc.encodeFrameNv12(nv12.data(), w, nv12.data() + w * h, w, i);
+        }, pic));
+    const Yuv c = pic.at(32, 32);
+    EXPECT_NEAR(c.y, 63, 1);
+    EXPECT_NEAR(c.cb, 102, 1);
+    EXPECT_NEAR(c.cr, 240, 1);
 }
 
 TEST(ExportEncoder, FractionalFpsAutoGopIsTwoSecondsInFrames)

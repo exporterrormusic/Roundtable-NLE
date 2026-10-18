@@ -181,6 +181,18 @@ public:
                                 int /*srcStrideBytes*/,
                                 int64_t /*frameIndex*/) { return false; }
 
+    /// True when encodeFrameNv12 can take this encoder's frames: an 8-bit
+    /// 4:2:0 target with even dimensions.
+    [[nodiscard]] virtual bool acceptsNv12() const noexcept { return false; }
+
+    /// Encode one frame already converted to NV12 (BT.709 limited range, as
+    /// RgbToNv12Converter writes it): a Y plane and an interleaved CbCr plane
+    /// at half height, each with its own row pitch. Skips the BGRA→YUV
+    /// swscale step. Only valid when acceptsNv12().
+    virtual bool encodeFrameNv12(const uint8_t* /*y*/, int /*yStride*/,
+                                 const uint8_t* /*uv*/, int /*uvStride*/,
+                                 int64_t /*frameIndex*/) { return false; }
+
     /// Flush remaining buffered frames. Call after the last frame.
     /// Returns the number of flushed packets.
     virtual int flush() = 0;
