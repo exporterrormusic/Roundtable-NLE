@@ -125,6 +125,46 @@ WorkerGpuState::~WorkerGpuState()
 // ─────────────────────────────────────────────────────────────────────────
 // WorkerGpuState::pollAndCleanup — non-blocking sweep of completed work.
 // ─────────────────────────────────────────────────────────────────────────
+void WorkerGpuState::waitForPending()
+{
+    if (device == VK_NULL_HANDLE) return;
+    const bool deviceLost = GpuContext::get().gpuState() != GpuState::Healthy;
+    for (auto& p : pending) {
+        if (p.fence != VK_NULL_HANDLE && !deviceLost)
+            vkWaitForFences(device, 1, &p.fence, VK_TRUE, UINT64_MAX);
+    }
+    pollAndCleanup();
+}
+
+bool initWorkerGpuState(WorkerGpuState& wgs, const char* who)
+{
+    if (wgs.ready()) return true;
+    if (!GpuContext::get().isInitialized()) return false;
+    auto& dev = GpuContext::get().device();
+    const auto& qf = dev.queueFamilies();
+    const uint32_t computeFamily = qf.compute.value_or(qf.graphics.value_or(0));
+    if (wgs.cmdPool.handle() == VK_NULL_HANDLE) {
+        if (!wgs.cmdPool.create(dev.handle(), computeFamily)) {
+            spdlog::warn("MediaPool {}: GPU-resident decode CommandPool create failed", who);
+            return false;
+        }
+        wgs.device = dev.handle();
+    }
+    if (wgs.signalSem == VK_NULL_HANDLE) {
+        VkSemaphoreCreateInfo semInfo{};
+        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        const VkResult semRc = vkCreateSemaphore(dev.handle(), &semInfo,
+                                                 nullptr, &wgs.signalSem);
+        if (semRc != VK_SUCCESS) {
+            spdlog::warn("MediaPool {}: vkCreateSemaphore failed ({})",
+                         who, static_cast<int>(semRc));
+            wgs.signalSem = VK_NULL_HANDLE;
+            return false;
+        }
+    }
+    return wgs.ready();
+}
+
 void WorkerGpuState::pollAndCleanup()
 {
     if (device == VK_NULL_HANDLE) return;

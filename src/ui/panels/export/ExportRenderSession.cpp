@@ -370,6 +370,7 @@ RenderResult ExportRenderSession::renderFrame(
         request.forceFullResolution = true;
         request.preserveAlpha = preserveAlpha;
         request.outputFormat = snapshot->outputFormat;
+        request.gpuSourceConvert = snapshot->gpuSourceConvert;
         request.caller = "ExportRenderSession::renderFrame";
         result = m_compositeService->renderFrame(request);
     }

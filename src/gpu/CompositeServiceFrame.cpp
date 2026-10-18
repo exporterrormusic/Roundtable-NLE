@@ -321,6 +321,7 @@ RenderResult CompositeService::renderFrame(
         request.isRealtimePlaybackPass(),
         request.outputFormat == RenderOutputFormat::Nv12 &&
             request.forceFullResolution && !request.preserveAlpha,
+        request.gpuSourceConvert && request.forceFullResolution,
     });
     context.outcome = &executionOutcome;
     context.diagnostics = &result.diagnostics;

@@ -864,7 +864,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     const FrameResult primary = resolveMediaFrame(
                         handle, frameNum, charVideoTier, scrubMode,
                         policy.forceFullResolution,
-                        /*exactCacheOnly=*/wantsTemporal, stillMode);
+                        /*exactCacheOnly=*/wantsTemporal, stillMode,
+                        policy.gpuSourceConvert);
                     frame = primary.frame;
                     primaryExact = primary.exact;
                     // MediaPool may return a nearby/last-good frame to keep
@@ -890,7 +891,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     const FrameResult second = resolveMediaFrame(
                         handle, temporalSecondFrameNum, charVideoTier, scrubMode,
                         policy.forceFullResolution,
-                        /*exactCacheOnly=*/true, stillMode);
+                        /*exactCacheOnly=*/true, stillMode,
+                        policy.gpuSourceConvert);
                     temporalFrame = second.frame;
                     const bool exactEndpointsReady =
                         frame && primaryExact &&
@@ -916,7 +918,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                                         charVideoTier, scrubMode,
                                                         policy.forceFullResolution,
                                                         /*exactCacheOnly=*/false,
-                                                        stillMode).frame;
+                                                        stillMode,
+                                                        policy.gpuSourceConvert).frame;
                         }
                         frame = std::move(nearest);
                         temporalFrame.reset();

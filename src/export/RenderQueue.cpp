@@ -757,11 +757,15 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     // conversion. The video snapshot carries the format to the compositor;
     // a frame that still comes back BGRA (a cached, blank or 16F frame)
     // takes the BGRA path.
+    // A hardware encoder leaves the CPU free, so decoded source frames are
+    // converted on the GPU too (RenderSnapshot::gpuSourceConvert).
     const bool nv12Output = encoder->acceptsNv12() && !job.config.preserveAlpha;
+    const bool gpuSourceConvert = encoder->isHardwareAccelerated();
     std::shared_ptr<const ExportRenderSnapshot> videoSnapshot = job.renderSnapshot;
-    if (nv12Output && videoSnapshot) {
+    if ((nv12Output || gpuSourceConvert) && videoSnapshot) {
         auto withFormat = std::make_shared<ExportRenderSnapshot>(*videoSnapshot);
-        withFormat->outputFormat = RenderOutputFormat::Nv12;
+        if (nv12Output) withFormat->outputFormat = RenderOutputFormat::Nv12;
+        withFormat->gpuSourceConvert = gpuSourceConvert;
         videoSnapshot = std::move(withFormat);
     }
 

@@ -139,6 +139,11 @@ struct WorkerGpuState {
     /// order = signal order).
     void pollAndCleanup();
 
+    /// Blocking: wait for every pending submission and free its resources.
+    /// The export decoder calls this before handing a GPU-converted frame
+    /// on, so nothing downstream can see the texture before it is written.
+    void waitForPending();
+
     /// Lazy-create or reuse a source/destination-specific converter generation.
     std::shared_ptr<Nv12Converter> ensureNv12Converter(
         uint32_t srcW, uint32_t srcH, uint32_t dstW, uint32_t dstH);
@@ -157,6 +162,11 @@ struct WorkerGpuState {
 ///
 /// Returns nullptr on any ineligibility OR on GPU-path failure;
 /// callers must fall back to the CPU convertDecodedToCache path.
+/// Create the command pool and semaphore a WorkerGpuState needs, once the
+/// GpuContext is up. Safe to call repeatedly; true when `wgs.ready()`.
+/// `who` names the owner in the warning logged on failure.
+bool initWorkerGpuState(WorkerGpuState& wgs, const char* who);
+
 std::shared_ptr<CachedFrame> tryConvertDecodedToCacheGpu(
     MediaPool&            pool,
     PrefetchDecoderState& state,

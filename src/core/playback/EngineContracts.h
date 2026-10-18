@@ -93,6 +93,10 @@ struct RenderSnapshot
     std::optional<int64_t>          rangeEndTick;
     /// Export: the format its encoder takes (see RenderOutputFormat).
     RenderOutputFormat              outputFormat{RenderOutputFormat::Bgra};
+    /// Export: convert decoded source frames on the GPU instead of the CPU.
+    /// Set for hardware encoders only: a CPU encoder keeps every core busy,
+    /// which starves the GPU path's driver work (measured slower at 4K).
+    bool                            gpuSourceConvert{false};
     /// Live preview snapshots (SnapshotPublisher) carry the project's
     /// sequences here, indexed like Project::sequence(i), instead of a
     /// Project. Nested SequenceClips resolve through this when non-empty.
@@ -137,6 +141,8 @@ struct RenderRequest
     bool preserveAlpha{false};
     /// Honoured for export (forceFullResolution) without preserveAlpha.
     RenderOutputFormat outputFormat{RenderOutputFormat::Bgra};
+    /// Export: see RenderSnapshot::gpuSourceConvert.
+    bool gpuSourceConvert{false};
 
     std::string caller;
 

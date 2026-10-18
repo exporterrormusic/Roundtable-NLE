@@ -659,6 +659,7 @@ private:
         bool preserveAlpha{false};
         bool measureRealtimeCost{false};
         bool nv12Output{false};   // export readback as NV12 (RenderOutputFormat)
+        bool gpuSourceConvert{false};   // export decodes convert on the GPU
     };
 
     /// Model graph and policy captured once for a render. Child sequence
@@ -715,7 +716,8 @@ private:
                                   ResolutionTier tier, bool scrubMode,
                                   bool forceFullResolution,
                                   bool exactCacheOnly = false,
-                                  bool stillMode = false) const;
+                                  bool stillMode = false,
+                                  bool gpuSourceConvert = false) const;
     // Lazily opens / search-resolves a VideoClip's media handle. skipClip=true
     // means the caller should skip the clip; a 0 return with skipClip=false
     // means an async open is still pending (proceed to sticky-frame fallback).

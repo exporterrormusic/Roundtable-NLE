@@ -716,6 +716,11 @@ TEST(RenderPolicyTest, OptionalExportProfile)
         const bool nv12 = encoder->acceptsNv12() &&
                           envOr("ROUNDTABLE_EXPORT_PROFILE_FORMAT", "nv12") != "bgra";
         if (nv12) snapshot->outputFormat = RenderOutputFormat::Nv12;
+        // Also as RenderQueue: GPU source conversion with a hardware encoder,
+        // unless ROUNDTABLE_EXPORT_PROFILE_GPU_DECODE=0/1 says otherwise.
+        const std::string gpuDecode = envOr("ROUNDTABLE_EXPORT_PROFILE_GPU_DECODE", "");
+        snapshot->gpuSourceConvert = gpuDecode.empty()
+            ? encoder->isHardwareAccelerated() : gpuDecode == "1";
 
         using Clock = std::chrono::steady_clock;
         const auto ms = [](Clock::duration d) {
@@ -764,6 +769,7 @@ TEST(RenderPolicyTest, OptionalExportProfile)
                   << " -> " << outW << 'x' << outH << (nvenc ? " nvenc" : " x264")
                   << (encoder->isHardwareAccelerated() ? "(hw)" : "(sw)")
                   << (nv12 ? " nv12" : " bgra")
+                  << (snapshot->gpuSourceConvert ? " gpuDecode" : " cpuDecode")
                   << " frames=" << frames
                   << " fps=" << frames * 1000.0 / totalMs << '\n'
                   << "  per frame ms: render=" << renderMs / frames

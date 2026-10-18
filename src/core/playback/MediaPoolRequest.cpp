@@ -40,7 +40,7 @@ FrameResult MediaPool::requestFrame(const FrameRequest& request)
     FrameResult result;
     result.resolvedFrame = frameNumber;
     result.frame = fetchForPolicy(handle, frameNumber, tier, request.policy,
-                                  singleFrameMedia);
+                                  singleFrameMedia, request.gpuConvert);
     result.exact = result.frame &&
                    result.frame->frameNumber == result.resolvedFrame;
     return result;
@@ -48,7 +48,7 @@ FrameResult MediaPool::requestFrame(const FrameRequest& request)
 
 std::shared_ptr<CachedFrame> MediaPool::fetchForPolicy(
     MediaHandle handle, int64_t frameNumber, ResolutionTier tier,
-    FramePolicy policy, bool singleFrameMedia)
+    FramePolicy policy, bool singleFrameMedia, bool gpuConvert)
 {
     switch (policy) {
     case FramePolicy::ExactBlocking: {
@@ -81,7 +81,7 @@ std::shared_ptr<CachedFrame> MediaPool::fetchForPolicy(
         // the PREVIOUS frame → duplication / stutter) and decodes the exact
         // frame inline on the export decoder.
         frame = getFrame(handle, frameNumber, tier,
-                         /*scrubMode=*/true, /*forceExact=*/true);
+                         /*scrubMode=*/true, /*forceExact=*/true, gpuConvert);
         if (frame && frame->tier != tier) {
             // Compositing a lower tier at the full viewport is visibly
             // blurry. Nothing better exists for THIS frame; queue the right

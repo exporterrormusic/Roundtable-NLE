@@ -5,6 +5,7 @@
 
 #include "MediaPool.h"
 #include "MediaPoolPrefetchInternal.h"
+#include "MediaPoolPrefetchGpu.h"
 #include "playback/FrameFallbackPolicy.h"
 #include "ExportStageTimes.h"
 
@@ -151,7 +152,7 @@ std::shared_ptr<ScrubDecoderSlot> MediaPool::getExportDecoder(MediaHandle handle
 
 std::shared_ptr<CachedFrame> MediaPool::getFrame(
     MediaHandle handle, int64_t frameNumber, ResolutionTier tier, bool scrubMode,
-    bool forceExact)
+    bool forceExact, bool gpuConvert)
 {
     auto perfGetT0 = std::chrono::high_resolution_clock::now();
     m_perf.totalRequests.fetch_add(1, std::memory_order_relaxed);
@@ -471,16 +472,25 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // resulting texture as Half and collided with the real Half cache entry.
     scrubTask.exportFullRes = forceExact && tier == ResolutionTier::Full;
 
-    // Scrub / on-demand / export(forceExact) decode.  Uses CPU convert
-    // (convertDecodedToCache) — the scrub bottleneck is the decode + per-frame
-    // overhead, NOT the YUV→RGB convert, so routing scrub through a GPU
-    // converter gave no speedup and made export's first frame read a stale
-    // GPU texture (readback raced the convert).  Steady playback still gets
-    // GPU-resident frames via the prefetch workers' per-worker path.
+    // Scrub decodes convert on the CPU: their cost is the decode itself, and
+    // a GPU convert gained nothing there. Export with gpuConvert (a hardware
+    // encoder) converts on the GPU, the prefetch workers' path: at export
+    // sizes the CPU conversion was the larger half of each source frame's
+    // cost. The export slot then waits for that GPU work before returning,
+    // so nothing can read the texture before it is written (a GPU convert
+    // without that wait once let export's first frame read a stale texture).
     std::shared_ptr<CachedFrame> result;
     if (forceExact) {
         ExportStageTimer timer(exportStageTimes().exactDecodeUs);
-        result = decodePrefetchFrame(scrubState, scrubTask);
+        if (gpuConvert && !scrubSlot->exportGpu && GpuContext::get().isInitialized()) {
+            auto gpu = std::make_shared<WorkerGpuState>();
+            if (initWorkerGpuState(*gpu, "export decoder"))
+                scrubSlot->exportGpu = std::move(gpu);
+        }
+        WorkerGpuState* gpu = gpuConvert ? scrubSlot->exportGpu.get() : nullptr;
+        result = decodePrefetchFrame(scrubState, scrubTask, gpu);
+        if (gpu)
+            gpu->waitForPending();
     } else {
         result = decodePrefetchFrame(scrubState, scrubTask);
     }

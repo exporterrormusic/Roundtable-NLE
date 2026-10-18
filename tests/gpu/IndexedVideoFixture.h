@@ -26,7 +26,9 @@ using rt::CachedFrame;
 constexpr int kW = 128, kH = 64, kFps = 30, kFrames = 150, kBits = 8, kGop = 45;
 
 /// 128x64 MPEG-4 mp4: GOP 45 with 2 B-frames; frame i shows i in binary.
-inline bool writeIndexedVideo(const std::string& path)
+/// `tagBt709` marks the stream BT.709 limited range; untagged, its 64-line
+/// height makes decoders assume SD BT.601 (and skip the GPU converters).
+inline bool writeIndexedVideo(const std::string& path, bool tagBt709 = false)
 {
     const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4);
     if (!codec) return false;
@@ -41,6 +43,12 @@ inline bool writeIndexedVideo(const std::string& path)
     enc->framerate = AVRational{kFps, 1};
     enc->gop_size = kGop;
     enc->max_b_frames = 2;
+    if (tagBt709) {
+        enc->color_primaries = AVCOL_PRI_BT709;
+        enc->color_trc       = AVCOL_TRC_BT709;
+        enc->colorspace      = AVCOL_SPC_BT709;
+        enc->color_range     = AVCOL_RANGE_MPEG;
+    }
     enc->bit_rate = 2'000'000;
     if (fmt->oformat->flags & AVFMT_GLOBALHEADER) enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     bool ok = avcodec_open2(enc, codec, nullptr) >= 0 &&

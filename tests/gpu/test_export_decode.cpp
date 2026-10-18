@@ -16,6 +16,7 @@
 
 #include <cache/FrameCache.h>
 #include <playback/MediaPool.h>
+#include "GpuContext.h"
 
 #include "IndexedVideoFixture.h"
 
@@ -173,6 +174,39 @@ TEST_F(ExportDecodeTest, ExactPlaybackHitTopsUpDecodeAhead)
            std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     EXPECT_TRUE(m_pool->isFrameCached(m_handle, 106, ResolutionTier::Full));
+}
+
+// With a GPU, the export decoder converts on the GPU (the prefetch workers'
+// path) and waits for that work before returning: every frame — the first
+// one after open, a backward jump, a forward skip — reads back as exactly
+// the requested picture, never a stale texture.
+TEST(ExportDecodeGpuTest, GpuConvertedExactFramesReadBackExactly)
+{
+    if (!GpuContext::get().init()) GTEST_SKIP() << "No Vulkan device";
+    const auto path = std::filesystem::temp_directory_path() / "rt_export_decode_gpu.mp4";
+    ASSERT_TRUE(writeIndexedVideo(path.string(), /*tagBt709=*/true));
+    {
+        auto cache = std::make_shared<FrameCache>(256ull * 1024 * 1024);
+        MediaPool pool(cache);
+        pool.onGpuContextReady();
+        const MediaHandle handle = pool.open(path);
+        ASSERT_NE(handle, InvalidMedia);
+        int gpuFrames = 0;
+        for (int target : {0, 1, 2, 40, 41, 130, 12, 13, 90, 92, 94}) {
+            auto frame = pool.getFrame(handle, target, ResolutionTier::Full,
+                                       /*scrubMode=*/true, /*forceExact=*/true,
+                                       /*gpuConvert=*/true);
+            ASSERT_TRUE(frame) << "frame " << target;
+            if (frame->gpuReady) ++gpuFrames;
+            ASSERT_TRUE(frame->ensurePixels()) << "frame " << target;
+            EXPECT_EQ(frameIndexOf(frame.get()), target);
+        }
+        EXPECT_GT(gpuFrames, 0) << "export decodes never took the GPU path";
+        pool.releaseExportDecoders();
+    }
+    GpuContext::get().shutdown();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }
 
 #endif

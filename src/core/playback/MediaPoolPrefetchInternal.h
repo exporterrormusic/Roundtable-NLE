@@ -257,6 +257,7 @@ inline void retireSlotLocked(ScrubDecoderSlot& slot)
     slot.state.decoder.reset();
     slot.state.lastDecodedFrame = -1;
     slot.lastExactFrame.reset();
+    slot.exportGpu.reset();   // waits for its pending GPU work
 }
 
 inline bool reopenPrefetchDecoderAsSoftware(PrefetchDecoderState& state,

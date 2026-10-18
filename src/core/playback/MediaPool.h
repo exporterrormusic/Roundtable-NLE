@@ -175,6 +175,9 @@ struct FrameRequest
     int64_t        frame{0};
     ResolutionTier tier{ResolutionTier::Full};
     FramePolicy    policy{FramePolicy::BestEffort};
+    /// ExactBlocking: convert the decoded picture on the GPU (see
+    /// RenderSnapshot::gpuSourceConvert).
+    bool           gpuConvert{false};
 };
 
 struct FrameResult
@@ -269,6 +272,9 @@ struct ScrubDecoderSlot
     /// source frame repeats when a 24p clip sits in a 30p sequence or a clip
     /// is slowed down; answering the repeat from here saves a keyframe seek.
     std::shared_ptr<CachedFrame> lastExactFrame;
+    /// Export slots only: GPU state for converting decoded pictures on the
+    /// GPU (the prefetch workers' path) instead of swscale on the CPU.
+    std::shared_ptr<WorkerGpuState> exportGpu;
 };
 
 class MediaPool
@@ -387,7 +393,8 @@ public:
         MediaHandle handle, int64_t frameNumber,
         ResolutionTier tier = ResolutionTier::Full,
         bool scrubMode = false,
-        bool forceExact = false);
+        bool forceExact = false,
+        bool gpuConvert = false);
 
     /// Non-blocking frame access for playback.
     /// Returns a cached frame (exact or nearby) WITHOUT ever decoding inline.
@@ -614,7 +621,7 @@ private:
     /// short-circuits to the CPU path on null + feature-flag-off.
     std::shared_ptr<CachedFrame> fetchForPolicy(
         MediaHandle handle, int64_t frameNumber, ResolutionTier tier,
-        FramePolicy policy, bool singleFrameMedia);
+        FramePolicy policy, bool singleFrameMedia, bool gpuConvert);
 
     std::shared_ptr<CachedFrame> decodePrefetchFrame(
         PrefetchDecoderState& state, const PrefetchTask& task,

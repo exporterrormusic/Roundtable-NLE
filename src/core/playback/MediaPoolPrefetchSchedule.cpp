@@ -312,48 +312,16 @@ void MediaPool::prefetchWorker(int workerId)
     // until init succeeds, after which the GPU-resident decode path
     // becomes eligible.  This avoids any worker-restart dance.
     WorkerGpuState wgs;
+    const std::string wgsOwner = "prefetch[" + std::to_string(workerId) + "]";
+    bool wgsWarned = false;
     auto tryInitWgs = [&]() {
-        if (wgs.ready()) return;
-        if (!GpuContext::get().isInitialized()) return;
-        auto& dev = GpuContext::get().device();
-        const auto& qf = dev.queueFamilies();
-        const uint32_t computeFamily =
-            qf.compute.value_or(qf.graphics.value_or(0));
-        if (wgs.cmdPool.handle() == VK_NULL_HANDLE) {
-            if (!wgs.cmdPool.create(dev.handle(), computeFamily)) {
-                // Surface as warn so we notice; retry won't help if the
-                // device is wedged.  Mark the worker permanently CPU-only.
-                static thread_local bool s_warned = false;
-                if (!s_warned) {
-                    spdlog::warn("MediaPool prefetch[{}]: per-worker "
-                                 "CommandPool create failed", workerId);
-                    s_warned = true;
-                }
-                return;
-            }
-            wgs.device = dev.handle();
-        }
-        if (wgs.signalSem == VK_NULL_HANDLE) {
-            VkSemaphoreCreateInfo semInfo{};
-            semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            const VkResult semRc = vkCreateSemaphore(dev.handle(), &semInfo,
-                                                     nullptr, &wgs.signalSem);
-            if (semRc != VK_SUCCESS) {
-                static thread_local bool s_warned = false;
-                if (!s_warned) {
-                    spdlog::warn("MediaPool prefetch[{}]: vkCreateSemaphore "
-                                 "failed ({})", workerId,
-                                 static_cast<int>(semRc));
-                    s_warned = true;
-                }
-                wgs.signalSem = VK_NULL_HANDLE;
-                return;
-            }
-        }
-        if (wgs.ready()) {
-            spdlog::debug("MediaPool prefetch[{}]: WorkerGpuState ready "
-                         "— GPU-resident decode path now eligible", workerId);
-        }
+        if (wgs.ready() || wgsWarned || !GpuContext::get().isInitialized()) return;
+        // A failure here is permanent (a wedged device): warn once, stay CPU.
+        if (!initWorkerGpuState(wgs, wgsOwner.c_str()))
+            wgsWarned = true;
+        else
+            spdlog::debug("MediaPool {}: WorkerGpuState ready "
+                          "— GPU-resident decode path now eligible", wgsOwner);
     };
     tryInitWgs();
 

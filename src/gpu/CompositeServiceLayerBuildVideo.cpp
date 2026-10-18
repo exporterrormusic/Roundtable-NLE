@@ -47,7 +47,7 @@ namespace rt {
 FrameResult CompositeService::resolveMediaFrame(
     MediaHandle handle, int64_t frameNumber, ResolutionTier tier,
     bool scrubMode, bool forceFullResolution,
-    bool exactCacheOnly, bool stillMode) const
+    bool exactCacheOnly, bool stillMode, bool gpuSourceConvert) const
 {
     if (!m_mediaPool)
         return {};
@@ -72,7 +72,8 @@ FrameResult CompositeService::resolveMediaFrame(
         : exactCacheOnly    ? FramePolicy::ExactCacheOnly
         : scrubMode         ? FramePolicy::Scrub
                             : FramePolicy::BestEffort;
-    return m_mediaPool->requestFrame({handle, frameNumber, tier, policy});
+    return m_mediaPool->requestFrame(
+        {handle, frameNumber, tier, policy, gpuSourceConvert});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
