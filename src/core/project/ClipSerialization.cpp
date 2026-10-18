@@ -43,7 +43,7 @@ namespace rt {
 //
 // 2026-05-28 Wells migration: remap all old Wells paths to HEVC
 // stacked-alpha (NVDEC hardware decode, no chroma key needed).
-static std::string resolveVideoPath(const std::string& path)
+std::string resolveVideoPath(const std::string& path)
 {
     if (path.empty()) return path;
     namespace fs = std::filesystem;

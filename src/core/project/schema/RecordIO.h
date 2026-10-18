@@ -98,6 +98,8 @@ public:
     }
     explicit RecordReader(const std::vector<uint8_t>& data)
         : RecordReader(data.data(), data.size()) {}
+    /// The reader points into the bytes; a temporary would dangle.
+    explicit RecordReader(std::vector<uint8_t>&&) = delete;
 
     /// Move to the next field (skipping whatever of the current one was not
     /// read). False at the end of the record or on malformed input.

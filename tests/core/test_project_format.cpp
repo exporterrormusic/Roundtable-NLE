@@ -48,6 +48,7 @@
 #include "project/BinaryIO.h"
 #include "project/ClipSerialization.h"
 #include "project/schema/LeafSchemas.h"
+#include "project/schema/ClipSchemas.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -882,4 +883,102 @@ TEST(LeafSchemas, TheAudioFxChainKeepsEveryProcessor)
     record::RecordWriter again;
     record::writeFxChain(again, 1, back);
     EXPECT_EQ(again.data(), w.data());
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  Clip schemas: every clip, taken through a v48 record and back, writes the
+//  same legacy (v47) bytes as before. The legacy writer is independent of
+//  the schemas, so this proves no saved field was dropped or changed.
+// ═════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+std::vector<uint8_t> legacyClipBytes(const Clip& clip)
+{
+    BinaryWriter w;
+    rt::writeClip(w, clip);
+    return w.data();
+}
+
+/// Every clip of `project` through a record; returns how many went through.
+size_t expectClipsSurviveRecords(const Project& project)
+{
+    size_t count = 0;
+    for (size_t si = 0; si < project.sequenceCount(); ++si) {
+        const Timeline* tl = project.sequence(si);
+        for (size_t ti = 0; ti < tl->trackCount(); ++ti) {
+            for (size_t ci = 0; ci < tl->track(ti)->clipCount(); ++ci) {
+                const Clip& clip = *tl->track(ti)->clip(ci);
+                const std::vector<uint8_t> bytes = record::clipBytes(clip);
+                record::RecordReader r(bytes);
+                const auto back = record::readClip(r);
+                if (!back) {
+                    ADD_FAILURE() << "clip " << clip.id() << " (type "
+                                  << static_cast<int>(clip.clipType()) << ") did not load";
+                    continue;
+                }
+                EXPECT_TRUE(r.ok());
+                const auto expected = legacyClipBytes(clip);
+                const auto actual = legacyClipBytes(*back);
+                EXPECT_TRUE(actual == expected)
+                    << "clip " << clip.id() << " type " << static_cast<int>(clip.clipType())
+                    << ": " << firstDifference(expected, actual);
+                EXPECT_TRUE(record::clipBytes(*back) == bytes) << "clip " << clip.id();
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
+} // namespace
+
+TEST(ClipSchemas, EveryClipOfTheEverythingProjectSurvivesARecord)
+{
+    const auto project = makeEverythingProject();
+    EXPECT_EQ(expectClipsSurviveRecords(*project), 11u);
+}
+
+TEST(ClipSchemas, EveryClipOfTheCorpusSurvivesARecord)
+{
+    const std::vector<fs::path> files = corpusFiles();
+    if (files.empty())
+        GTEST_SKIP() << "no project corpus (set ROUNDTABLE_PROJECT_CORPUS)";
+    const ProjectSerializer serializer;
+    size_t clips = 0;
+    for (const fs::path& file : files) {
+        SCOPED_TRACE(pathToUtf8(file));
+        const auto project = serializer.deserialize(readFile(file));
+        ASSERT_NE(project, nullptr);
+        clips += expectClipsSurviveRecords(*project);
+        if (HasFailure()) break;   // one file's report is enough
+    }
+    std::printf("[corpus] %zu clips through records\n", clips);
+}
+
+TEST(ClipSchemas, AClipOfAnUnknownTypeIsLeftOut)
+{
+    record::RecordWriter w;
+    w.writeVarint(1, 200);   // a clip type from a newer build
+    w.writeVarint(2, 77);
+    record::RecordReader r(w.data());
+    EXPECT_EQ(record::readClip(r), nullptr);
+    EXPECT_TRUE(r.ok());
+
+    record::RecordWriter untyped;
+    untyped.writeString(3, "no type field");
+    record::RecordReader u(untyped.data());
+    EXPECT_EQ(record::readClip(u), nullptr);
+}
+
+TEST(ClipSchemas, AReloadedClipIdIsNotHandedOutAgain)
+{
+    VideoClip clip;
+    clip.setId(uint64_t{1} << 40);
+    const std::vector<uint8_t> bytes = record::clipBytes(clip);
+    record::RecordReader r(bytes);
+    const auto back = record::readClip(r);
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(back->id(), clip.id());
+    EXPECT_GT(VideoClip{}.id(), clip.id());
 }
