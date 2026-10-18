@@ -75,6 +75,18 @@ void TransformOverlayWidget::beginMaskDrag(int maskIndex, int handle, QPointF wi
     m_drag = std::make_shared<OverlayMaskDrag>(*this, maskIndex, handle, widgetPos);
 }
 
+bool TransformOverlayWidget::cancelActiveDrag()
+{
+    if (!m_drag) return false;
+    const std::shared_ptr<TransformOverlayDrag> drag = std::exchange(m_drag, nullptr);
+    drag->cancel();
+    if (m_editDragOpen) {
+        m_editDragOpen = false;
+        emit editDragCancelled();
+    }
+    return true;
+}
+
 void TransformOverlayWidget::mousePressEvent(QMouseEvent* event)
 {
     handleMousePress(event);
@@ -712,6 +724,19 @@ bool TransformOverlayWidget::handleInlineTitlerShortcut(const QKeyEvent* ke)
 
 bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
 {
+    // Esc cancels a drag in progress, as in the timeline. Watched app-wide
+    // because keyboard focus is rarely on the overlay; inert without a drag.
+    if ((event->type() == QEvent::KeyPress
+         || event->type() == QEvent::ShortcutOverride)
+        && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape && m_drag) {
+        if (event->type() == QEvent::ShortcutOverride) {
+            event->accept();       // deliver it as a KeyPress instead
+            return true;
+        }
+        cancelActiveDrag();
+        return true;
+    }
+
     // A release can be lost when Windows deactivates or tears down the native
     // viewport's mouse grab. Finish through the normal release path so undo
     // bookkeeping is retained, then drop application-wide cursor state.

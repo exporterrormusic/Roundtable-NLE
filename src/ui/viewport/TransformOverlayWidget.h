@@ -295,6 +295,13 @@ public:
     /// Get current overlay info.
     [[nodiscard]] const TransformOverlayInfo& transformOverlay() const noexcept { return m_overlay; }
 
+    /// A drag is in progress (press to release).
+    [[nodiscard]] bool isDragInProgress() const noexcept { return m_drag != nullptr; }
+    /// Esc mid-drag: put back what the drag changed and end it without a
+    /// release (editDragCancelled instead of editDragEnded). False when no
+    /// drag is in progress.
+    bool cancelActiveDrag();
+
     /// Program Monitor crop is a Ctrl-modified edge gesture. Plain edge/corner
     /// interaction remains reserved for transform resizing.
     [[nodiscard]] static bool cropGestureRequested(
@@ -431,6 +438,9 @@ signals:
     /// Pen/shape mask drawing spans several clicks and is not bracketed.
     void editDragStarted();
     void editDragEnded();
+    /// The drag that editDragStarted opened was cancelled (Esc): put back
+    /// what it changed and record nothing. Sent instead of editDragEnded.
+    void editDragCancelled();
 
 protected:
     void paintEvent(QPaintEvent* event) override;

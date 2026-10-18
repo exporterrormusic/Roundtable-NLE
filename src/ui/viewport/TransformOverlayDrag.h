@@ -8,7 +8,10 @@
  * *Changed signals, or the mask/keyframe it edits) and reports the whole
  * drag once on release (*Finished), which the workspace records as one undo
  * step. The overlay brackets the drags that edit the clip with
- * editDragStarted/editDragEnded.
+ * editDragStarted/editDragEnded. Esc cancels a drag instead: it puts back
+ * what it changed in the overlay (and in masks/keyframes it edits directly)
+ * and the overlay sends editDragCancelled, on which the workspace restores
+ * the sequence and records nothing.
  *
  * The drags are friends of TransformOverlayWidget and work on its state.
  */
@@ -37,6 +40,8 @@ public:
     /// held, or what it edits is gone); the overlay treats it as a hover.
     virtual bool move(QMouseEvent* event) = 0;
     virtual void release(QMouseEvent* event) = 0;
+    /// Esc: put back what the drag changed. Nothing is reported.
+    virtual void cancel() = 0;
 };
 
 /// Middle button: pans the viewport.
@@ -47,6 +52,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::Pan; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;
@@ -64,6 +70,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return m_kind; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     bool moveBody(QMouseEvent* event);
@@ -89,6 +96,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::MoveAnchor; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;
@@ -106,6 +114,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::CropEdge; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;
@@ -122,6 +131,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::DragMotionHandle; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;
@@ -141,6 +151,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::DragMaskPoint; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;
@@ -158,6 +169,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::DrawMaskPoint; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;
@@ -173,6 +185,7 @@ public:
     [[nodiscard]] Mode mode() const noexcept override { return Mode::DrawMaskShape; }
     bool move(QMouseEvent* event) override;
     void release(QMouseEvent* event) override;
+    void cancel() override;
 
 private:
     TransformOverlayWidget& m_w;

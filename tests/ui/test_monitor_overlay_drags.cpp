@@ -7,6 +7,8 @@
  * as one undo step between editDragStarted and editDragEnded. Each test pins
  * the exact signal sequence a drag produces (what, in which order, with which
  * values), so a refactor of the overlay's drag code can be checked against it.
+ * Esc mid-drag cancels it: the overlay puts back what the drag changed and
+ * sends editDragCancelled instead of a *Finished and editDragEnded.
  *
  * The rig: a 640x360 viewport showing a 1920x1080 sequence, so one widget
  * pixel is 3 reference pixels. The clip box is a 1920x1080 source at 50%:
@@ -24,6 +26,7 @@
 #include "viewport/VulkanViewport.h"
 
 #include <QApplication>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QString>
 
@@ -118,6 +121,7 @@ struct OverlayRig
         using W = TransformOverlayWidget;
         QObject::connect(o, &W::editDragStarted, [this] { log.push_back("started"); });
         QObject::connect(o, &W::editDragEnded, [this] { log.push_back("ended"); });
+        QObject::connect(o, &W::editDragCancelled, [this] { log.push_back("cancelled"); });
         QObject::connect(o, &W::transformPositionChanged, [this](float x, float y) {
             log.push_back("pos " + num(x) + " " + num(y));
         });
@@ -653,5 +657,169 @@ TEST(MonitorOverlayDrags, ReleaseWithoutAPressDoesNothing)
     OverlayRig rig;
     rig.overlay->move({350, 190});
     rig.overlay->release({350, 190});
+    EXPECT_TRUE(rig.log.empty());
+}
+
+// ── Esc cancels a drag ──────────────────────────────────────────────────
+// The drag puts back what it changed, reports no *Finished, and closes its
+// bracket with editDragCancelled (the workspace then restores the sequence
+// and records nothing). The release that follows does nothing.
+
+namespace {
+
+void pressEscape(QObject* target)
+{
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(target, &press);
+}
+
+} // namespace
+
+TEST(MonitorOverlayDrags, EscapeMidBodyDragPutsTheBoxBack)
+{
+    ensureApp();
+    OverlayRig rig;
+    rig.overlay->press({320, 180});
+    rig.overlay->move({352, 196});
+    pressEscape(rig.overlay.get());
+
+    EXPECT_EQ(rig.log, (OverlayRig::Log{
+        "started", "pos " + num(32 * kRefPerPx) + " " + num(16 * kRefPerPx),
+        "cancelled"}));
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().posX, 0.0f);
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().posY, 0.0f);
+    EXPECT_FALSE(rig.overlay->isDragInProgress());
+
+    rig.log.clear();
+    rig.overlay->move({360, 200});
+    rig.overlay->release({360, 200});
+    EXPECT_TRUE(rig.log.empty());
+}
+
+TEST(MonitorOverlayDrags, EscapeMidScaleOrRotatePutsTheBoxBack)
+{
+    ensureApp();
+    OverlayRig rig;
+    rig.overlay->press({156, 86});
+    rig.overlay->move({116, 66});
+    pressEscape(rig.overlay.get());
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().scaleX, 0.5f);
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().scaleY, 0.5f);
+
+    rig.overlay->press({140, 70});
+    rig.overlay->move({150, 50});
+    pressEscape(rig.overlay.get());
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().rotation, 0.0f);
+    EXPECT_EQ(rig.log.back(), "cancelled");
+}
+
+TEST(MonitorOverlayDrags, EscapeMidAnchorDragPutsTheAnchorBack)
+{
+    ensureApp();
+    OverlayRig rig;
+    rig.box.scaleX = rig.box.scaleY = 1.0f;
+    rig.box.useContentRect = true;
+    rig.box.contentL = 480.0f;
+    rig.box.contentT = 270.0f;
+    rig.box.contentR = 1440.0f;
+    rig.box.contentB = 810.0f;
+    rig.overlay->setTransformOverlay(rig.box);
+    rig.overlay->press(kCentre, Qt::ControlModifier);
+    rig.overlay->move({352, 196}, Qt::ControlModifier);
+    pressEscape(rig.overlay.get());
+
+    EXPECT_EQ(rig.log.back(), "cancelled");
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().anchorX, 0.0f);
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().anchorY, 0.0f);
+}
+
+TEST(MonitorOverlayDrags, EscapeMidCropDragPutsTheCropBack)
+{
+    ensureApp();
+    OverlayRig rig;
+    rig.box.cropEnabled = true;
+    rig.box.cropR = 20.0f;
+    rig.overlay->setTransformOverlay(rig.box);
+    rig.overlay->press({160, 180}, Qt::ControlModifier);
+    rig.overlay->move({192, 180}, Qt::ControlModifier);
+    pressEscape(rig.overlay.get());
+
+    EXPECT_EQ(rig.log, (OverlayRig::Log{
+        "started", "crop 10.00 20.00 0.00 0.00", "cancelled"}));
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().cropL, 0.0f);
+    EXPECT_FLOAT_EQ(rig.overlay->transformOverlay().cropR, 20.0f);
+}
+
+TEST(MonitorOverlayDrags, EscapeMidMaskDragPutsTheMaskBack)
+{
+    ensureApp();
+    MaskRig rig;
+    rig.overlay->press({192, 108});
+    rig.overlay->move({224, 126});
+    pressEscape(rig.overlay.get());
+
+    EXPECT_EQ(rig.log, (OverlayRig::Log{"started", "mask live", "mask live", "cancelled"}));
+    EXPECT_NEAR(rig.masks[0].base.vertices[0].x, 0.3f, 0.001f);
+    EXPECT_NEAR(rig.masks[0].base.vertices[0].y, 0.3f, 0.001f);
+}
+
+TEST(MonitorOverlayDrags, EscapeMidMotionHandleDragPutsTheHandleBackAndRecordsNothing)
+{
+    ensureApp();
+    MotionRig rig;
+    rig.overlay->press({384, 180});
+    rig.overlay->move({384, 212});
+    pressEscape(rig.overlay.get());
+    rig.overlay->release({384, 212});
+
+    EXPECT_EQ(rig.log, (OverlayRig::Log{"started", "motion live", "motion live", "cancelled"}));
+    EXPECT_FLOAT_EQ(rig.x.keyframe(0).spatialOutX, 192.0f);
+    EXPECT_FLOAT_EQ(rig.y.keyframe(0).spatialOutY, 0.0f);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(MonitorOverlayDrags, EscapeMidPanPutsTheViewBack)
+{
+    ensureApp();
+    OverlayRig rig;
+    const float panX = rig.viewport.viewPanX();
+    rig.overlay->press({320, 180}, Qt::NoModifier, Qt::MiddleButton);
+    rig.overlay->move({340, 190}, Qt::NoModifier, Qt::MiddleButton);
+    pressEscape(rig.overlay.get());
+
+    EXPECT_TRUE(rig.log.empty());
+    EXPECT_FLOAT_EQ(rig.viewport.viewPanX(), panX);
+}
+
+TEST(MonitorOverlayDrags, EscapeMidShapeDrawCreatesNoMask)
+{
+    ensureApp();
+    MaskRig rig;
+    rig.masks.clear();
+    rig.overlay->setActiveMaskIndex(-1);
+    rig.overlay->setEditTool(11);
+    rig.overlay->press({100, 100});
+    rig.overlay->move({200, 160});
+    pressEscape(rig.overlay.get());
+    rig.overlay->release({200, 160});
+
+    EXPECT_TRUE(rig.log.empty());
+    EXPECT_TRUE(rig.masks.empty());
+}
+
+TEST(MonitorOverlayDrags, EscapeWithoutADragIsLeftAlone)
+{
+    ensureApp();
+    OverlayRig rig;
+    struct KeyCounter final : QWidget
+    {
+        int escapes = 0;
+        void keyPressEvent(QKeyEvent* e) override
+        {
+            if (e->key() == Qt::Key_Escape) ++escapes;
+        }
+    } other;
+    pressEscape(&other);
+    EXPECT_EQ(other.escapes, 1);
     EXPECT_TRUE(rig.log.empty());
 }

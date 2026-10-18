@@ -126,6 +126,29 @@ void OverlayController::wireTransformOverlaySignals()
         connect(ov, &TransformOverlayWidget::editDragEnded, this, [this]() {
             m_dragEdit.commit();
         });
+        // Esc mid-drag: put the sequence back exactly as the drag found it
+        // (the gesture's snapshot, so keyframes the drag added go too) and
+        // record nothing. The *Finished handlers never ran, so drop the
+        // per-drag state they would have cleared.
+        connect(ov, &TransformOverlayWidget::editDragCancelled, this, [this]() {
+            m_scaleDragActive = false;
+            m_groupMoveActive = false;
+            m_groupMoveStart.clear();
+            m_dragEdit.cancel();
+            if (m_ws->isDestroying()) return;
+            updateTransformOverlay();
+            if (m_ws->selection().clip) {
+                auto* track = m_ws->timeline()
+                    ? m_ws->timeline()->track(m_ws->selection().trackIdx) : nullptr;
+                if (m_ws->propertiesPanel())
+                    m_ws->propertiesPanel()->setClip(m_ws->selection().clip, track);
+                if (m_ws->effectControlsPanel())
+                    m_ws->effectControlsPanel()->setClip(m_ws->selection().clip, track);
+                if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->refresh();
+            }
+            m_ws->invalidateCompositeCache();
+            if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+        });
 
         // -- Mask / motion-path live updates: refresh composite during drag --
         connect(ov, &TransformOverlayWidget::maskLiveUpdate,

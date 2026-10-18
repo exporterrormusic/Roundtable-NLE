@@ -278,4 +278,17 @@ void OverlayMaskDrag::release(QMouseEvent* /*event*/)
     m_w.applyCursor(Qt::ArrowCursor);
 }
 
+void OverlayMaskDrag::cancel()
+{
+    // The mask list is the clip's own, so put the mask back here (the
+    // workspace's gesture, when there is one, restores the same mask).
+    if (m_w.m_masks && m_maskIndex >= 0 &&
+        static_cast<size_t>(m_maskIndex) < m_w.m_masks->size()) {
+        (*m_w.m_masks)[static_cast<size_t>(m_maskIndex)] = m_startMask;
+        emit m_w.maskLiveUpdate();
+    }
+    m_w.applyCursor(Qt::ArrowCursor);
+    m_w.update();
+}
+
 } // namespace rt

@@ -51,6 +51,13 @@ void OverlayPanDrag::release(QMouseEvent* /*event*/)
     m_w.applyCursor(Qt::ArrowCursor);
 }
 
+void OverlayPanDrag::cancel()
+{
+    if (m_w.m_vulkanVp) m_w.m_vulkanVp->setViewPan(m_startPanX, m_startPanY);
+    m_w.applyCursor(Qt::ArrowCursor);
+    m_w.update();
+}
+
 // ── Move / scale / rotate the box ───────────────────────────────────────
 
 OverlayTransformDrag::OverlayTransformDrag(TransformOverlayWidget& w, Mode kind,
@@ -267,6 +274,16 @@ void OverlayTransformDrag::release(QMouseEvent* /*event*/)
                                    newPX, newPY, newSX, newSY, newRot);
 }
 
+void OverlayTransformDrag::cancel()
+{
+    setEditPosition(m_w.m_overlay, m_startPosX, m_startPosY);
+    setEditScale(m_w.m_overlay, m_startScX, m_startScY);
+    setEditRotation(m_w.m_overlay, m_startRot);
+    m_w.syncMaskOwnerToEditedOuterTransform();
+    m_w.applyCursor(Qt::ArrowCursor);
+    m_w.update();
+}
+
 // ── Anchor point ────────────────────────────────────────────────────────
 // The anchor is the rotation/scale pivot (Premiere/AE-style). Two
 // coordinate conventions:
@@ -327,6 +344,14 @@ void OverlayAnchorDrag::release(QMouseEvent* /*event*/)
     const float newY = m_w.m_overlay.anchorY;
     m_w.applyCursor(Qt::ArrowCursor);
     emit m_w.transformAnchorDragFinished(oldX, oldY, newX, newY);
+}
+
+void OverlayAnchorDrag::cancel()
+{
+    m_w.m_overlay.anchorX = m_startAnchorX;
+    m_w.m_overlay.anchorY = m_startAnchorY;
+    m_w.applyCursor(Qt::ArrowCursor);
+    m_w.update();
 }
 
 // ── Crop edge ───────────────────────────────────────────────────────────
@@ -392,6 +417,16 @@ void OverlayCropDrag::release(QMouseEvent* /*event*/)
     const float newT = m_w.m_overlay.cropT, newB = m_w.m_overlay.cropB;
     m_w.applyCursor(Qt::ArrowCursor);
     emit m_w.cropDragFinished(oldL, oldR, oldT, oldB, newL, newR, newT, newB);
+}
+
+void OverlayCropDrag::cancel()
+{
+    m_w.m_overlay.cropL = m_startCrop[0];
+    m_w.m_overlay.cropR = m_startCrop[1];
+    m_w.m_overlay.cropT = m_startCrop[2];
+    m_w.m_overlay.cropB = m_startCrop[3];
+    m_w.applyCursor(Qt::ArrowCursor);
+    m_w.update();
 }
 
 // ── Motion-path spatial handle ──────────────────────────────────────────
@@ -500,6 +535,29 @@ void OverlayMotionHandleDrag::release(QMouseEvent* /*event*/)
     m_w.applyCursor(Qt::ArrowCursor);
 }
 
+void OverlayMotionHandleDrag::cancel()
+{
+    // The handles live on the clip's keyframes, so put them back here (the
+    // workspace's gesture, when there is one, restores the same values).
+    if (m_w.m_motionX && m_w.m_motionY) {
+        for (size_t i = 0; i < m_w.m_motionX->keyframeCount(); ++i)
+            if (m_w.m_motionX->keyframe(i).time == m_kfTime) {
+                m_w.m_motionX->keyframe(i).spatialInX  = m_origInX;
+                m_w.m_motionX->keyframe(i).spatialOutX = m_origOutX;
+                break;
+            }
+        for (size_t i = 0; i < m_w.m_motionY->keyframeCount(); ++i)
+            if (m_w.m_motionY->keyframe(i).time == m_kfTime) {
+                m_w.m_motionY->keyframe(i).spatialInY  = m_origInY;
+                m_w.m_motionY->keyframe(i).spatialOutY = m_origOutY;
+                break;
+            }
+        emit m_w.motionPathLiveUpdate();
+    }
+    m_w.applyCursor(Qt::ArrowCursor);
+    m_w.update();
+}
+
 // ── New masks ───────────────────────────────────────────────────────────
 
 OverlayPenPointDrag::OverlayPenPointDrag(TransformOverlayWidget& w, QPointF press,
@@ -550,6 +608,12 @@ void OverlayPenPointDrag::release(QMouseEvent* event)
     m_w.update();
 }
 
+void OverlayPenPointDrag::cancel()
+{
+    // As Esc between clicks: the whole unfinished path is dropped.
+    m_w.cancelPenMask();
+}
+
 bool OverlayShapeDrag::move(QMouseEvent* event)
 {
     if (!m_w.m_shapeDrawing || !(event->buttons() & Qt::LeftButton)) return false;
@@ -563,6 +627,12 @@ void OverlayShapeDrag::release(QMouseEvent* event)
 {
     m_w.updateShapeMask(event->position(), event->modifiers());
     m_w.commitShapeMask();
+    m_w.applyCursor(Qt::CrossCursor);
+}
+
+void OverlayShapeDrag::cancel()
+{
+    m_w.cancelShapeMask();
     m_w.applyCursor(Qt::CrossCursor);
 }
 
