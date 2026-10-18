@@ -352,7 +352,7 @@ void TransformOverlayWidget::drawCropOverlay(QPainter& painter)
     // controls themselves only appear while Ctrl is held (or for the duration
     // of an already-started crop drag). This keeps ordinary transform handles
     // visually and interactively unambiguous.
-    const bool showCropControls = (m_dragMode == DragMode::CropEdge)
+    const bool showCropControls = (dragMode() == DragMode::CropEdge)
         || cropGestureRequested(QGuiApplication::keyboardModifiers());
 
     QPointF c[4];
@@ -683,7 +683,7 @@ void TransformOverlayWidget::drawMaskOverlay(QPainter& painter)
 
         const auto& verts = m_penDraft.base.vertices;
         const QPointF last = maskLocalToWidget(verts.back().x, verts.back().y);
-        if (m_dragMode != DragMode::DrawMaskPoint)
+        if (dragMode() != DragMode::DrawMaskPoint)
             painter.drawLine(last, m_penHoverWidget);
 
         for (size_t i = 0; i < verts.size(); ++i) {

@@ -257,6 +257,8 @@ add_library(roundtable_ui STATIC
     viewport/TransformOverlayDraw.cpp
     viewport/TransformOverlayMask.cpp
     viewport/TransformOverlayInput.cpp
+    viewport/TransformOverlayDrag.cpp
+    viewport/TransformOverlayMaskDrag.cpp
     viewport/TransformOverlayInlineText.cpp
 )
 

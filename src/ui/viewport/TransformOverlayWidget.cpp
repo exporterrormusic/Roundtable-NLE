@@ -193,7 +193,7 @@ void TransformOverlayWidget::clearTransformOverlay()
     m_hasMaskOwnerOverlay = false;
     m_maskOwnerFollowsPrimary = false;
     m_secondaryOverlays.clear();
-    m_dragMode = DragMode::None;
+    m_drag.reset();
     applyCursor(Qt::ArrowCursor);
     update();
 }

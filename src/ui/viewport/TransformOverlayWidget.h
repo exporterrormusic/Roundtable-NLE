@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <cmath>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -63,6 +64,7 @@ enum InlineTextMixedFlag : uint32_t
 
 class VulkanViewport;
 class CommandStack;
+class TransformOverlayDrag;
 template <typename T> class KeyframeTrack;
 
 /// Transparent overlay widget for transform gizmo + middle-mouse pan.
@@ -600,24 +602,22 @@ private:
     };
     /// True between editDragStarted and editDragEnded.
     bool m_editDragOpen{false};
-    DragMode m_dragMode{DragMode::None};
-    int      m_dragHandle{-1};
-    int      m_cropHandle{-1};          ///< 0=L,1=R,2=T,3=B during a CropEdge drag
-    float    m_dragStartCrop[4]{0, 0, 0, 0}; ///< L,R,T,B crop% snapshot at drag start
-    QPointF  m_dragStartWidget;
-    float    m_dragStartPosX{0.0f};
-    float    m_dragStartPosY{0.0f};
-    float    m_dragStartScX{1.0f};
-    float    m_dragStartScY{1.0f};
-    float    m_dragStartRot{0.0f};
-    float    m_dragStartAngle{0.0f}; ///< Angle from center at drag start (for rotation)
-    float    m_dragStartAnchorX{0.0f};
-    float    m_dragStartAnchorY{0.0f};
+    /// The drag in progress, press to release (TransformOverlayDrag.h).
+    /// Shared so a move can keep it alive while its signals end the drag.
+    std::shared_ptr<TransformOverlayDrag> m_drag;
+    [[nodiscard]] DragMode dragMode() const noexcept;
+    /// Start dragging mask `maskIndex`'s `handle` (INT_MAX: the whole mask).
+    void beginMaskDrag(int maskIndex, int handle, QPointF widgetPos);
 
-    // Pan state (middle mouse)
-    QPointF  m_panStartPos;
-    float    m_panStartVpX{0.0f};
-    float    m_panStartVpY{0.0f};
+    friend class TransformOverlayDrag;
+    friend class OverlayPanDrag;
+    friend class OverlayTransformDrag;
+    friend class OverlayAnchorDrag;
+    friend class OverlayCropDrag;
+    friend class OverlayMotionHandleDrag;
+    friend class OverlayMaskDrag;
+    friend class OverlayPenPointDrag;
+    friend class OverlayShapeDrag;
 
     // Safe area guides
     bool     m_showSafeAreas{false};
@@ -762,11 +762,6 @@ private:
     // Clip-local time for mask evaluation (geometry + keyframed scalars)
     int64_t m_maskTime{0};
 
-    // Mask drag state
-    int m_dragMaskIndex{-1};
-    int m_dragMaskHandle{-1};
-    OpacityMask m_dragStartMask{};
-
     // Mask hover state (for handle glow)
     int m_hoverMaskIndex{-1};
     int m_hoverMaskHandle{-1};
@@ -778,7 +773,6 @@ private:
     // symmetric Bezier handles; clicking the first point closes/commits.
     bool        m_penDrawing{false};
     OpacityMask m_penDraft{};
-    QPointF     m_penPressLocal{};
     QPointF     m_penHoverWidget{};
 
     // Interactive Ellipse/Rectangle Mask draft (preview-only until release).
@@ -811,14 +805,6 @@ private:
     /// Hit-test spatial bezier handles. Returns true and fills outKfIdx and
     /// outIsIn (true = incoming handle of the keyframe) when hit.
     bool hitTestMotionHandle(const QPointF& widgetPos, int& outKfIdx, bool& outIsIn) const;
-
-    // ── Spatial-handle drag state ────────────────────────────────────
-    int   m_dragMotionKfIdx{-1};
-    bool  m_dragMotionIsIn{false};
-    // Snapshots at drag start (used by the undo command pushed on release).
-    float m_dragOrigInX{0.0f},  m_dragOrigInY{0.0f};
-    float m_dragOrigOutX{0.0f}, m_dragOrigOutY{0.0f};
-    int64_t m_dragKfTime{0};
 };
 
 } // namespace rt

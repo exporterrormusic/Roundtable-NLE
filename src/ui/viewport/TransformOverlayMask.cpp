@@ -9,6 +9,8 @@
  */
 
 #include "viewport/TransformOverlayWidget.h"
+#include "viewport/TransformOverlayDrag.h"
+#include "viewport/TransformOverlayEdit.h"
 #include "viewport/VulkanViewport.h"
 #include "timeline/OpacityMask.h"
 
@@ -22,11 +24,13 @@
 
 #include <spdlog/spdlog.h>
 
+#include <memory>
+
 namespace rt {
 
-namespace {
-constexpr int kMaskTangentHandleBase = 10000;
+using overlay_edit::kMaskTangentHandleBase;
 
+namespace {
 QPointF sourceToDisplayUv(float u, float v, int rotation)
 {
     switch (((rotation % 360) + 360) % 360) {
@@ -631,10 +635,8 @@ void TransformOverlayWidget::beginPenPoint(const QPointF& widgetPos)
     vertex.x = static_cast<float>(local.x());
     vertex.y = static_cast<float>(local.y());
     m_penDraft.base.vertices.push_back(vertex);
-    m_penPressLocal = local;
     m_penHoverWidget = widgetPos;
-    m_dragStartWidget = widgetPos;
-    m_dragMode = DragMode::DrawMaskPoint;
+    m_drag = std::make_shared<OverlayPenPointDrag>(*this, widgetPos, local);
     update();
 }
 
@@ -651,7 +653,7 @@ bool TransformOverlayWidget::commitPenMask()
     m_activeMaskIndex = index;
     m_penDrawing = false;
     m_penDraft = OpacityMask{};
-    m_dragMode = DragMode::None;
+    m_drag.reset();
     emit maskCreated(index, committed);
     emit maskLiveUpdate();
     update();
@@ -663,8 +665,8 @@ void TransformOverlayWidget::cancelPenMask() noexcept
     if (!m_penDrawing) return;
     m_penDrawing = false;
     m_penDraft = OpacityMask{};
-    if (m_dragMode == DragMode::DrawMaskPoint)
-        m_dragMode = DragMode::None;
+    if (dragMode() == DragMode::DrawMaskPoint)
+        m_drag.reset();
     update();
 }
 
@@ -683,7 +685,7 @@ void TransformOverlayWidget::beginShapeMask(const QPointF& widgetPos)
     m_shapeDraft.base.height = 0.0f;
     m_shapePressWidget = widgetPos;
     m_shapeDrawing = true;
-    m_dragMode = DragMode::DrawMaskShape;
+    m_drag = std::make_shared<OverlayShapeDrag>(*this);
     update();
 }
 
@@ -748,8 +750,8 @@ bool TransformOverlayWidget::commitShapeMask()
     m_activeMaskIndex = index;
     m_shapeDrawing = false;
     m_shapeDraft = OpacityMask{};
-    if (m_dragMode == DragMode::DrawMaskShape)
-        m_dragMode = DragMode::None;
+    if (dragMode() == DragMode::DrawMaskShape)
+        m_drag.reset();
     emit maskCreated(index, committed);
     emit maskLiveUpdate();
     update();
@@ -761,8 +763,8 @@ void TransformOverlayWidget::cancelShapeMask() noexcept
     if (!m_shapeDrawing) return;
     m_shapeDrawing = false;
     m_shapeDraft = OpacityMask{};
-    if (m_dragMode == DragMode::DrawMaskShape)
-        m_dragMode = DragMode::None;
+    if (dragMode() == DragMode::DrawMaskShape)
+        m_drag.reset();
     update();
 }
 
@@ -781,11 +783,7 @@ bool TransformOverlayWidget::editExistingMaskWithPen(
         // the Pen Mask tool, matching Premiere's temporary direct-selection
         // behavior.
         if (handle >= kMaskTangentHandleBase) {
-            m_dragMode = DragMode::DragMaskPoint;
-            m_dragMaskIndex = maskIndex;
-            m_dragMaskHandle = handle;
-            m_dragStartMask = mask;
-            m_dragStartWidget = widgetPos;
+            beginMaskDrag(maskIndex, handle, widgetPos);
             m_activeMaskIndex = maskIndex;
             return true;
         }
@@ -825,11 +823,7 @@ bool TransformOverlayWidget::editExistingMaskWithPen(
             eraseVertex(mask.base);
             for (auto& key : mask.pathKeys) eraseVertex(key.geometry);
         } else {
-            m_dragMode = DragMode::DragMaskPoint;
-            m_dragMaskIndex = maskIndex;
-            m_dragMaskHandle = handle;
-            m_dragStartMask = mask;
-            m_dragStartWidget = widgetPos;
+            beginMaskDrag(maskIndex, handle, widgetPos);
             m_activeMaskIndex = maskIndex;
             return true;
         }
