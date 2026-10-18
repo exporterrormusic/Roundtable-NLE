@@ -117,6 +117,10 @@ protected:
     /// the CUDA hw-upload branch when active, else send m_frame directly.
     /// m_frame must already be filled by the caller.
     bool finishFrame(int64_t frameIndex);
+
+    /// Upload a software frame (the hw frames context's sw_format) to a CUDA
+    /// frame and send it. Only for m_hwAccel with a hw_frames_ctx.
+    bool uploadAndSend(AVFrame* software, int64_t frameIndex);
 #endif
 
     AVCodecContext* m_codecCtx{nullptr};

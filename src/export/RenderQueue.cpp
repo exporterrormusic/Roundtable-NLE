@@ -19,6 +19,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <exception>
@@ -32,6 +33,39 @@
 namespace rt {
 
 namespace {
+
+/// A small BGRA picture of an NV12 export frame for the export panel's
+/// preview: every `step`-th pixel, BT.709 limited range back to RGB.
+std::shared_ptr<CachedFrame> nv12PreviewFrame(const CachedFrame& src, uint32_t step)
+{
+    auto out = std::make_shared<CachedFrame>();
+    out->width  = std::max(1u, src.width / step);
+    out->height = std::max(1u, src.height / step);
+    out->stride = out->width * 4;
+    out->pixels.resize(static_cast<size_t>(out->stride) * out->height);
+    const size_t stride = src.nv12Stride;
+    const uint8_t* yPlane = src.nv12.get();
+    const uint8_t* uvPlane = yPlane + stride * src.height;
+    auto toByte = [](float v) {
+        return static_cast<uint8_t>(std::clamp(v + 0.5f, 0.0f, 255.0f));
+    };
+    for (uint32_t y = 0; y < out->height; ++y) {
+        const size_t sy = static_cast<size_t>(y) * step;
+        uint8_t* row = out->pixels.data() + static_cast<size_t>(y) * out->stride;
+        for (uint32_t x = 0; x < out->width; ++x) {
+            const size_t sx = static_cast<size_t>(x) * step;
+            const float luma = 1.16438f * (yPlane[sy * stride + sx] - 16.0f);
+            const uint8_t* c = uvPlane + (sy / 2) * stride + (sx / 2) * 2;
+            const float cb = c[0] - 128.0f;
+            const float cr = c[1] - 128.0f;
+            row[x * 4 + 0] = toByte(luma + 2.11240f * cb);
+            row[x * 4 + 1] = toByte(luma - 0.21325f * cb - 0.53291f * cr);
+            row[x * 4 + 2] = toByte(luma + 1.79274f * cr);
+            row[x * 4 + 3] = 255;
+        }
+    }
+    return out;
+}
 
 // Every immutable capture receives a non-zero generation. The composite
 // cache additionally hashes pixel-affecting timeline state, but this value
@@ -718,6 +752,19 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     }
     spdlog::info("RndQ[{}]: Step 2c — encoder ready", job.id);
 
+    // An 8-bit 4:2:0 encoder takes the composite as NV12, converted on the
+    // GPU: 1.5 bytes/pixel read back instead of 4, and no CPU colour
+    // conversion. The video snapshot carries the format to the compositor;
+    // a frame that still comes back BGRA (a cached, blank or 16F frame)
+    // takes the BGRA path.
+    const bool nv12Output = encoder->acceptsNv12() && !job.config.preserveAlpha;
+    std::shared_ptr<const ExportRenderSnapshot> videoSnapshot = job.renderSnapshot;
+    if (nv12Output && videoSnapshot) {
+        auto withFormat = std::make_shared<ExportRenderSnapshot>(*videoSnapshot);
+        withFormat->outputFormat = RenderOutputFormat::Nv12;
+        videoSnapshot = std::move(withFormat);
+    }
+
     // ── Step 3: Frame range ─────────────────────────────────────────
     spdlog::info("RndQ[{}]: Step 3 — frame range", job.id);
     int64_t startFrame = job.config.startFrame;
@@ -945,6 +992,42 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     int64_t     ptExpectedSrc = -1;
     const bool passthroughRequired = smartPlan.passthroughCount == totalFrames;
 
+    // After an encode call: fail the job if the encoder rejected frame f,
+    // else write whatever packets it produced (none while it fills its
+    // look-ahead, several when B-frames drain). False when the job failed.
+    auto collectEncoded = [&](bool gotPacket, int64_t submissionsBefore,
+                              int64_t f, const char* rejected) -> bool {
+        if (encoder->hasFatalError() ||
+            encoder->framesSubmitted() != submissionsBefore + 1) {
+            job.status = JobStatus::Failed;
+            job.error = encoder->lastError().empty()
+                ? rejected + std::to_string(f)
+                : encoder->lastError();
+            encoder->shutdown();
+            return false;
+        }
+        ++acceptedVideoFrames;
+        ++encodedVideoFrames;
+        std::string err;
+        if (gotPacket)
+            err = writePacket(encoder->lastPacket(), "Encoder emitted an empty packet");
+        else
+            spdlog::debug("RndQ[{}]: encoder buffering at f={} (no packet yet)",
+                          job.id, f);
+        for (const auto& ep : encoder->pendingPackets()) {
+            if (!err.empty()) break;
+            err = writePacket(ep, "Encoder emitted an empty pending packet");
+        }
+        if (!err.empty()) {
+            job.status = JobStatus::Failed;
+            job.error = err;
+            encoder->shutdown();
+            return false;
+        }
+        return true;
+    };
+    int64_t lastNv12PreviewFrame = -1;
+
     for (int64_t f = startFrame; f < endFrame; ++f) {
         // Check cancellation (per-job atomic on the job itself — no map race)
         if (m_cancelAll.load() || job.cancelRequested.load()) {
@@ -1049,7 +1132,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                 cancelled = true;
                 break;
             }
-            renderResult = m_frameRenderCb(job.renderSnapshot,
+            renderResult = m_frameRenderCb(videoSnapshot,
                                            tick, nextTick, outW, outH, true,
                                            job.config.preserveAlpha);
             cframe = renderResult.frame;
@@ -1075,7 +1158,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
                     : "renderer returned a held preview frame";
             } else {
                 frameValidation = validateExportFrame(
-                    cframe.get(), outW, outH, encoder->is10BitTarget());
+                    cframe.get(), outW, outH, encoder->is10BitTarget(), nv12Output);
             }
             if (frameValidation.valid)
                 break;
@@ -1115,44 +1198,36 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         // BGRA round-trip — and SKIP the 8-bit segment write-through (the cache
         // is BGRA-only).  8-bit encoders / non-passthrough frames fall through
         // to the normal path below.
+        if (frameValidation.useNv12) {
+            // The export panel's preview needs BGRA; a small one every few
+            // frames is plenty (it polls ten times a second).
+            constexpr int64_t kNv12PreviewEvery = 8;
+            if (lastNv12PreviewFrame < 0 || f - lastNv12PreviewFrame >= kNv12PreviewEvery) {
+                auto preview = nv12PreviewFrame(*cframe, /*step=*/4);
+                std::lock_guard<std::mutex> lk(m_mutex);
+                m_latestFrame = std::move(preview);
+                lastNv12PreviewFrame = f;
+            }
+            const uint32_t stride = cframe->nv12Stride;
+            const uint8_t* y = cframe->nv12.get();
+            const int64_t submissionsBefore = encoder->framesSubmitted();
+            const bool got = encoder->encodeFrameNv12(
+                y, static_cast<int>(stride),
+                y + static_cast<size_t>(stride) * outH, static_cast<int>(stride),
+                f - startFrame);
+            if (!collectEncoded(got, submissionsBefore, f, "Encoder rejected NV12 frame "))
+                return;
+            updateProgress(f);
+            continue;
+        }
+
         if (frameValidation.useRgba16f) {
             const int64_t submissionsBefore = encoder->framesSubmitted();
             const bool got = encoder->encodeFrame16f(
                 reinterpret_cast<const uint16_t*>(cframe->rgba16f.data()),
                 static_cast<int>(cframe->rgba16fStride), f - startFrame);
-            if (encoder->hasFatalError() ||
-                encoder->framesSubmitted() != submissionsBefore + 1) {
-                job.status = JobStatus::Failed;
-                job.error = encoder->lastError().empty()
-                    ? "Encoder rejected RGBA16F frame " + std::to_string(f)
-                    : encoder->lastError();
-                encoder->shutdown();
+            if (!collectEncoded(got, submissionsBefore, f, "Encoder rejected RGBA16F frame "))
                 return;
-            }
-            ++acceptedVideoFrames;
-            ++encodedVideoFrames;
-            if (got)
-            {
-                if (const std::string err = writePacket(encoder->lastPacket(), "Encoder emitted an empty packet");
-                    !err.empty()) {
-                    job.status = JobStatus::Failed;
-                    job.error = err;
-                    encoder->shutdown();
-                    return;
-                }
-            }
-            else
-                spdlog::debug("RndQ[{}]: encoder buffering at f={} (16F, no packet yet)",
-                              job.id, f);
-            for (const auto& ep : encoder->pendingPackets()) {
-                if (const std::string err = writePacket(ep, "Encoder emitted an empty pending packet");
-                    !err.empty()) {
-                    job.status = JobStatus::Failed;
-                    job.error = err;
-                    encoder->shutdown();
-                    return;
-                }
-            }
             updateProgress(f);
             continue;
         }
@@ -1179,59 +1254,13 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         // §4.6 export write-through: this frame is full-res with CPU pixels
         // ready — store it in the segment cache so a re-export reuses it.
         if (m_frameStoreCb)
-            m_frameStoreCb(job.renderSnapshot, tick, cframe);
+            m_frameStoreCb(videoSnapshot, tick, cframe);
 
         // Encode frame
         const int64_t submissionsBefore = encoder->framesSubmitted();
         const bool gotPacket = encoder->encodeFrame(encodePixels, f - startFrame);
-        if (encoder->hasFatalError() ||
-            encoder->framesSubmitted() != submissionsBefore + 1) {
-            job.status = JobStatus::Failed;
-            job.error = encoder->lastError().empty()
-                ? "Encoder rejected frame " + std::to_string(f)
-                : encoder->lastError();
-            encoder->shutdown();
+        if (!collectEncoded(gotPacket, submissionsBefore, f, "Encoder rejected frame "))
             return;
-        }
-        ++acceptedVideoFrames;
-        ++encodedVideoFrames;
-        if (gotPacket) {
-            const auto& lp = encoder->lastPacket();
-            if (const std::string err = writePacket(lp, "Encoder emitted an empty packet");
-                !err.empty()) {
-                job.status = JobStatus::Failed;
-                job.error = err;
-                encoder->shutdown();
-                return;
-            }
-            // Collect any extra packets the encoder produced (B-frame drain)
-            for (const auto& ep : encoder->pendingPackets()) {
-                if (const std::string err = writePacket(ep, "Encoder emitted an empty pending packet");
-                    !err.empty()) {
-                    job.status = JobStatus::Failed;
-                    job.error = err;
-                    encoder->shutdown();
-                    return;
-                }
-            }
-        } else {
-            // NOT an error: the encoder produced no packet THIS call — normal
-            // while it fills its look-ahead/B-frame buffer (every frame at the
-            // start of a clip), and during reordering.  Buffered packets are
-            // emitted on later calls / flush().  Debug-only so it doesn't read
-            // as a failure in perf_log.
-            spdlog::debug("RndQ[{}]: encoder buffering at f={} (no packet yet)",
-                          job.id, f);
-            for (const auto& ep : encoder->pendingPackets()) {
-                if (const std::string err = writePacket(ep, "Encoder emitted an empty pending packet");
-                    !err.empty()) {
-                    job.status = JobStatus::Failed;
-                    job.error = err;
-                    encoder->shutdown();
-                    return;
-                }
-            }
-        }
         updateProgress(f);
     }
 

@@ -35,7 +35,9 @@ int Encoder::attachCudaHwFrames(AVCodecContext* codecCtx,
 
     auto* fctx = reinterpret_cast<AVHWFramesContext*>(framesRef->data);
     fctx->format            = AV_PIX_FMT_CUDA;
-    fctx->sw_format         = AV_PIX_FMT_YUV420P;  // matches the swscale output
+    // NV12 is NVENC's native input: the GPU export converter writes it, and
+    // the BGRA path's swscale converts to it as cheaply as to YUV420P.
+    fctx->sw_format         = AV_PIX_FMT_NV12;
     fctx->width             = width;
     fctx->height            = height;
     fctx->initial_pool_size = 20;  // headroom for lookahead + B-frame reorder

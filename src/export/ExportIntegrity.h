@@ -23,6 +23,7 @@ struct ExportFrameValidation
 {
     bool        valid{false};
     bool        useRgba16f{false};
+    bool        useNv12{false};
     bool        needsBgraRepack{false};
     std::string error;
 };
@@ -30,10 +31,11 @@ struct ExportFrameValidation
 /// Validate the payload that will be handed to the encoder.  Exact dimensions
 /// are required.  Padded BGRA rows are accepted, but the caller must repack
 /// them when needsBgraRepack is true because Encoder::encodeFrame takes a
-/// tightly-packed buffer.
+/// tightly-packed buffer. An NV12 payload (CachedFrame::nv12) is used when
+/// allowNv12 is set (the encoder accepts NV12).
 [[nodiscard]] ExportFrameValidation validateExportFrame(
     const CachedFrame* frame, uint32_t expectedWidth,
-    uint32_t expectedHeight, bool allowRgba16f);
+    uint32_t expectedHeight, bool allowRgba16f, bool allowNv12 = false);
 
 struct ExportFileValidation
 {

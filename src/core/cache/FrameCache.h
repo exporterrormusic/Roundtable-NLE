@@ -159,6 +159,18 @@ struct CachedFrame
     std::vector<uint8_t> rgba16f;
     uint32_t rgba16fStride{0};   ///< bytes per row of `rgba16f` (= width*8).
 
+    /// Export NV12 payload: the composite converted on the GPU for an 8-bit
+    /// 4:2:0 encoder (RgbToNv12Converter; BT.709 limited range). A Y plane of
+    /// `height` rows then an interleaved CbCr plane of height/2 rows, each
+    /// `nv12Stride` bytes per row, `nv12Size` bytes in all. It points into
+    /// the GPU readback buffer the conversion wrote (no copy), which this
+    /// pointer keeps alive. When set, `pixels` is empty: the frame exists
+    /// only for the encoder and never enters a cache.
+    std::shared_ptr<const uint8_t> nv12;
+    size_t   nv12Size{0};
+    uint32_t nv12Stride{0};
+    [[nodiscard]] bool hasNv12() const noexcept { return nv12 && nv12Size > 0; }
+
     /// True when this frame was decoded from a packed-alpha video and has
     /// already been unpacked (top-half RGB + bottom-half alpha → BGRA).
     /// Downstream code checks this to avoid double-unpacking.

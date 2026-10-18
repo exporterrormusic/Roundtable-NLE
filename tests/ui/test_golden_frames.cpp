@@ -69,6 +69,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
 }
 
 using namespace rt;
@@ -462,6 +463,46 @@ std::shared_ptr<CachedFrame> renderBoth(Scene& scene, int64_t tick)
 }
 
 /// Save → load → render: must match the original export render exactly.
+/// Export the same tick as NV12 (an 8-bit 4:2:0 encoder's format): the GPU
+/// conversion of the composite must equal the CPU encoder's conversion of the
+/// BGRA export frame within one code value (test_rgb_to_nv12 pins the
+/// converter; this pins the export plumbing, nested composites included).
+void expectNv12MatchesBgra(Scene& scene, int64_t tick, const CachedFrame& bgra)
+{
+    auto& h = *g_harness;
+    if (!scene.exportSnapshot) scene.publish();
+    auto nv12Snapshot = std::make_shared<RenderSnapshot>(*scene.exportSnapshot);
+    nv12Snapshot->outputFormat = RenderOutputFormat::Nv12;
+    const auto result = h.exporter->renderFrame(nv12Snapshot, tick, kW, kH,
+                                                /*scrubMode=*/false, /*preserveAlpha=*/false);
+    ASSERT_TRUE(result.frame) << toString(result.status);
+    const CachedFrame& frame = *result.frame;
+    ASSERT_TRUE(frame.hasNv12()) << "export did not come back as NV12";
+    EXPECT_TRUE(frame.pixels.empty());
+    ASSERT_GE(frame.nv12Stride, kW);
+
+    // The CPU path: swscale BGRA -> NV12, BT.709, as FfmpegEncoderBase sets it up.
+    std::vector<uint8_t> want(static_cast<size_t>(kW) * kH * 3 / 2);
+    SwsContext* sws = sws_getContext(kW, kH, AV_PIX_FMT_BGRA, kW, kH, AV_PIX_FMT_NV12,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
+    ASSERT_NE(sws, nullptr);
+    const int* bt709 = sws_getCoefficients(SWS_CS_ITU709);
+    sws_setColorspaceDetails(sws, bt709, 1, bt709, 0, 0, 1 << 16, 1 << 16);
+    const uint8_t* src[] = {bgra.pixels.data()};
+    const int srcStride[] = {static_cast<int>(bgra.stride ? bgra.stride : kW * 4)};
+    uint8_t* dst[] = {want.data(), want.data() + kW * kH};
+    const int dstStride[] = {static_cast<int>(kW), static_cast<int>(kW)};
+    sws_scale(sws, src, srcStride, 0, kH, dst, dstStride);
+    sws_freeContext(sws);
+
+    int worst = 0;
+    for (uint32_t row = 0; row < kH * 3 / 2; ++row)
+        for (uint32_t x = 0; x < kW; ++x)
+            worst = std::max(worst, std::abs(frame.nv12.get()[row * frame.nv12Stride + x] -
+                                             want[row * kW + x]));
+    EXPECT_LE(worst, 1) << "NV12 export differs from the BGRA export's conversion";
+}
+
 void expectRoundTrip(Scene& scene, int64_t tick, const CachedFrame& original)
 {
     ProjectSerializer serializer;
@@ -960,6 +1001,7 @@ TEST(GoldenFrames, AdjustmentClipGradesEverythingBelow)
     ASSERT_TRUE(frame);
     expectGolden(*frame, "adjustment_tint");
     expectRoundTrip(scene, seconds(1), *frame);
+    expectNv12MatchesBgra(scene, seconds(1), *frame);
 }
 
 TEST(GoldenFrames, ClipAndEffectMasks)
@@ -990,6 +1032,7 @@ TEST(GoldenFrames, ClipAndEffectMasks)
     ASSERT_TRUE(frame);
     expectGolden(*frame, "masks_clip_ellipse_effect_rect");
     expectRoundTrip(scene, seconds(1), *frame);
+    expectNv12MatchesBgra(scene, seconds(1), *frame);
 }
 
 TEST(GoldenFrames, NestedSequenceAndCrop)
@@ -1019,6 +1062,7 @@ TEST(GoldenFrames, NestedSequenceAndCrop)
     ASSERT_TRUE(frame);
     expectGolden(*frame, "nested_sequence_and_crop");
     expectRoundTrip(scene, seconds(1), *frame);
+    expectNv12MatchesBgra(scene, seconds(1), *frame);
 }
 
 // ─── E. Text ─────────────────────────────────────────────────────────────────

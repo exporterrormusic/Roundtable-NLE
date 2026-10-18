@@ -121,7 +121,7 @@ void staticStateHashValue(uint64_t& hash, const T& value)
 
 std::optional<uint64_t> staticCompositeStateKey(
     const std::vector<LayerInfo>& layers, uint32_t outW, uint32_t outH,
-    ResolutionTier tier, bool preserveAlpha)
+    ResolutionTier tier, bool preserveAlpha, bool nv12Output)
 {
     if (layers.empty()) return std::nullopt;
     uint64_t hash = 1469598103934665603ull;
@@ -130,6 +130,7 @@ std::optional<uint64_t> staticCompositeStateKey(
     const uint8_t tierValue = static_cast<uint8_t>(tier);
     staticStateHashValue(hash, tierValue);
     staticStateHashValue(hash, preserveAlpha);
+    staticStateHashValue(hash, nv12Output);   // the result's pixel format
     const uint32_t count = static_cast<uint32_t>(layers.size());
     staticStateHashValue(hash, count);
 
@@ -318,6 +319,8 @@ RenderResult CompositeService::renderFrame(
         request.forceFullResolution,
         request.preserveAlpha,
         request.isRealtimePlaybackPass(),
+        request.outputFormat == RenderOutputFormat::Nv12 &&
+            request.forceFullResolution && !request.preserveAlpha,
     });
     context.outcome = &executionOutcome;
     context.diagnostics = &result.diagnostics;
@@ -1359,7 +1362,8 @@ try
     // reading back the same full-frame blend again is pure duplicate work.
     const auto staticStateKey = !isNestedRecursion
         ? staticCompositeStateKey(
-              layers, outW, outH, requestTier, policy.preserveAlpha)
+              layers, outW, outH, requestTier, policy.preserveAlpha,
+              policy.nv12Output)
         : std::optional<uint64_t>{};
     if (staticStateKey) {
         std::shared_ptr<CachedFrame> staticHit;
@@ -1368,12 +1372,14 @@ try
             if (m_lastStaticComposite
                 && m_lastStaticCompositeKey == *staticStateKey) {
                 staticHit = m_lastStaticComposite;
-                m_lastGoodComposite = staticHit;
-                m_lastGoodCompositeTick = tick;
-                m_lastGoodCompositeClipIds.clear();
-                for (const auto& layer : layers)
-                    if (layer.clipId != 0 && !layer.isAdjustmentLayer)
-                        m_lastGoodCompositeClipIds.push_back(layer.clipId);
+                if (!staticHit->hasNv12()) {
+                    m_lastGoodComposite = staticHit;
+                    m_lastGoodCompositeTick = tick;
+                    m_lastGoodCompositeClipIds.clear();
+                    for (const auto& layer : layers)
+                        if (layer.clipId != 0 && !layer.isAdjustmentLayer)
+                            m_lastGoodCompositeClipIds.push_back(layer.clipId);
+                }
             }
         }
         if (staticHit) {
@@ -1442,7 +1448,19 @@ try
             // field concurrently, and a swap mid-frame causes the
             // visible "every other frame is the nested sequence's first
             // frame" glitch during playback / scrub.
-            if (!isNestedRecursion) {
+            // An NV12 export frame has no BGRA pixels, so it can't stand
+            // in as the last good composite for any other consumer; the
+            // static-composite reuse below is keyed by format.
+            if (!isNestedRecursion && gpuResult->hasNv12()) {
+                std::lock_guard lg(m_lastCompositeMtx);
+                if (staticStateKey) {
+                    m_lastStaticComposite = gpuResult;
+                    m_lastStaticCompositeKey = *staticStateKey;
+                } else {
+                    m_lastStaticComposite.reset();
+                    m_lastStaticCompositeKey = 0;
+                }
+            } else if (!isNestedRecursion) {
                 std::lock_guard lg(m_lastCompositeMtx);
                 const bool wasStale = (m_lastGoodComposite == gpuResult);
                 m_lastGoodComposite     = gpuResult;

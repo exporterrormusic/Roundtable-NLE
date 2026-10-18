@@ -46,8 +46,12 @@ std::shared_ptr<CachedFrame> CompositeService::tryCompositeOnGpu(
     // Alpha export: tell this service's compositor whether to keep a
     // straight-alpha transparent background.  Set every composite so it can't
     // leak into a later non-alpha composite on the same cached instance.
-    if (compositor)
+    if (compositor) {
         compositor->setPreserveAlpha(policy.preserveAlpha);
+        // A nested sequence's composite becomes a layer of the outer one,
+        // so only the outermost export composite may come back as NV12.
+        compositor->setNv12Readback(policy.nv12Output && !isNestedRecursion);
+    }
 
     auto perfTgpuUp = perfT0;
     auto perfTcomp = perfT0;

@@ -163,6 +163,8 @@ void Compositor::shutdown(GpuTeardownMode mode)
 
     // Destroy buffers and textures
     for (auto& staging : m_readbackStaging) staging.destroy();
+    for (auto& staging : m_nv12Staging) staging.reset();
+    m_nv12Converter.shutdown();
     for (auto& params : m_layerParamsBuffers) params.destroy();
     m_placeholderTexture.destroy();
     m_outputTexture.reset();

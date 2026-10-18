@@ -67,6 +67,9 @@ public:
     /// Flush mapped memory (for non-coherent buffers).
     void flush(VkDeviceSize size = VK_WHOLE_SIZE, VkDeviceSize offset = 0);
 
+    /// Make device writes visible to host reads (for non-coherent buffers).
+    void invalidate(VkDeviceSize size = VK_WHOLE_SIZE, VkDeviceSize offset = 0);
+
     // ── Accessors ───────────────────────────────────────────────────────
 
     [[nodiscard]] VkBuffer       handle()     const noexcept { return m_buffer; }

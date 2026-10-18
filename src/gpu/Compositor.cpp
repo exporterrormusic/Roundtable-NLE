@@ -356,6 +356,8 @@ bool Compositor::resize(uint32_t width, uint32_t height)
 
     for (auto& staging : m_readbackStaging)
         staging.destroy(); // recreated per slot on next readback
+    for (auto& staging : m_nv12Staging)
+        staging.reset();
     // deviceWaitIdle() above guarantees no in-flight work references any
     // ring slot, so it is safe to drop them all and rebuild at the new
     // size.  createOutputTexture() repopulates the whole ring.
@@ -547,6 +549,48 @@ bool Compositor::mapAndCopyReadbackSlot(uint32_t slot,
     std::memcpy(outPixels.data(), mapped, static_cast<size_t>(imageSize));
     readbackStaging.unmap();
     return true;
+}
+
+// ── NV12 readback (export) ──────────────────────────────────────────────────
+
+bool Compositor::recordNv12Readback(VkCommandBuffer cmd)
+{
+    if (!m_initialized || !m_outputTexture) return false;
+    const uint32_t w = m_config.outputWidth;
+    const uint32_t h = m_config.outputHeight;
+    if ((w & 1u) != 0 || (h & 1u) != 0) return false;
+    if (!m_nv12Converter.isInitialized() &&
+        !m_nv12Converter.init(m_device->handle()))
+        return false;
+
+    const VkDeviceSize size = RgbToNv12Converter::byteSize(w, h);
+    auto& staging = m_nv12Staging[m_outputRingIdx];
+    // A frame still holding this slot's buffer keeps it; record into a new one.
+    if (!staging || staging.use_count() > 1 || staging->size() < size) {
+        auto fresh = std::make_shared<Buffer>();
+        if (!fresh->create(m_allocator->handle(), size, BufferUsage::StorageReadback) ||
+            !fresh->map()) {
+            spdlog::error("Compositor: failed to create NV12 readback buffer");
+            return false;
+        }
+        staging = std::move(fresh);
+    }
+    // The output stays in GENERAL, where composite() leaves it.
+    return m_nv12Converter.record(cmd, m_outputTexture->imageView(), w, h,
+                                  m_outputSwizzleRB, staging->handle(), 0);
+}
+
+std::shared_ptr<const uint8_t> Compositor::mappedNv12(size_t& size, uint32_t& stride)
+{
+    if (!m_initialized) return nullptr;
+    const auto& staging = m_nv12Staging[m_outputRingIdx];
+    void* mapped = staging ? staging->map() : nullptr;
+    if (!mapped) return nullptr;
+    size = static_cast<size_t>(
+        RgbToNv12Converter::byteSize(m_config.outputWidth, m_config.outputHeight));
+    stride = RgbToNv12Converter::stride(m_config.outputWidth);
+    staging->invalidate(size);
+    return std::shared_ptr<const uint8_t>(staging, static_cast<const uint8_t*>(mapped));
 }
 
 // ── buildLayerTransform ─────────────────────────────────────────────────────

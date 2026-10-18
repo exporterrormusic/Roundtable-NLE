@@ -70,6 +70,16 @@ enum class ResourceLoadState : uint8_t
 /// explicitly-bound live project. Export and other asynchronous consumers
 /// should provide a snapshot so a request cannot silently render a different
 /// project after the editor switches sequences.
+/// Pixel format of a render's CPU result. Nv12 is for export to an 8-bit
+/// 4:2:0 encoder: the composite is converted on the GPU (CachedFrame::nv12)
+/// instead of read back as BGRA. Anything that can't produce it (a 16F
+/// passthrough, a cached or blank frame, odd dimensions) still answers BGRA.
+enum class RenderOutputFormat : uint8_t
+{
+    Bgra,
+    Nv12,
+};
+
 struct RenderSnapshot
 {
     std::shared_ptr<const Project>  project;
@@ -81,6 +91,8 @@ struct RenderSnapshot
     /// an offline clip that lies wholly outside the requested output.
     std::optional<int64_t>          rangeStartTick;
     std::optional<int64_t>          rangeEndTick;
+    /// Export: the format its encoder takes (see RenderOutputFormat).
+    RenderOutputFormat              outputFormat{RenderOutputFormat::Bgra};
     /// Live preview snapshots (SnapshotPublisher) carry the project's
     /// sequences here, indexed like Project::sequence(i), instead of a
     /// Project. Nested SequenceClips resolve through this when non-empty.
@@ -123,6 +135,8 @@ struct RenderRequest
     bool preferGpuOutput{false};
     bool forceFullResolution{false};
     bool preserveAlpha{false};
+    /// Honoured for export (forceFullResolution) without preserveAlpha.
+    RenderOutputFormat outputFormat{RenderOutputFormat::Bgra};
 
     std::string caller;
 

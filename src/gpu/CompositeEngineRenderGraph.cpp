@@ -924,6 +924,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     bool uploadOk = true;
     bool compOk = false;
     bool readbackOk = false;
+    bool nv12ReadbackOk = false;   // the readback is NV12 (export), not BGRA
     bool uploadsSeen = false;
 
     // Pre-allocate gpuLayers from layer info.
@@ -1822,7 +1823,12 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
 
         case PassType::Readback: {
             if (compOk) {
-                readbackOk = compositor->recordReadback(cmd);
+                // Export to an 8-bit 4:2:0 encoder reads back NV12 (1.5
+                // bytes/pixel, converted on the GPU); anything that can't
+                // falls back to BGRA.
+                if (compositor->nv12Readback() && forceSyncReadback)
+                    nv12ReadbackOk = compositor->recordNv12Readback(cmd);
+                readbackOk = nv12ReadbackOk || compositor->recordReadback(cmd);
             }
             break;
         }
@@ -2017,7 +2023,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
             };
         } else if (readbackOk) {
             const size_t imgBytes = static_cast<size_t>(outW) * outH * 4;
-            if (m_compositeLru.size() >= kCacheSize) {
+            if (!nv12ReadbackOk && m_compositeLru.size() >= kCacheSize) {
                 auto& victim = m_compositeLru[m_compositeLruIdx];
                 if (victim.frame && victim.frame.use_count() == 1 &&
                     victim.frame->pixels.size() == imgBytes)
@@ -2046,7 +2052,13 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 }
             }
             ExportStageTimer copyTimer(exportStageTimes().readbackCopyUs);
-            compositor->mapAndCopyReadback(result->pixels);
+            if (nv12ReadbackOk) {
+                result->stride = 0;
+                result->nv12 = compositor->mappedNv12(result->nv12Size,
+                                                      result->nv12Stride);
+            } else {
+                compositor->mapAndCopyReadback(result->pixels);
+            }
         }
 
         // A nearest-sampled temporal fallback is intentionally provisional:
@@ -2064,7 +2076,9 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
         // transform and would collide with the outer program tick in the
         // shared (tick,w,h)-keyed LRU, flickering the nested clip every
         // other frame.
-        if (allowLruInsert && !hasPendingSourceFallback && !result->gpuReady) {
+        // An NV12 export frame has no BGRA pixels for any other consumer.
+        if (allowLruInsert && !hasPendingSourceFallback && !result->gpuReady &&
+            !result->hasNv12()) {
             insertLru(cacheKey, result);
         }
 

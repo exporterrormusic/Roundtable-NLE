@@ -658,6 +658,7 @@ private:
         bool forceFullResolution{false};
         bool preserveAlpha{false};
         bool measureRealtimeCost{false};
+        bool nv12Output{false};   // export readback as NV12 (RenderOutputFormat)
     };
 
     /// Model graph and policy captured once for a render. Child sequence

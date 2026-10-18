@@ -182,7 +182,8 @@ bool FfmpegEncoderBase::initNvencThenCpu(const EncoderConfig& config,
         spdlog::info("{}: Using CPU ({})", logName(), cpuName);
     }
 
-    return finishInit(AV_PIX_FMT_YUV420P);
+    // CUDA input frames upload from NV12 (attachCudaHwFrames' sw_format).
+    return finishInit(m_codecCtx->hw_frames_ctx ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P);
 }
 
 bool FfmpegEncoderBase::initCpuCodec(const EncoderConfig& config,
@@ -377,6 +378,30 @@ bool FfmpegEncoderBase::encodeFrameNv12(const uint8_t* y, int yStride,
         spdlog::error("{}", m_lastError);
         return false;
     }
+    // NVENC with NV12 CUDA frames: upload straight from the caller's planes,
+    // no copy into m_frame (unless NVENC aligned the frame taller or wider
+    // than the caller's buffer).
+    if (m_hwAccel && m_codecCtx->hw_frames_ctx && m_frame->format == AV_PIX_FMT_NV12 &&
+        m_frame->width == static_cast<int>(m_config.width) &&
+        m_frame->height == static_cast<int>(m_config.height)) {
+        AVFrame* source = av_frame_alloc();
+        if (!source) {
+            m_lastError = std::string(logName()) + ": failed to allocate frame";
+            m_failed = true;
+            return false;
+        }
+        source->format = AV_PIX_FMT_NV12;
+        source->width = m_frame->width;
+        source->height = m_frame->height;
+        source->data[0] = const_cast<uint8_t*>(y);
+        source->linesize[0] = yStride;
+        source->data[1] = const_cast<uint8_t*>(uv);
+        source->linesize[1] = uvStride;
+        const bool ok = uploadAndSend(source, frameIndex);
+        av_frame_free(&source);
+        return ok;
+    }
+
     if (av_frame_make_writable(m_frame) < 0) {
         m_lastError = std::string(logName()) + ": frame buffer is not writable";
         m_failed = true;
@@ -468,38 +493,42 @@ bool FfmpegEncoderBase::finishFrame(int64_t frameIndex)
     // and reverted to software input — fall through to the SW path then.
     // (ProRes/DNxHR are CPU intra codecs with m_hwAccel=false, so the 16F
     // passthrough always takes the direct sendFrame path below.)
-    if (m_hwAccel && m_codecCtx->hw_frames_ctx) {
-        AVFrame* hwFrame = av_frame_alloc();
-        hwFrame->format = AV_PIX_FMT_CUDA;
-        hwFrame->width  = m_frame->width;
-        hwFrame->height = m_frame->height;
-
-        int ret = av_hwframe_get_buffer(m_codecCtx->hw_frames_ctx, hwFrame, 0);
-        if (ret < 0) {
-            m_lastError = std::string(logName()) + ": failed to get HW frame buffer";
-            m_failed = true;
-            spdlog::error("{}", m_lastError);
-            av_frame_free(&hwFrame);
-            return false;
-        }
-        {
-            ExportStageTimer timer(exportStageTimes().encodeUploadUs);
-            ret = av_hwframe_transfer_data(hwFrame, m_frame, 0);
-        }
-        if (ret < 0) {
-            m_lastError = std::string(logName()) + ": failed to upload frame to GPU";
-            m_failed = true;
-            spdlog::error("{}", m_lastError);
-            av_frame_free(&hwFrame);
-            return false;
-        }
-        hwFrame->pts = m_frame->pts;
-        bool ok = sendFrame(hwFrame);
-        av_frame_free(&hwFrame);
-        return ok;
-    }
+    if (m_hwAccel && m_codecCtx->hw_frames_ctx)
+        return uploadAndSend(m_frame, frameIndex);
 
     return sendFrame(m_frame);
+}
+
+bool FfmpegEncoderBase::uploadAndSend(AVFrame* software, int64_t frameIndex)
+{
+    AVFrame* hwFrame = av_frame_alloc();
+    hwFrame->format = AV_PIX_FMT_CUDA;
+    hwFrame->width  = software->width;
+    hwFrame->height = software->height;
+
+    int ret = av_hwframe_get_buffer(m_codecCtx->hw_frames_ctx, hwFrame, 0);
+    if (ret < 0) {
+        m_lastError = std::string(logName()) + ": failed to get HW frame buffer";
+        m_failed = true;
+        spdlog::error("{}", m_lastError);
+        av_frame_free(&hwFrame);
+        return false;
+    }
+    {
+        ExportStageTimer timer(exportStageTimes().encodeUploadUs);
+        ret = av_hwframe_transfer_data(hwFrame, software, 0);
+    }
+    if (ret < 0) {
+        m_lastError = std::string(logName()) + ": failed to upload frame to GPU";
+        m_failed = true;
+        spdlog::error("{}", m_lastError);
+        av_frame_free(&hwFrame);
+        return false;
+    }
+    hwFrame->pts = frameIndex;
+    bool ok = sendFrame(hwFrame);
+    av_frame_free(&hwFrame);
+    return ok;
 }
 
 bool FfmpegEncoderBase::sendFrame(AVFrame* frame)

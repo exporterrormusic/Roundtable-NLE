@@ -23,6 +23,7 @@
 #include "GpuTeardownMode.h"
 
 #include "ICompositor.h"
+#include "RgbToNv12Converter.h"
 #include "vulkan/Allocator.h"
 #include "vulkan/Buffer.h"
 #include "vulkan/CommandPool.h"
@@ -274,6 +275,23 @@ public:
     void setOutputSwizzleRB(bool swizzle) noexcept { m_outputSwizzleRB = swizzle; }
     [[nodiscard]] bool outputSwizzleRB() const noexcept { return m_outputSwizzleRB; }
 
+    /// Export for an 8-bit 4:2:0 encoder: read the final output back as NV12
+    /// (recordNv12Readback / mappedNv12) instead of BGRA. Set per
+    /// composite by CompositeService from the request's output format.
+    void setNv12Readback(bool on) noexcept { m_nv12Readback = on; }
+    [[nodiscard]] bool nv12Readback() const noexcept { return m_nv12Readback; }
+
+    /// Record the output's conversion to NV12 into this slot's host-visible
+    /// buffer (RgbToNv12Converter). False when it can't (odd dimensions, no
+    /// shader): the caller reads back BGRA instead.
+    bool recordNv12Readback(VkCommandBuffer cmd);
+
+    /// The NV12 recorded by recordNv12Readback, after its command buffer
+    /// completed: a pointer into the mapped buffer that keeps it alive (the
+    /// next recording into this slot uses a new buffer while it's held).
+    /// Null on failure. `size` and `stride` receive the layout.
+    [[nodiscard]] std::shared_ptr<const uint8_t> mappedNv12(size_t& size, uint32_t& stride);
+
     // ── Resize ──────────────────────────────────────────────────────────
 
     /// Resize the output image.
@@ -360,6 +378,8 @@ private:
     bool m_hqSampling{false};  // bicubic layer sampling (export); see composite.comp
     bool m_preserveAlpha{false}; // keep straight RGBA for alpha export; see composite.comp
     bool m_outputSwizzleRB{true}; // final Qt/readback output is BGRA; intermediates are RGBA
+    bool m_nv12Readback{false};   // export to an 8-bit 4:2:0 encoder; see recordNv12Readback
+    RgbToNv12Converter m_nv12Converter;
     bool createOutputTexture();
     /// Rotate m_outputTexture to the next slot in the output ring.  Called
     /// at the start of every composite() so each composited frame writes
@@ -424,6 +444,7 @@ private:
 
     // Per-output-slot readback buffers avoid overlapping transfer writes.
     std::array<Buffer, kOutputRing> m_readbackStaging;
+    std::array<std::shared_ptr<Buffer>, kOutputRing> m_nv12Staging;   // NV12 export readback, per slot
 
     // Placeholder texture for unused layer slots
     Texture m_placeholderTexture;

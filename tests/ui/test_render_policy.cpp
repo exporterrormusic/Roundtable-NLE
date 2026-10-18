@@ -711,6 +711,11 @@ TEST(RenderPolicyTest, OptionalExportProfile)
         auto encoder = Encoder::create(EncoderCodec::H264, config.hwAccel);
         ASSERT_NE(encoder, nullptr);
         ASSERT_TRUE(encoder->init(config)) << encoder->lastError();
+        // As RenderQueue: an encoder that takes NV12 gets it from the GPU,
+        // unless ROUNDTABLE_EXPORT_PROFILE_FORMAT=bgra.
+        const bool nv12 = encoder->acceptsNv12() &&
+                          envOr("ROUNDTABLE_EXPORT_PROFILE_FORMAT", "nv12") != "bgra";
+        if (nv12) snapshot->outputFormat = RenderOutputFormat::Nv12;
 
         using Clock = std::chrono::steady_clock;
         const auto ms = [](Clock::duration d) {
@@ -727,10 +732,19 @@ TEST(RenderPolicyTest, OptionalExportProfile)
             const auto result = session.renderFrame(snapshot, tick, outW, outH,
                                                     /*scrubMode=*/false,
                                                     /*preserveAlpha=*/false);
-            ASSERT_TRUE(result.frame && result.frame->ensurePixels())
-                << "frame " << f << ": " << toString(result.status);
+            ASSERT_TRUE(result.frame) << "frame " << f << ": " << toString(result.status);
+            const CachedFrame& frame = *result.frame;
+            const bool gotNv12 = frame.hasNv12();
+            ASSERT_TRUE(gotNv12 || result.frame->ensurePixels()) << "frame " << f;
             const auto t1 = Clock::now();
-            encoder->encodeFrame(result.frame->pixels.data(), f);
+            if (gotNv12) {
+                const uint8_t* y = frame.nv12.get();
+                const int stride = static_cast<int>(frame.nv12Stride);
+                encoder->encodeFrameNv12(y, stride, y + static_cast<size_t>(stride) * outH,
+                                         stride, f);
+            } else {
+                encoder->encodeFrame(frame.pixels.data(), f);
+            }
             ASSERT_FALSE(encoder->hasFatalError()) << encoder->lastError();
             const auto t2 = Clock::now();
             renderMs += ms(t1 - t0);
@@ -749,6 +763,7 @@ TEST(RenderPolicyTest, OptionalExportProfile)
                   << ' ' << info.codecName << ' ' << info.width << 'x' << info.height
                   << " -> " << outW << 'x' << outH << (nvenc ? " nvenc" : " x264")
                   << (encoder->isHardwareAccelerated() ? "(hw)" : "(sw)")
+                  << (nv12 ? " nv12" : " bgra")
                   << " frames=" << frames
                   << " fps=" << frames * 1000.0 / totalMs << '\n'
                   << "  per frame ms: render=" << renderMs / frames

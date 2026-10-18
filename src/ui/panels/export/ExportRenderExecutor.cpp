@@ -275,7 +275,9 @@ std::shared_future<RenderResult> ExportRenderExecutor::submit(
                         RenderResultStatus::Failed, tick,
                         "export compositor callback is unavailable");
                 }
-                if (result.frame) result.frame->ensurePixels();
+                // An NV12 export frame (CachedFrame::nv12) has no BGRA to fetch.
+                if (result.frame && !result.frame->hasNv12())
+                    result.frame->ensurePixels();
                 promise->set_value(std::move(result));
             } catch (...) {
                 spdlog::error(
@@ -363,7 +365,8 @@ RenderResult ExportRenderExecutor::render(
     }
 
     if (result.status != RenderResultStatus::Canceled &&
-        (!result.frame || result.frame->pixels.empty())) {
+        (!result.frame ||
+         (result.frame->pixels.empty() && !result.frame->hasNv12()))) {
         spdlog::warn(
             "ExportRenderExecutor: pipeline returned empty pixels at tick={}",
             tick);

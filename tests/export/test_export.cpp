@@ -35,6 +35,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <mutex>
 #include <thread>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
@@ -211,7 +212,8 @@ struct Picture
 /// `submit`, decode the stream and return its last picture.
 bool encodeH264AndDecode(int width, int height, int frames,
                          const std::function<void(Encoder&, int)>& submit,
-                         Picture& out)
+                         Picture& out, HardwareAccel accel = HardwareAccel::None,
+                         bool* hardware = nullptr)
 {
     EncoderConfig cfg;
     cfg.width   = static_cast<uint32_t>(width);
@@ -219,11 +221,12 @@ bool encodeH264AndDecode(int width, int height, int frames,
     cfg.fpsNum  = 30;
     cfg.fpsDen  = 1;
     cfg.codec   = EncoderCodec::H264;
-    cfg.hwAccel = HardwareAccel::None;
+    cfg.hwAccel = accel;
     cfg.crf     = 10;
 
-    auto enc = Encoder::create(EncoderCodec::H264, HardwareAccel::None);
+    auto enc = Encoder::create(EncoderCodec::H264, accel);
     if (!enc || !enc->init(cfg)) return false;
+    if (hardware) *hardware = enc->isHardwareAccelerated();
 
     std::vector<std::vector<uint8_t>> packets;
     auto keep = [&](const EncodedPacket& p) {
@@ -386,6 +389,31 @@ TEST(ExportEncoder, Nv12SolidColoursDecodeExactly)
             enc.encodeFrameNv12(nv12.data(), w, nv12.data() + w * h, w, i);
         }, pic));
     const Yuv c = pic.at(32, 32);
+    EXPECT_NEAR(c.y, 63, 1);
+    EXPECT_NEAR(c.cb, 102, 1);
+    EXPECT_NEAR(c.cr, 240, 1);
+}
+
+TEST(ExportEncoder, Nv12FramesThroughNvencDecodeExactly)
+{
+    // NVENC uploads NV12 straight from the caller's planes (padded rows):
+    // BT.709 red comes back as it went in.
+    constexpr int w = 256, h = 128, stride = 260;
+    std::vector<uint8_t> nv12(static_cast<size_t>(stride) * h * 3 / 2, 63);
+    for (int y = 0; y < h / 2; ++y)
+        for (int x = 0; x < w / 2; ++x) {
+            nv12[stride * h + y * stride + 2 * x] = 102;
+            nv12[stride * h + y * stride + 2 * x + 1] = 240;
+        }
+    Picture pic;
+    bool hardware = false;
+    const bool ok = encodeH264AndDecode(w, h, 3,
+        [&](Encoder& enc, int i) {
+            enc.encodeFrameNv12(nv12.data(), stride, nv12.data() + stride * h, stride, i);
+        }, pic, HardwareAccel::NVENC, &hardware);
+    if (!hardware) GTEST_SKIP() << "NVENC unavailable";
+    ASSERT_TRUE(ok);
+    const Yuv c = pic.at(w / 2, h / 2);
     EXPECT_NEAR(c.y, 63, 1);
     EXPECT_NEAR(c.cb, 102, 1);
     EXPECT_NEAR(c.cr, 240, 1);
@@ -1536,6 +1564,77 @@ TEST(ExportIntegrity, ExplicitCompositeFailureDoesNotRetry)
               std::string::npos);
     EXPECT_EQ(readTestFile(destination), "known-prior-output");
 
+    std::filesystem::remove(destination);
+}
+
+TEST(ExportIntegrity, Nv12FramesEncodeAndBgraFramesStillFallBack)
+{
+    // An 8-bit 4:2:0 job takes NV12 frames (the GPU export conversion) and,
+    // frame by frame, still accepts a BGRA one (a cached or blank frame).
+    // The export panel's preview is rebuilt from the NV12 as small BGRA.
+    const auto destination = uniqueExportTestPath(".mp4");
+    constexpr uint32_t w = 128, h = 128;
+    constexpr int frames = 12;
+    RenderQueue queue;
+    std::atomic<int> bgraFrames{0};
+    queue.setFrameRenderCallback(
+        [&](int64_t tick, int64_t, uint32_t, uint32_t, bool) {
+            const int64_t index = tick / 1600;   // 48000 ticks/s at 30 fps
+            if (index == 3) {
+                ++bgraFrames;
+                return makeIntegrityFrame(w, h);
+            }
+            auto frame = std::make_shared<CachedFrame>();
+            frame->width = w;
+            frame->height = h;
+            frame->nv12Stride = w + 4;            // padded rows, as the GPU writes
+            frame->nv12Size = static_cast<size_t>(frame->nv12Stride) * h * 3 / 2;
+            auto bytes = std::make_shared<std::vector<uint8_t>>(frame->nv12Size, 128);
+            std::fill(bytes->begin(), bytes->begin() + frame->nv12Stride * h, 126);
+            frame->nv12 = std::shared_ptr<const uint8_t>(bytes, bytes->data());
+            return frame;
+        });
+    ExportJobConfig config;
+    config.outputPath = destination;
+    config.outputWidth = w;
+    config.outputHeight = h;
+    config.encoderConfig.width = w;
+    config.encoderConfig.height = h;
+    config.encoderConfig.fpsNum = 30;
+    config.encoderConfig.fpsDen = 1;
+    config.encoderConfig.codec = EncoderCodec::H264;
+    config.encoderConfig.hwAccel = HardwareAccel::None;
+    config.containerFormat = static_cast<uint8_t>(ContainerFormat::MP4);
+    config.includeAudio = false;
+    config.startFrame = 0;
+    config.endFrame = frames;
+    // The preview as the panel polls it (the queue drops it when the job ends).
+    std::mutex previewMutex;
+    std::shared_ptr<const CachedFrame> preview;
+    queue.setProgressCallback([&](uint32_t, const JobProgress&) {
+        auto latest = queue.latestFrame();
+        std::lock_guard lock(previewMutex);
+        if (latest) preview = std::move(latest);
+    });
+    const uint32_t id = queue.addJob(config);
+    queue.start(nullptr, nullptr);
+
+    ASSERT_TRUE(waitForRenderQueue(queue));
+    const auto job = queue.job(id);
+    ASSERT_NE(job, nullptr);
+    ASSERT_EQ(job->status.load(), JobStatus::Completed) << job->error;
+    EXPECT_EQ(bgraFrames.load(), 1);
+    const auto valid = validateExportFile(destination, frames, w, h, 30, 1);
+    EXPECT_TRUE(valid.ok) << valid.error;
+
+    // The last preview came from NV12 frame 8: a quarter-size mid grey.
+    std::lock_guard lock(previewMutex);
+    ASSERT_NE(preview, nullptr);
+    EXPECT_EQ(preview->width, w / 4);
+    EXPECT_EQ(preview->height, h / 4);
+    ASSERT_FALSE(preview->pixels.empty());
+    EXPECT_NEAR(preview->pixels[0], 128, 2);
+    EXPECT_NEAR(preview->pixels[2], 128, 2);
     std::filesystem::remove(destination);
 }
 

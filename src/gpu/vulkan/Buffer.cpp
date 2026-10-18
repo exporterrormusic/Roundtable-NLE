@@ -139,7 +139,10 @@ bool Buffer::create(VmaAllocator allocator, VkDeviceSize size, BufferUsage usage
     case BufferUsage::StorageReadback:
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                            VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        // System memory: with plain AUTO a storage buffer can land in
+        // device-local host-visible memory (ReBAR), which the CPU reads
+        // uncached — slower per byte than the BGRA staging readback.
+        allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         allocCreateInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
                                 VMA_ALLOCATION_CREATE_MAPPED_BIT;
         break;
@@ -259,6 +262,11 @@ void Buffer::upload(const void* data, VkDeviceSize size, VkDeviceSize offset)
 void Buffer::flush(VkDeviceSize size, VkDeviceSize offset)
 {
     vmaFlushAllocation(m_allocator, m_allocation, offset, size);
+}
+
+void Buffer::invalidate(VkDeviceSize size, VkDeviceSize offset)
+{
+    vmaInvalidateAllocation(m_allocator, m_allocation, offset, size);
 }
 
 } // namespace rt

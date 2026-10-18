@@ -60,7 +60,7 @@ std::string ffmpegError(int error)
 
 ExportFrameValidation validateExportFrame(
     const CachedFrame* frame, uint32_t expectedWidth,
-    uint32_t expectedHeight, bool allowRgba16f)
+    uint32_t expectedHeight, bool allowRgba16f, bool allowNv12)
 {
     ExportFrameValidation result;
     if (!frame) {
@@ -90,6 +90,18 @@ ExportFrameValidation validateExportFrame(
     if (validRgba16f) {
         result.valid = true;
         result.useRgba16f = true;
+        return result;
+    }
+    // NV12: two planes of nv12Stride-byte rows, the second at half height.
+    const bool validNv12 =
+        allowNv12 && (expectedHeight % 2u) == 0 &&
+        frame->nv12Stride >= expectedWidth &&
+        frame->hasNv12() &&
+        frame->nv12Size >= static_cast<size_t>(frame->nv12Stride) *
+                               expectedHeight * 3u / 2u;
+    if (validNv12) {
+        result.valid = true;
+        result.useNv12 = true;
         return result;
     }
     if (validBgra) {
