@@ -9,6 +9,7 @@ add_library(roundtable_core STATIC
     project/ProjectSerializer.cpp
     project/ProjectSerializerIO.cpp
     project/ClipSerialization.cpp
+    project/schema/RecordIO.cpp
     project/RenderStateHash.cpp
     project/AssetDatabase.cpp
     project/Settings.cpp
