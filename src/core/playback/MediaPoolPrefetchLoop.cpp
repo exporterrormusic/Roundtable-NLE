@@ -89,7 +89,7 @@ void MediaPool::startLoopPreDecode(MediaHandle handle, ResolutionTier tier,
                  handle, pathToUtf8(path.filename()), info.frameCount, priority);
 }
 
-void MediaPool::loopPreDecodeDispatcher()
+void MediaPool::loopPreDecodeDispatcher(std::stop_token stop)
 {
 #ifdef _WIN32
     // Background work — never preempt playback/composite/prefetch threads.
@@ -99,10 +99,11 @@ void MediaPool::loopPreDecodeDispatcher()
         LoopPreDecodeTask task;
         {
             std::unique_lock lock(m_loopPreDecodeMutex);
-            m_loopPreDecodeCv.wait(lock, [this] {
-                return !m_loopPreDecodeRunning.load() || !m_loopPreDecodeQueue.empty();
-            });
-            if (!m_loopPreDecodeRunning.load() && m_loopPreDecodeQueue.empty())
+            m_loopPreDecodeCv.wait(lock, stop, [this] { return !m_loopPreDecodeQueue.empty(); });
+            // Queued tasks are dropped on stop: each would open a decoder
+            // (~100+ ms for NVDEC) only to bail at its first frame, because
+            // stopPrefetchThread() has already cleared m_prefetchRunning.
+            if (stop.stop_requested())
                 return;
             task = m_loopPreDecodeQueue.top();
             m_loopPreDecodeQueue.pop();

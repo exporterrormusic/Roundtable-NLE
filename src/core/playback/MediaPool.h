@@ -35,6 +35,8 @@
 #include <set>
 #include <string>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -763,12 +765,12 @@ private:
     // A single dedicated worker that serially opens media files queued by
     // openAsync().  Keeps the playback thread off the ~500ms NVDEC init
     // cost when shots transition to characters that aren't loaded yet.
-    void openWorkerLoop();
+    void openWorkerLoop(std::stop_token stop);
     void startOpenWorker();
     void stopOpenWorker();
-    std::thread                                      m_openWorker;
+    WorkerThread                                     m_openWorker;
     mutable std::mutex                               m_openWorkerMutex;
-    std::condition_variable                           m_openWorkerCv;
+    std::condition_variable_any                      m_openWorkerCv;   // waits on the stop_token
     std::deque<std::filesystem::path>                m_openWorkerQueue;
     std::unordered_set<std::string>                  m_openWorkerInFlight; // canonical paths currently queued/opening
     std::atomic<bool>                                m_openWorkerRunning{false};
@@ -808,16 +810,15 @@ private:
         }
     };
     std::mutex                                       m_loopPreDecodeMutex;
-    std::condition_variable                          m_loopPreDecodeCv;
+    std::condition_variable_any                      m_loopPreDecodeCv;   // waits on the stop_token
     std::set<MediaHandle>                            m_loopPreDecodeActive;
     std::set<MediaHandle>                            m_loopPreDecodeDone;
     std::priority_queue<LoopPreDecodeTask>           m_loopPreDecodeQueue;
-    std::vector<std::thread>                         m_loopPreDecodeThreads;
-    std::atomic<bool>                                m_loopPreDecodeRunning{false};
+    std::vector<WorkerThread>                        m_loopPreDecodeThreads;
     uint64_t                                         m_loopPreDecodeSeq{0};
     void startLoopPreDecodeWorkers();
     void stopLoopPreDecodeWorkers();
-    void loopPreDecodeDispatcher();
+    void loopPreDecodeDispatcher(std::stop_token stop);
 
     // Last-good-frame map: stores the most recent successfully decoded frame
     // per handle during playback.  On cache miss, getFrame returns this

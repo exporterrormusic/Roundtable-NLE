@@ -57,10 +57,13 @@ void MediaPool::stopPrefetchThread()
 
 void MediaPool::startLoopPreDecodeWorkers()
 {
-    if (m_loopPreDecodeRunning.exchange(true)) return;
+    if (!m_loopPreDecodeThreads.empty()) return;
     m_loopPreDecodeThreads.reserve(LOOP_PREDECODE_MAX_CONCURRENT);
     for (int i = 0; i < LOOP_PREDECODE_MAX_CONCURRENT; ++i) {
-        m_loopPreDecodeThreads.emplace_back(&MediaPool::loopPreDecodeDispatcher, this);
+        WorkerThread worker;
+        worker.start("MediaPool loop pre-decode " + std::to_string(i + 1),
+                     [this](std::stop_token stop) { loopPreDecodeDispatcher(stop); });
+        m_loopPreDecodeThreads.push_back(std::move(worker));
     }
     spdlog::info("MediaPool: {} loop pre-decode worker threads started",
                  LOOP_PREDECODE_MAX_CONCURRENT);
@@ -68,12 +71,11 @@ void MediaPool::startLoopPreDecodeWorkers()
 
 void MediaPool::stopLoopPreDecodeWorkers()
 {
-    if (!m_loopPreDecodeRunning.exchange(false)) return;
-    m_loopPreDecodeCv.notify_all();
-    for (auto& t : m_loopPreDecodeThreads) {
-        if (t.joinable())
-            t.join();
-    }
+    // Ask all of them first so they wind down together, then join each.
+    for (auto& worker : m_loopPreDecodeThreads)
+        worker.requestStop();
+    for (auto& worker : m_loopPreDecodeThreads)
+        worker.stop();
     m_loopPreDecodeThreads.clear();
 }
 

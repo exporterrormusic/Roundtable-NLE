@@ -773,31 +773,27 @@ void MediaPool::openAsync(const std::filesystem::path& filePath)
 void MediaPool::startOpenWorker()
 {
     m_openWorkerRunning.store(true, std::memory_order_release);
-    m_openWorker = std::thread([this]{ openWorkerLoop(); });
+    m_openWorker.start("MediaPool open",
+                       [this](std::stop_token stop) { openWorkerLoop(stop); });
 }
 
 void MediaPool::stopOpenWorker()
 {
-    m_openWorkerRunning.store(false, std::memory_order_release);
-    m_openWorkerCv.notify_all();
-    if (m_openWorker.joinable())
-        m_openWorker.join();
+    m_openWorkerRunning.store(false, std::memory_order_release);   // openAsync stops queueing
+    m_openWorker.stop();   // a stop_token wait cannot miss the stop
     std::lock_guard wlk(m_openWorkerMutex);
     m_openWorkerQueue.clear();
     m_openWorkerInFlight.clear();
 }
 
-void MediaPool::openWorkerLoop()
+void MediaPool::openWorkerLoop(std::stop_token stop)
 {
-    while (m_openWorkerRunning.load(std::memory_order_acquire)) {
+    while (!stop.stop_requested()) {
         std::filesystem::path path;
         {
             std::unique_lock wlk(m_openWorkerMutex);
-            m_openWorkerCv.wait(wlk, [this]{
-                return !m_openWorkerQueue.empty()
-                    || !m_openWorkerRunning.load(std::memory_order_acquire);
-            });
-            if (!m_openWorkerRunning.load(std::memory_order_acquire))
+            m_openWorkerCv.wait(wlk, stop, [this]{ return !m_openWorkerQueue.empty(); });
+            if (stop.stop_requested())
                 return;
             path = std::move(m_openWorkerQueue.front());
             m_openWorkerQueue.pop_front();
