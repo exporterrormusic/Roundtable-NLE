@@ -1,5 +1,7 @@
 #include "MediaTaskQueue.h"
 
+#include "threading/WorkerThread.h"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -47,7 +49,7 @@ struct MediaTaskQueue::State
     std::condition_variable ready;
     std::deque<std::shared_ptr<Task>> pending;
     std::unordered_map<std::string, std::shared_ptr<Task>> byKey;
-    std::vector<std::jthread> workers;
+    std::vector<WorkerThread> workers;
     std::atomic<OwnerId> nextOwner{1};
     uint64_t nextSequence{1};
     bool stopping{false};
@@ -62,8 +64,10 @@ MediaTaskQueue::MediaTaskQueue(size_t workerCount)
     m_state->stats.workers = workerCount;
     m_state->workers.reserve(workerCount);
     for (size_t i = 0; i < workerCount; ++i) {
-        m_state->workers.emplace_back(
-            [this](std::stop_token stop) { workerLoop(stop); });
+        WorkerThread worker;
+        worker.start("Media task " + std::to_string(i + 1),
+                     [this](std::stop_token stop) { workerLoop(stop); });
+        m_state->workers.push_back(std::move(worker));
     }
 }
 
@@ -193,9 +197,9 @@ void MediaTaskQueue::shutdown()
         m_state->stats.queued = 0;
     }
 
-    for (auto& worker : m_state->workers) worker.request_stop();
+    for (auto& worker : m_state->workers) worker.requestStop();
     m_state->ready.notify_all();
-    m_state->workers.clear(); // jthread destructors join
+    m_state->workers.clear(); // WorkerThread destructors join
 
     std::lock_guard lock(m_state->mutex);
     m_state->byKey.clear();

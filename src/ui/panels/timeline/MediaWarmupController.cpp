@@ -4,6 +4,7 @@
  */
 
 #include "panels/timeline/MediaWarmupController.h"
+#include "threading/WorkerThread.h"
 
 #include "decode/VideoFrameMapping.h"
 #include "playback/MediaPool.h"
@@ -33,7 +34,7 @@ struct MediaWarmupController::Batch {
     uint64_t generation{0};
     std::atomic<bool> finished{false};
     std::atomic<int> workersRemaining{0};
-    std::vector<std::jthread> workers;
+    std::vector<WorkerThread> workers;
 };
 
 void MediaWarmupController::cancel() noexcept
@@ -41,7 +42,7 @@ void MediaWarmupController::cancel() noexcept
     m_generation.fetch_add(1, std::memory_order_acq_rel);
     for (const auto& batch : m_batches) {
         for (auto& worker : batch->workers)
-            worker.request_stop();
+            worker.requestStop();
     }
 }
 
@@ -49,10 +50,8 @@ void MediaWarmupController::cancelAndJoin() noexcept
 {
     cancel();
     for (const auto& batch : m_batches) {
-        for (auto& worker : batch->workers) {
-            if (worker.joinable())
-                worker.join();
-        }
+        for (auto& worker : batch->workers)
+            worker.stop();
     }
     m_batches.clear();
     if (m_cfg.destroying())
@@ -318,7 +317,8 @@ void MediaWarmupController::start()
                  total, nThreads);
 
     for (int ti = 0; ti < nThreads; ++ti) {
-        batch->workers.emplace_back(
+        WorkerThread worker;
+        worker.start("Media warm-up " + std::to_string(ti + 1),
             [this, pool, work, workIndex, processed, batchPtr, generation,
              startTime, total, nThreads, startFrameFor, stillWindow,
              stillsWarmed](std::stop_token stop) {
@@ -415,6 +415,7 @@ void MediaWarmupController::start()
                 batchPtr->finished.store(true, std::memory_order_release);
             }
         });
+        batch->workers.push_back(std::move(worker));
     }
 }
 

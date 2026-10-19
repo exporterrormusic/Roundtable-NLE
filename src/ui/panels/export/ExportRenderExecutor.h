@@ -104,6 +104,7 @@ private:
     int m_currentSlot{0};
     QThread* m_ownerThread{nullptr};
     QThread* m_renderThread{nullptr};
+    uint64_t m_renderThreadRegistryId{0};   // ThreadRegistry entry while running
     QObject* m_dispatchTarget{nullptr};
     std::shared_ptr<ExportRenderSession> m_session;
 };

@@ -112,9 +112,7 @@ void MediaWatchController::shutdown() noexcept
     if (m_pollTimer) m_pollTimer->stop();
     if (m_openedRescanTimer) m_openedRescanTimer->stop();
 
-    m_scanThread.request_stop();
-    if (m_scanThread.joinable())
-        m_scanThread.join();
+    m_scanThread.stop();
     m_scanInFlight = false;
     m_scanQueued = false;
 }
@@ -282,8 +280,7 @@ void MediaWatchController::rescan()
     // m_scanInFlight is cleared by the queued completion only after the
     // previous worker has posted its result. Reaping here is therefore a
     // bounded join of an already-completed (or just-returning) thread.
-    if (m_scanThread.joinable())
-        m_scanThread.join();
+    m_scanThread.join();
     m_lastWant = candidates;
     m_scanInFlight = true;
     const uint64_t generation =
@@ -296,7 +293,7 @@ void MediaWatchController::rescan()
         watchedSnapshot.push_back(w.toStdString());
 
     // ── Background: existence + (size, mtime) for every path ─────────────
-    m_scanThread = std::jthread(
+    m_scanThread.start("Media watch scan",
         [this, candidates, watchedSnapshot, generation](std::stop_token stop) {
         std::set<std::string> existing;
         std::map<std::string, std::pair<std::uintmax_t, std::int64_t>> sigs;

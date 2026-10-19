@@ -3,6 +3,7 @@
  * the pre-flight frame-count check, the batch queue and its log. The batch
  * itself runs in ComfyRunner.
  */
+#include "threading/ThreadRegistry.h"
 #include "panels/comfy/ComfyPanel.h"
 
 #include "panels/audio/AudioSync.h"
@@ -612,6 +613,7 @@ void ComfyPanel::showLivePreviewClip(const QByteArray& clip, const QString& mime
     }
     QPointer<ComfyPanel> guard(this);
     QThreadPool::globalInstance()->start([guard, path, gen, fps]() {
+        ThreadRegistry::Scope registryScope("Comfy preview decode");
         std::vector<QImage> frames = VideoFrameGrabber::decodeAllFrames(path.toStdString(), QSize(1024, 1024));
         QFile::remove(path);
         QMetaObject::invokeMethod(qApp, [guard, gen, fps, frames = std::move(frames)]() mutable {

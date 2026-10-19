@@ -40,6 +40,8 @@
 #include <thread>
 #include <vector>
 
+#include "threading/WorkerThread.h"
+
 namespace rt {
 
 class MainWindow;
@@ -111,7 +113,7 @@ private:
 
     struct ProjectLoadTask {
         std::shared_ptr<std::atomic<bool>> finished;
-        std::jthread worker;
+        WorkerThread worker;
     };
 
     MainWindow* m_mw{nullptr};

@@ -3,6 +3,7 @@
  * Extracted from AudioPlaybackService.cpp for maintainability.
  */
 
+#include "threading/ThreadRegistry.h"
 #include "audio/AudioPlaybackService.h"
 
 #include "audio/AudioEngine.h"
@@ -296,6 +297,7 @@ void AudioPlaybackService::warmCacheAsync()
 
     m_warmFuture = std::async(std::launch::async,
         [this, pages = std::move(uncachedPages)]() {
+            ThreadRegistry::Scope registryScope("Audio warm-up");
             if (m_destroying.load(std::memory_order_acquire)) return;
 
             for (const auto& page : pages) {

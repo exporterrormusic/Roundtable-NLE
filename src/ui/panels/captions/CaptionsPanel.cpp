@@ -444,7 +444,6 @@ CaptionsPanel::~CaptionsPanel()
  m_timelineRevision.fetch_add(1, std::memory_order_acq_rel);
  ++m_transcriptionTaskId;
  requestTranscriptionCancel();
- if (m_transcriptionThread.joinable())
  m_transcriptionThread.join();
  if (m_timeline)
  m_timeline->removeObserver(this);
@@ -452,8 +451,7 @@ CaptionsPanel::~CaptionsPanel()
 
 void CaptionsPanel::requestTranscriptionCancel() noexcept
 {
- if (m_transcriptionThread.joinable())
- m_transcriptionThread.request_stop();
+ m_transcriptionThread.requestStop();
  if (m_transcriber)
  m_transcriber->cancelAsync();
 }
@@ -1404,7 +1402,6 @@ void CaptionsPanel::onTranscribe()
 
  // m_transcribing is cleared only by completion, so this reaps an already
  // finished worker rather than waiting on active transcription in the UI.
- if (m_transcriptionThread.joinable())
  m_transcriptionThread.join();
 
  std::vector<CaptionTranscribeSource> sources = findTranscriptionSources();
@@ -1454,7 +1451,7 @@ void CaptionsPanel::onTranscribe()
  // if the panel is destroyed mid-run. Results are posted back via
  // invokeMethod(this, ...) which Qt drops if `this` was destroyed.
  std::shared_ptr<Transcriber> tr = m_transcriber;
- m_transcriptionThread = std::jthread(
+ m_transcriptionThread.start("Captions transcription",
  [this, tr, sources, report, taskId, timelineRevision](std::stop_token stop) {
  QString transcriptionError;
  bool transcriptionCancelled = false;

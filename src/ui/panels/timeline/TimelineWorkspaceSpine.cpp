@@ -7,6 +7,7 @@
  * forward to the CompositeService.
  */
 
+#include "threading/ThreadRegistry.h"
 #include "panels/timeline/TimelineWorkspace.h"
 #include "PathUtils.h"
 #include "panels/monitors/ProgramMonitor.h"
@@ -62,6 +63,7 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
     // Heavy work on a background thread.
     auto future = std::async(std::launch::async,
         [this, key, charName, outfit, stance, assetsDir]() {
+            ThreadRegistry::Scope registryScope("Spine load " + key);
             auto shared = std::make_shared<CompositeService::SpineSharedData>();
             shared->loadState = ResourceLoadState::Loading;
 

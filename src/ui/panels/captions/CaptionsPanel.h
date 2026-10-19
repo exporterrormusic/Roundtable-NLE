@@ -28,6 +28,8 @@
 #include <thread>
 #include <vector>
 
+#include "threading/WorkerThread.h"
+
 namespace rt {
 
 class Timeline;
@@ -213,7 +215,7 @@ private:
  // Transcription (whisper) — owned via shared_ptr so a detached worker
  // worker lifetime is owned and joined before panel destruction completes.
  std::shared_ptr<Transcriber> m_transcriber;
- std::jthread m_transcriptionThread;
+ WorkerThread m_transcriptionThread;
  std::atomic<bool> m_destroying{false};
  std::atomic<uint64_t> m_timelineRevision{0};
  uint64_t m_transcriptionTaskId{0};

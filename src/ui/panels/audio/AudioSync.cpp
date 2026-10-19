@@ -2,6 +2,7 @@
  * AudioSync.cpp — 5-step audio sync workflow panel implementation.
  */
 
+#include "threading/ThreadRegistry.h"
 #include "panels/audio/AudioSync.h"
 #include "panels/audio/VideoFrameGrabber.h"
 #include "widgets/VideoFrameView.h"
@@ -80,6 +81,7 @@ TranscriptionWorker::TranscriptionWorker(Transcriber* transcriber, QObject* pare
 
 void TranscriptionWorker::process()
 {
+    ThreadRegistry::Scope registryScope("AudioSync transcription");
     if (!m_transcriber) {
         emit errorOccurred("Transcriber not initialized");
         emit finished(false);

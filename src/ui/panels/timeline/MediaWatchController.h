@@ -40,6 +40,8 @@
 #include <thread>
 #include <utility>
 
+#include "threading/WorkerThread.h"
+
 class QFileSystemWatcher;
 class QTimer;
 
@@ -137,7 +139,7 @@ private:
     bool m_scanInFlight{false};   ///< a background stat pass is running
     bool m_scanQueued{false};     ///< a rescan was requested mid-flight
     std::atomic<uint64_t> m_scanGeneration{0};
-    std::jthread m_scanThread;
+    WorkerThread m_scanThread;
 
     // ── MediaPool onMediaOpened coalescing ─────────────────────────────
     std::atomic<bool> m_openedMarshalQueued{false};  ///< one cross-thread marshal at a time

@@ -1,3 +1,4 @@
+#include "threading/ThreadRegistry.h"
 #include "panels/export/ExportRenderExecutor.h"
 #include "panels/export/ExportRenderSession.h"
 
@@ -75,6 +76,7 @@ void ExportRenderExecutor::beginRun(
     if (m_dispatchTarget->thread() != m_renderThread)
         m_dispatchTarget->moveToThread(m_renderThread);
     m_renderThread->start();
+    m_renderThreadRegistryId = ThreadRegistry::add("Export render");
 
     const bool initialized = QMetaObject::invokeMethod(
         m_dispatchTarget,
@@ -115,6 +117,7 @@ void ExportRenderExecutor::stopThreadAndReleaseSession()
         return;
 
     if (!m_renderThread->isRunning()) {
+        ThreadRegistry::remove(std::exchange(m_renderThreadRegistryId, 0));
         m_session.reset();
         return;
     }
@@ -132,6 +135,7 @@ void ExportRenderExecutor::stopThreadAndReleaseSession()
         Qt::BlockingQueuedConnection);
     m_renderThread->quit();
     m_renderThread->wait();
+    ThreadRegistry::remove(std::exchange(m_renderThreadRegistryId, 0));
 
     // Defensive fallback for an event dispatcher that stopped unexpectedly.
     if (!released) {

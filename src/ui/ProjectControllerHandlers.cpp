@@ -86,7 +86,7 @@ void ProjectController::beginAsyncProjectLoad(
     const uint64_t generation =
         m_projectLoadGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
     for (auto& task : m_projectLoadTasks)
-        task.worker.request_stop();
+        task.worker.requestStop();
     std::erase_if(m_projectLoadTasks, [](const ProjectLoadTask& task) {
         return task.finished->load(std::memory_order_acquire);
     });
@@ -98,9 +98,10 @@ void ProjectController::beginAsyncProjectLoad(
         std::move(continuation));
 
     auto finished = std::make_shared<std::atomic<bool>>(false);
-    m_projectLoadTasks.push_back(ProjectLoadTask{
-        finished,
-        std::jthread([this, p, cont, finished, generation](std::stop_token stop) {
+    ProjectLoadTask task;
+    task.finished = finished;
+    task.worker.start("Project load",
+        [this, p, cont, finished, generation](std::stop_token stop) {
             std::unique_ptr<Project> loaded;
             try {
                 if (!stop.stop_requested()) {
@@ -132,8 +133,8 @@ void ProjectController::beginAsyncProjectLoad(
                     Qt::QueuedConnection);
             }
             finished->store(true, std::memory_order_release);
-        })
-    });
+        });
+    m_projectLoadTasks.push_back(std::move(task));
 }
 
 // Common tail for the async open paths: drop the input lock now, or keep the
