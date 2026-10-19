@@ -497,3 +497,46 @@ TEST(WorkspaceWiring, ShotSwitchToABiggerShotAddsTracksAndUndoRemovesThem)
     rig.ws.reset();
     fs::remove_all(dir);
 }
+
+TEST(WorkspaceWiring, ShotSwitchUndoAffectsItsOwnSequenceAfterSwitchingSequences)
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+        ("rt_ws_shot_switch_seq_" + std::to_string(QCoreApplication::applicationPid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    rt::ShotPresetManager presets;
+    presets.scan(dir);
+    ASSERT_TRUE(presets.save(rt::ShotPreset::createDefault("Rapi")));
+
+    Rig rig;
+    rig.ws->setShotPresetManager(&presets);
+    rig.clip->setGroupId(7);
+    const uint64_t oldId = rig.clip->id();
+    const std::string seq0Before = trackLayout(*rig.seq0);
+
+    emit rig.ws->propertiesPanel()->shotSwitchRequested(7, "Rapi - Default");
+    QApplication::processEvents();
+    const std::string seq0After = trackLayout(*rig.seq0);
+    ASSERT_NE(seq0After, seq0Before);
+
+    // The user opens the other sequence, then undoes.
+    rig.project.setActiveSequence(1);
+    rig.ws->setTimeline(rig.seq1);
+    const std::string seq1Before = trackLayout(*rig.seq1);
+
+    ASSERT_TRUE(rig.stack.undo());
+    EXPECT_EQ(trackLayout(*rig.seq1), seq1Before);
+    EXPECT_EQ(trackLayout(*rig.seq0), seq0Before);
+    EXPECT_EQ(groupMembers(*rig.seq0, 7).visualIds, (std::vector<uint64_t>{oldId}));
+    // The open sequence's panels are not pointed at the other sequence's clip.
+    const rt::Clip* bound = rig.ws->propertiesPanel()->clip();
+    EXPECT_TRUE(bound == nullptr || bound->id() != oldId);
+
+    ASSERT_TRUE(rig.stack.redo());
+    EXPECT_EQ(trackLayout(*rig.seq1), seq1Before);
+    EXPECT_EQ(trackLayout(*rig.seq0), seq0After);
+
+    rig.ws.reset();
+    fs::remove_all(dir);
+}

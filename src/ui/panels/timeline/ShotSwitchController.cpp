@@ -688,27 +688,36 @@ void ShotSwitchController::apply(uint64_t groupId, const std::string& newShotNam
     for (auto& snap : *newClips)
         if (snap.clip) snap.clip->setSyncLine(old->syncLine);
 
+    // Undo/redo find the switched sequence by id: by then the user may have
+    // opened another one (or closed this one: then they do nothing).
     // Panels must let go of clips before they are freed; afterwards the
-    // workspace refreshes and reselects the group's first visual clip.
-    // Both act on the timeline current at execute time.
-    auto finish = [this, groupId]() {
+    // workspace refreshes, and reselects the group's first visual clip when
+    // the switched sequence is the open one.
+    const uint64_t sequenceId = timeline()->id();
+    auto finish = [this, groupId](Timeline& sequence) {
         Track* pickedTrack = nullptr;
-        Clip* picked = firstVisualMember(*timeline(), groupId, pickedTrack);
+        Clip* picked = nullptr;
+        if (&sequence == timeline())
+            picked = firstVisualMember(sequence, groupId, pickedTrack);
         m_cfg.shotSwitched(picked, pickedTrack);
     };
-    auto redo = [this, groupId, newClips, newShotName, plan, finish]() {
+    auto redo = [this, sequenceId, groupId, newClips, newShotName, plan, finish]() {
+        Timeline* sequence = m_cfg.sequenceById(sequenceId);
+        if (!sequence) return;
         m_cfg.releaseClipPanels();
-        removeGroupVisualClips(*timeline(), groupId);
-        applyTrackPlan(*timeline(), *plan);
-        insertSnapshots(*timeline(), groupId, *newClips, newShotName);
-        finish();
+        removeGroupVisualClips(*sequence, groupId);
+        applyTrackPlan(*sequence, *plan);
+        insertSnapshots(*sequence, groupId, *newClips, newShotName);
+        finish(*sequence);
     };
-    auto undo = [this, groupId, old, plan, finish]() {
+    auto undo = [this, sequenceId, groupId, old, plan, finish]() {
+        Timeline* sequence = m_cfg.sequenceById(sequenceId);
+        if (!sequence) return;
         m_cfg.releaseClipPanels();
-        removeGroupVisualClips(*timeline(), groupId);
-        revertTrackPlan(*timeline(), *plan);
-        insertSnapshots(*timeline(), groupId, old->clips, old->shotName);
-        finish();
+        removeGroupVisualClips(*sequence, groupId);
+        revertTrackPlan(*sequence, *plan);
+        insertSnapshots(*sequence, groupId, old->clips, old->shotName);
+        finish(*sequence);
     };
 
     if (CommandStack* stack = m_cfg.commandStack()) {

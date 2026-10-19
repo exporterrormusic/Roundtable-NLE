@@ -8,7 +8,9 @@
  * member on a locked track.
  *
  * Knows nothing about panels: the workspace supplies the timeline, command
- * stack and presets, and reacts through three callbacks.
+ * stack and presets, and reacts through three callbacks. Undo/redo find
+ * the switched sequence by id, so they act on it even when another
+ * sequence is open by then.
  */
 
 #pragma once
@@ -28,7 +30,10 @@ class Track;
 class ShotSwitchController {
 public:
     struct Config {
+        /// The open sequence.
         std::function<Timeline*()>          timeline;
+        /// Any sequence of the project by Timeline::id() (null if gone).
+        std::function<Timeline*(uint64_t)>  sequenceById;
         std::function<CommandStack*()>      commandStack;
         std::function<ShotPresetManager*()> presets;
         /// Nothing changed (missing preset, no timeline): repaint.
@@ -45,7 +50,6 @@ public:
     void apply(uint64_t groupId, const std::string& newShotName);
 
 private:
-    /// Read at execute time: undo/redo act on the current timeline.
     [[nodiscard]] Timeline* timeline() const { return m_cfg.timeline(); }
 
     Config m_cfg;

@@ -53,6 +53,8 @@
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/properties/PropertiesPanel.h"
+#include "project/Project.h"
+#include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "playback/PlaybackController.h"
@@ -165,6 +167,14 @@ TimelineWorkspace::TimelineWorkspace(QWidget* parent)
     // Shot-preset switching (Properties panel / character shot panel).
     m_shotSwitch = std::make_unique<ShotSwitchController>(ShotSwitchController::Config{
         /*timeline=*/    [this] { return m_timeline; },
+        /*sequenceById=*/[this](uint64_t id) -> Timeline* {
+            if (m_project) {
+                for (size_t i = 0; i < m_project->sequenceCount(); ++i)
+                    if (Timeline* seq = m_project->sequence(i); seq && seq->id() == id)
+                        return seq;
+            }
+            return (m_timeline && m_timeline->id() == id) ? m_timeline : nullptr;
+        },
         /*commandStack=*/[this] { return m_commandStack; },
         /*presets=*/     [this] { return m_shotPresetManager; },
         /*refreshViews=*/[this] {
