@@ -25,6 +25,8 @@
 #include "playback/EngineContracts.h"
 #include "playback/PlaybackController.h"
 #include "project/Project.h"
+#include "spine/ShotPreset.h"
+#include "timeline/AudioClip.h"
 #include "timeline/EditOperations.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -39,6 +41,8 @@
 #include <QTabBar>
 
 #include <algorithm>
+#include <filesystem>
+#include <string>
 #include <memory>
 
 namespace {
@@ -316,4 +320,88 @@ TEST(WorkspaceWiring, DraggedSequenceTabsStillSwitchToTheirOwnSequence)
     rig.ws->refreshSequenceTabs();
     EXPECT_EQ(tabs->tabText(0), QStringLiteral("Renamed"));
     EXPECT_EQ(tabs->tabText(1), QStringLiteral("Sequence 01"));
+}
+
+namespace {
+
+struct GroupView
+{
+    std::vector<std::string> visual;   // "<type>:<shotName>" per visual member
+    std::vector<uint64_t> visualIds;
+    std::vector<std::string> other;    // shot names of non-visual members
+};
+
+GroupView groupMembers(const rt::Timeline& timeline, uint64_t groupId)
+{
+    GroupView view;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        const rt::Track* track = timeline.track(ti);
+        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+            const rt::Clip* c = track->clip(ci);
+            if (c->groupId() != groupId) continue;
+            if (c->isVisual()) {
+                view.visual.push_back(std::to_string(static_cast<int>(c->clipType())) +
+                                      ":" + c->shotName());
+                view.visualIds.push_back(c->id());
+            } else {
+                view.other.push_back(c->shotName());
+            }
+        }
+    }
+    return view;
+}
+
+} // namespace
+
+TEST(WorkspaceWiring, ShotSwitchReplacesTheGroupAndUndoRestoresIt)
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+        ("rt_ws_shot_switch_" + std::to_string(QCoreApplication::applicationPid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    rt::ShotPresetManager presets;
+    presets.scan(dir);
+    ASSERT_TRUE(presets.save(rt::ShotPreset::createDefault("Rapi")));
+
+    Rig rig;
+    rig.ws->setShotPresetManager(&presets);
+    rig.clip->setGroupId(7);
+    rig.clip->setShotName("Old Shot");
+    rt::Track* a1 = rig.seq0->addAudioTrack("A1");
+    auto audio = std::make_unique<rt::AudioClip>();
+    audio->setDuration(48000);
+    audio->setGroupId(7);
+    audio->setShotName("Old Shot");
+    a1->addClip(std::move(audio));
+    const uint64_t oldId = rig.clip->id();
+    const GroupView before = groupMembers(*rig.seq0, 7);
+
+    emit rig.ws->propertiesPanel()->shotSwitchRequested(7, "Rapi - Default");
+    QApplication::processEvents();
+
+    const GroupView after = groupMembers(*rig.seq0, 7);
+    ASSERT_EQ(after.visual.size(), 1u);
+    EXPECT_EQ(after.visual.front(),
+              std::to_string(static_cast<int>(rt::ClipType::Spine)) + ":Rapi - Default");
+    EXPECT_NE(after.visualIds.front(), oldId);
+    EXPECT_EQ(after.other, (std::vector<std::string>{"Rapi - Default"}));
+    // The Properties panel follows the new shot's first visual clip.
+    ASSERT_NE(rig.ws->propertiesPanel()->clip(), nullptr);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip()->id(), after.visualIds.front());
+    EXPECT_EQ(rig.ws->selection().clip, rig.ws->propertiesPanel()->clip());
+
+    ASSERT_TRUE(rig.stack.undo());
+    const GroupView undone = groupMembers(*rig.seq0, 7);
+    EXPECT_EQ(undone.visual, before.visual);
+    EXPECT_EQ(undone.visualIds, (std::vector<uint64_t>{oldId}));
+    EXPECT_EQ(undone.other, (std::vector<std::string>{"Old Shot"}));
+
+    ASSERT_TRUE(rig.stack.redo());
+    const GroupView redone = groupMembers(*rig.seq0, 7);
+    EXPECT_EQ(redone.visual, after.visual);
+    EXPECT_EQ(redone.visualIds, after.visualIds);
+
+    rig.ws.reset();
+    fs::remove_all(dir);
 }
