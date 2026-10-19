@@ -86,7 +86,6 @@ class Timeline;
 class EffectControlsPanel;
 class EffectsPanel;
 class HistoryPanel;
-class KeyframeEditor;
 class PropertiesPanel;
 class ProgramMonitor;
 class ProjectBin;
@@ -229,7 +228,6 @@ public:
     [[nodiscard]] PropertiesPanel*  propertiesPanel()  const noexcept;
     [[nodiscard]] EffectControlsPanel* effectControlsPanel() const noexcept;
     [[nodiscard]] EffectsPanel*     effectsPanel()     const noexcept;
-    [[nodiscard]] KeyframeEditor*   keyframeEditor()   const noexcept;
     [[nodiscard]] HistoryPanel*     historyPanel()     const noexcept;
 
     /// Get a dock widget by panel name (delegates to TimelineWorkspace).

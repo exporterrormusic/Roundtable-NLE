@@ -44,7 +44,6 @@ ProjectBin*      MainWindow::projectBin()      const noexcept { return m_timelin
 PropertiesPanel* MainWindow::propertiesPanel() const noexcept { return m_timelineWorkspace ? m_timelineWorkspace->propertiesPanel() : nullptr; }
 EffectControlsPanel* MainWindow::effectControlsPanel() const noexcept { return m_timelineWorkspace ? m_timelineWorkspace->effectControlsPanel() : nullptr; }
 EffectsPanel*    MainWindow::effectsPanel()    const noexcept { return m_timelineWorkspace ? m_timelineWorkspace->effectsPanel()    : nullptr; }
-KeyframeEditor*  MainWindow::keyframeEditor()  const noexcept { return m_timelineWorkspace ? m_timelineWorkspace->keyframeEditor()  : nullptr; }
 HistoryPanel*    MainWindow::historyPanel()    const noexcept { return m_timelineWorkspace ? m_timelineWorkspace->historyPanel()    : nullptr; }
 
 CharacterBrowser* MainWindow::characterBrowser() const noexcept { return m_characterShotPanel ? m_characterShotPanel->characterBrowser() : nullptr; }

@@ -115,7 +115,6 @@ class EffectControlsPanel;
 class EffectsPanel;
 class GraphicsEditorPanel;
 class HistoryPanel;
-class KeyframeEditor;
 class ColorGradingPanel;
 class PropertiesPanel;
 class ProgramMonitor;
@@ -237,7 +236,6 @@ public:
     [[nodiscard]] PropertiesPanel*  propertiesPanel()  const noexcept { return m_propertiesPanel; }
     [[nodiscard]] EffectControlsPanel* effectControlsPanel() const noexcept { return m_effectControlsPanel; }
     [[nodiscard]] EffectsPanel*     effectsPanel()     const noexcept { return m_effectsPanel; }
-    [[nodiscard]] KeyframeEditor*   keyframeEditor()   const noexcept { return m_keyframeEditor; }
     [[nodiscard]] HistoryPanel*     historyPanel()     const noexcept { return m_historyPanel; }
     [[nodiscard]] ScopesPanel*      scopesPanel()      const noexcept { return m_scopesPanel; }
     [[nodiscard]] CharactersPanel*   charactersPanel()   const noexcept { return m_charactersPanel; }
@@ -491,7 +489,6 @@ private:
     TierListPanel*    m_tierListPanel{nullptr};
     ColorGradingPanel*     m_ColorGradingPanel{nullptr};
     EffectsPanel*     m_effectsPanel{nullptr};
-    KeyframeEditor*   m_keyframeEditor{nullptr};
     HistoryPanel*     m_historyPanel{nullptr};
     ScopesPanel*      m_scopesPanel{nullptr};
     CharactersPanel*   m_charactersPanel{nullptr};

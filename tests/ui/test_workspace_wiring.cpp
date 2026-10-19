@@ -176,7 +176,7 @@ TEST(WorkspaceWiring, BuildCreatesTheStockDockLayout)
     EXPECT_EQ(got.toStdString(), std::string(expected));
 }
 
-TEST(WorkspaceWiring, ClickingAClipSelectsItAndBindsTheShownPanels)
+TEST(WorkspaceWiring, FocusingAClipSelectsItAndBindsEffectControls)
 {
     Rig rig;
     emit rig.ws->timelinePanel()->clipSelected(rig.v1Index(), 0);
@@ -268,26 +268,16 @@ bool dockInFront(const Rig& rig, const QString& name)
 }
 } // namespace
 
-// clipSelected (S-split re-focus, context menu "Properties...") skips a clip
-// panel whose dock is CLOSED (tabs behind the front one still bind), then
-// raises the editor for the clip's kind. Real mouse clicks go through
-// selectionChanged instead (next test).
-// FOUND (pinned as-is): a closed Effect Controls re-opened by that raise
-// shows the previous clip; Color is never skipped (it looks up a dock
-// named "Color Grading", which doesn't exist; the dock is "Color Correction").
-TEST(WorkspaceWiring, FocusingAClipSkipsClosedDocksAndRaisesItsEditor)
+// A click emits selectionChanged, then clipSelected; the S-split re-focus
+// emits clipSelected alone. As in Premiere, every clip panel follows the
+// focused clip, even one whose dock is closed (opened later, it shows the
+// current clip), and the editor for the clip's kind comes to the front.
+TEST(WorkspaceWiring, FocusingAClipBindsEveryPanelEvenClosedOnes)
 {
     Rig rig;
     rt::Clip* graphic = addGraphicClip(rig);
     auto* panel = rig.ws->timelinePanel();
     ASSERT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
-
-    emit panel->clipSelected(rig.v1Index(), 0);
-    QApplication::processEvents();
-    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), rig.clip);
-    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), rig.clip);
-    EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), rig.clip);
-    EXPECT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
 
     emit panel->clipSelected(rig.v1Index(), 1);
     QApplication::processEvents();
@@ -295,6 +285,8 @@ TEST(WorkspaceWiring, FocusingAClipSkipsClosedDocksAndRaisesItsEditor)
     EXPECT_EQ(rig.ws->selection().clipIdx, 1u);
     EXPECT_EQ(rig.ws->graphicsEditorPanel()->clip(), graphic);
     EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), graphic);
     EXPECT_TRUE(dockInFront(rig, QStringLiteral("Graphics Editor")));
 
     for (const char* name : {"Effect Controls", "Properties", "Color Correction"})
@@ -303,11 +295,27 @@ TEST(WorkspaceWiring, FocusingAClipSkipsClosedDocksAndRaisesItsEditor)
     emit panel->clipSelected(rig.v1Index(), 0);
     QApplication::processEvents();
     EXPECT_EQ(rig.ws->selection().clip, rig.clip);
-    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), graphic);
-    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), rig.clip);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), rig.clip);
     EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), rig.clip);
+    // The raise re-opens Effect Controls; binding alone opens nothing.
     EXPECT_TRUE(rig.ws->dockForPanel(QStringLiteral("Effect Controls"))->isVisible());
     EXPECT_FALSE(rig.ws->dockForPanel(QStringLiteral("Properties"))->isVisible());
+}
+
+// The clip context menu's "Properties...": like Premiere's clip Properties,
+// it shows that clip's properties, whatever kind of clip it is.
+TEST(WorkspaceWiring, ClipPropertiesBringsThePropertiesPanelToTheFront)
+{
+    Rig rig;
+    auto* panel = rig.ws->timelinePanel();
+    ASSERT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
+
+    emit panel->clipPropertiesRequested(rig.v1Index(), 0);
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->selection().clip, rig.clip);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), rig.clip);
+    EXPECT_TRUE(dockInFront(rig, QStringLiteral("Properties")));
 }
 
 TEST(WorkspaceWiring, SelectingOneClipBindsEveryPanelAndRaisesItsEditor)

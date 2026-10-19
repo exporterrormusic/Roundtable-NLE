@@ -95,8 +95,18 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             // but we still want to populate panels with the clicked clip.
             auto* track = m_timeline->track(trackIdx);
             if (!track) return;
-            m_clipBinding->selectClip(track->clip(clipIdx), track, trackIdx, clipIdx,
-                                      ClipBindingController::Bind::OpenDocks);
+            m_clipBinding->selectClip(track->clip(clipIdx), track, trackIdx, clipIdx);
+        });
+        // Clip context menu "Properties...": like Premiere's clip Properties,
+        // show this clip's properties whatever its kind.
+        connect(m_timelinePanel, &TimelinePanel::clipPropertiesRequested,
+                this, [this](size_t trackIdx, size_t clipIdx) {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (!m_timeline) return;
+            auto* track = m_timeline->track(trackIdx);
+            if (!track || !track->clip(clipIdx)) return;
+            m_clipBinding->selectClip(track->clip(clipIdx), track, trackIdx, clipIdx);
+            m_clipBinding->raiseDock(QStringLiteral("Properties"));
         });
         connect(m_timelinePanel, &TimelinePanel::clipDoubleClicked,
                 this, [this](size_t trackIdx, size_t clipIdx) {
@@ -210,8 +220,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                 if (trk) {
                     size_t idx = trk->findClipIndexById(ref.clipId);
                     if (idx < trk->clipCount())
-                        m_clipBinding->selectClip(trk->clip(idx), trk, ref.trackIndex, idx,
-                                                  ClipBindingController::Bind::ClipPanels);
+                        m_clipBinding->selectClip(trk->clip(idx), trk, ref.trackIndex, idx);
                 }
             } else if (sel.count() > 1) {
                 std::vector<Clip*> clips;

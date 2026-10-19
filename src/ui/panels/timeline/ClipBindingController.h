@@ -4,10 +4,11 @@
  * Effect Controls, Graphics Editor, Color Correction and Properties (plus
  * Tier List and Effects) each hold the Clip* they edit. This is the one
  * place that points them at a clip, or lets go:
- *   - selectClip(): the timeline selected one clip. SelectionState is set
- *     first (GraphicsEditorPanel::setClip emits layerSelected, whose handler
- *     reads it), then the panels bind, the overlay refreshes and the dock
- *     that edits the clip's kind comes to the front;
+ *   - selectClip(): the timeline selected or focused one clip. SelectionState
+ *     is set first (GraphicsEditorPanel::setClip emits layerSelected, whose
+ *     handler reads it), then every clip panel binds, open or closed (as in
+ *     Premiere, a panel opened later shows the current clip), the overlay
+ *     refreshes and the dock that edits the clip's kind comes to the front;
  *   - selectClips(): several clips; Properties edits them together;
  *   - clearSelection(): nothing selected;
  *   - bindClipPanels() / clearClipPanels(): the four main panels, for edits
@@ -59,24 +60,14 @@ public:
         std::function<void()> clearTransformOverlays;
     };
 
-    enum class Bind {
-        /// Skip a panel whose dock is closed (a tab behind the front one
-        /// still binds). Graphic clips always bind the Graphics Editor;
-        /// Color and Tier List always bind. Used by clipSelected.
-        OpenDocks,
-        /// Effect Controls, Graphics Editor, Color and Properties, whether
-        /// their docks are open or not. Used by selectionChanged.
-        ClipPanels,
-    };
-
     explicit ClipBindingController(Config cfg);
 
     /// The panels once built (all null before: every call is then a no-op
     /// for panels).
     void setPanels(const Panels& panels) { m_panels = panels; }
 
-    void selectClip(Clip* clip, Track* track, size_t trackIdx, size_t clipIdx,
-                    Bind bind);
+    /// Binds the four clip panels and Tier List, then raises the clip's dock.
+    void selectClip(Clip* clip, Track* track, size_t trackIdx, size_t clipIdx);
     void selectClips(const std::vector<Clip*>& clips, bool editable);
     /// Clears the clip panels, then SelectionState, then the overlay.
     void clearSelection();
@@ -97,8 +88,6 @@ public:
     void releaseClipsNotOnTimeline();
 
 private:
-    void bindOpenDocks(Clip* clip, Track* track);
-
     Config m_cfg;
     Panels m_panels;
 };

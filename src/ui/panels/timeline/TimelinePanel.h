@@ -439,6 +439,9 @@ signals:
     /// Emitted when the user clicks on a transition body (not just its edge).
     void transitionSelected(size_t trackIndex, size_t transitionIndex);
 
+    /// Emitted by the clip context menu's "Properties...".
+    void clipPropertiesRequested(size_t trackIndex, size_t clipIndex);
+
     /// Emitted when the user double-clicks a clip (load in Source Monitor).
     void clipDoubleClicked(size_t trackIndex, size_t clipIndex);
 

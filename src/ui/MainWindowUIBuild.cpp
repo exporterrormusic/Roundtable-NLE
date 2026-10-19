@@ -41,7 +41,6 @@
 // Delegated panel headers (for accessor forwarding)
 #include "panels/effects/EffectsPanel.h"
 #include "panels/project/HistoryPanel.h"
-#include "panels/effects/KeyframeEditor.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "playback/PlaybackScheduler.h"
 #include "viewport/Viewport.h"

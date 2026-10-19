@@ -835,8 +835,8 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
         }
     }
     else if (chosen == propsAction) {
-        // Emit signal so PropertiesPanel shows this clip
-        emit clipSelected(ref.trackIndex, idx);
+        // The workspace shows this clip in the Properties panel.
+        emit clipPropertiesRequested(ref.trackIndex, idx);
     }
     else if (revealExplorerAction && chosen == revealExplorerAction) {
         QString path = QFileInfo(QString::fromStdString(clipMediaPath)).absoluteFilePath();

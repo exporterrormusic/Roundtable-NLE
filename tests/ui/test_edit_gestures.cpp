@@ -20,7 +20,6 @@
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelineWorkspace.h"
 #include "panels/effects/ColorGradingPanel.h"
-#include "panels/effects/KeyframeEditor.h"
 #include "timeline/EditOperations.h"
 #include "project/RenderStateHash.h"
 #include "timeline/Timeline.h"
@@ -184,7 +183,6 @@ TEST(EditGestures, PanelsReleaseClipsThatLeaveTheTimeline)
     ASSERT_NE(workspace.effectControlsPanel(), nullptr);
     workspace.effectControlsPanel()->setClip(c, v1);
     if (workspace.colorGradingPanel()) workspace.colorGradingPanel()->setClip(c, v1);
-    if (workspace.keyframeEditor()) workspace.keyframeEditor()->setClip(c);
 
     size_t trackIndex = 0;
     for (size_t i = 0; i < s.timeline.trackCount(); ++i)
@@ -197,7 +195,6 @@ TEST(EditGestures, PanelsReleaseClipsThatLeaveTheTimeline)
     // Deleted (kept alive by the step): every bound panel already let go.
     EXPECT_EQ(workspace.effectControlsPanel()->clip(), nullptr);
     if (workspace.colorGradingPanel()) EXPECT_EQ(workspace.colorGradingPanel()->clip(), nullptr);
-    if (workspace.keyframeEditor()) EXPECT_EQ(workspace.keyframeEditor()->clip(), nullptr);
 
     s.stack.clear();   // frees the deleted clip; nothing may still point at it
     EXPECT_EQ(workspace.effectControlsPanel()->clip(), nullptr);

@@ -24,7 +24,7 @@ ClipBindingController::ClipBindingController(Config cfg)
 }
 
 void ClipBindingController::selectClip(Clip* clip, Track* track,
-                                       size_t trackIdx, size_t clipIdx, Bind bind)
+                                       size_t trackIdx, size_t clipIdx)
 {
     if (!clip) return;
     SelectionState& selection = *m_cfg.selection;
@@ -36,36 +36,11 @@ void ClipBindingController::selectClip(Clip* clip, Track* track,
     selection.trackIdx = trackIdx;
     selection.clipIdx = clipIdx;
 
-    if (bind == Bind::OpenDocks)
-        bindOpenDocks(clip, track);
-    else
-        bindClipPanels(clip, track);
-    m_cfg.scheduleOverlayRefresh();
-    raiseDockFor(*clip);
-}
-
-void ClipBindingController::bindOpenDocks(Clip* clip, Track* track)
-{
-    const auto open = [this](const char* name) {
-        QDockWidget* dock = m_cfg.dockForPanel(QString::fromLatin1(name));
-        return !dock || dock->isVisible();
-    };
-    if (m_panels.effectControls && open("Effect Controls"))
-        m_panels.effectControls->setClip(clip, track);
-    // A Graphic clip always binds: layerSelected sets the selected layer for
-    // the per-layer transform overlay.
-    if (m_panels.graphicsEditor
-            && (open("Graphics Editor") || clip->clipType() == ClipType::Graphic))
-        m_panels.graphicsEditor->setClip(clip, track);
-    // Never skipped: the old check looked up a dock named "Color Grading",
-    // and the dock is "Color Correction".
-    if (m_panels.colorGrading)
-        m_panels.colorGrading->setClip(clip, track);
-    if (m_panels.properties && open("Properties"))
-        m_panels.properties->setClip(clip, track);
-    // Cheap; keeps the panel populated for when its dock is opened.
+    bindClipPanels(clip, track);
     if (m_panels.tierList)
         m_panels.tierList->setClip(clip, track);
+    m_cfg.scheduleOverlayRefresh();
+    raiseDockFor(*clip);
 }
 
 void ClipBindingController::selectClips(const std::vector<Clip*>& clips, bool editable)

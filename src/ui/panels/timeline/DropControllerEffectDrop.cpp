@@ -17,7 +17,6 @@
 
 // ShotPanel removed — character/shot controls merged into PropertiesPanel
 #include "panels/effects/EffectsPanel.h"
-#include "panels/effects/KeyframeEditor.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/project/ProjectBin.h"
 #include "panels/properties/PropertiesPanel.h"
