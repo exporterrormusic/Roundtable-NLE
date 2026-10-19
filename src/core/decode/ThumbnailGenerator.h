@@ -32,6 +32,8 @@
 #include <vector>
 #include <queue>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <condition_variable>
 #include <atomic>
 
@@ -216,7 +218,7 @@ private:
     [[nodiscard]] std::string resolveCanonicalPath(const std::filesystem::path& filePath) const;
 
     // Thread pool
-    std::vector<std::thread>  m_threads;
+    std::vector<WorkerThread> m_threads;
     std::queue<Request>       m_queue;
     mutable std::mutex        m_queueMutex;
     std::condition_variable   m_queueCV;

@@ -353,9 +353,9 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
             // is not starved
             lock.unlock();
             // Join any previous bulk-open thread before spawning a new one.
-            if (m_bulkOpenThread.joinable())
-                m_bulkOpenThread.join();
-            m_bulkOpenThread = std::thread([pool, paths = std::move(pathsToOpen)]() {
+            m_bulkOpenThread.join();
+            m_bulkOpenThread.start("Compositor bulk open",
+                                   [pool, paths = std::move(pathsToOpen)](std::stop_token) {
                 for (const auto& mediaPath : paths) {
                     namespace fs = std::filesystem;
                     fs::path p(mediaPath);

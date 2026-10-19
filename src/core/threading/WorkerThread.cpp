@@ -65,18 +65,28 @@ void WorkerThread::requestStop() noexcept
 
 void WorkerThread::stop()
 {
+    finish(/*stopping=*/true);
+}
+
+void WorkerThread::join()
+{
+    finish(/*stopping=*/false);
+}
+
+void WorkerThread::finish(bool stopping)
+{
     if (m_thread.joinable()) {
-        m_thread.request_stop();
+        if (stopping) m_thread.request_stop();
         if (m_thread.get_id() == std::this_thread::get_id()) {
             // Joining itself would throw; the thread ends on its own.
-            spdlog::error("[THREAD] '{}' asked to stop itself; detaching", m_name);
+            spdlog::error("[THREAD] '{}' asked to finish itself; detaching", m_name);
             m_thread.detach();
         } else {
             const auto started = std::chrono::steady_clock::now();
             m_thread.join();
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - started).count();
-            if (ms >= kSlowStopMs)
+            if (stopping && ms >= kSlowStopMs)
                 spdlog::warn("[THREAD] '{}' took {} ms to stop", m_name, ms);
         }
     }

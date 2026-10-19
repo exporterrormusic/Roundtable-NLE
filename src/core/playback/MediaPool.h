@@ -733,7 +733,7 @@ private:
     std::mutex                                       m_prefetchTimelineSubmitMutex;
 
     // Prefetch thread pool state
-    std::vector<std::thread>                         m_prefetchThreads;
+    std::vector<WorkerThread>                        m_prefetchThreads;
     mutable std::mutex                               m_prefetchMutex;
     std::condition_variable                           m_prefetchCv;
     std::atomic<bool>                                m_prefetchRunning{false};

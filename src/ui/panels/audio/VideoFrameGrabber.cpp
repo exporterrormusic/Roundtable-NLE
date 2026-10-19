@@ -138,7 +138,7 @@ struct VideoFrameGrabber::DecoderSlot
 VideoFrameGrabber::VideoFrameGrabber()
 {
     // Started in the body: every member the worker touches is constructed.
-    m_thread = std::thread([this]() { workerLoop(); });
+    m_thread.start("Video frame grabber", [this](std::stop_token) { workerLoop(); });
 }
 
 VideoFrameGrabber::~VideoFrameGrabber()
@@ -148,7 +148,7 @@ VideoFrameGrabber::~VideoFrameGrabber()
         m_shutdown = true;
     }
     m_cv.notify_all();
-    if (m_thread.joinable()) m_thread.join();
+    m_thread.stop();
 }
 
 bool VideoFrameGrabber::isVideoFile(const std::string& path)

@@ -34,8 +34,12 @@ ThumbnailGenerator::ThumbnailGenerator(size_t threadCount,
     // Start worker threads
     size_t count = std::max(size_t(1), threadCount);
     m_threads.reserve(count);
-    for (size_t i = 0; i < count; ++i)
-        m_threads.emplace_back(&ThumbnailGenerator::workerLoop, this);
+    for (size_t i = 0; i < count; ++i) {
+        WorkerThread worker;
+        worker.start("Thumbnails " + std::to_string(i + 1),
+                     [this](std::stop_token) { workerLoop(); });
+        m_threads.push_back(std::move(worker));
+    }
 
     spdlog::debug("ThumbnailGenerator: started {} worker threads", count);
 }
@@ -51,10 +55,7 @@ ThumbnailGenerator::~ThumbnailGenerator()
 
     // Join all threads
     for (auto& t : m_threads)
-    {
-        if (t.joinable())
-            t.join();
-    }
+        t.stop();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

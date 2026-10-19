@@ -198,7 +198,7 @@ RenderQueue::RenderQueue() = default;
 RenderQueue::~RenderQueue()
 {
     cancelAll();
-    if (m_worker.joinable()) m_worker.join();
+    m_worker.stop();
 }
 
 uint32_t RenderQueue::addJob(const ExportJobConfig& config,
@@ -385,16 +385,15 @@ void RenderQueue::start(Timeline* timeline, Compositor* compositor)
 {
     if (m_running.load()) return;
 
-    // Join previous worker thread if it finished but wasn't joined yet.
-    // Without this, assigning to a joinable std::thread calls std::terminate().
-    if (m_worker.joinable()) m_worker.join();
+    // Join the previous worker if it finished but wasn't joined yet.
+    m_worker.join();
 
     m_timeline   = timeline;
     m_compositor = compositor;
     m_running    = true;
     m_cancelAll  = false;
 
-    m_worker = std::thread(&RenderQueue::workerThread, this);
+    m_worker.start("Export render queue", [this](std::stop_token) { workerThread(); });
 }
 
 void RenderQueue::cancelJob(uint32_t jobId)
@@ -421,7 +420,7 @@ void RenderQueue::cancelAll()
 
 void RenderQueue::waitForAll()
 {
-    if (m_worker.joinable()) m_worker.join();
+    m_worker.join();
 }
 
 std::vector<std::shared_ptr<const ExportJob>> RenderQueue::jobs() const

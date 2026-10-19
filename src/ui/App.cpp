@@ -253,7 +253,7 @@ App::~App()
     }
     if (m_audioEngine) m_audioEngine->shutdown();
     m_audioEngine.reset();
-    if (m_scanThread.joinable()) m_scanThread.join();
+    m_scanThread.stop();
 
     spdlog::info("App::~App() — Phase 2: disconnecting signals");
     // Phase 2: Disconnect cross-component signals
@@ -394,7 +394,8 @@ bool App::init()
         QDir::toNativeSeparators(rt::bundledAssetsDir()).toStdString();
     const std::string downloadedAssets =
         QDir::toNativeSeparators(rt::downloadedCharacterAssetsDir()).toStdString();
-    m_scanThread = std::thread([this, bundledAssets, downloadedAssets]() {
+    m_scanThread.start("Character scan",
+                       [this, bundledAssets, downloadedAssets](std::stop_token) {
         m_modelManager->scan(bundledAssets);
         m_modelManager->scanAdditional(downloadedAssets);
     });
@@ -609,7 +610,7 @@ bool App::createMainWindow()
     // Finish async model scan — by now the scan thread has been running
     // in parallel with UI construction so it's likely already done.
 #ifdef ROUNDTABLE_HAS_SPINE
-    if (m_scanThread.joinable()) {
+    if (m_scanThread.running()) {
         m_scanThread.join();
         spdlog::info("App: ModelManager scanned {} characters", m_modelManager->entries().size());
         // Re-set the model manager to refresh the character list

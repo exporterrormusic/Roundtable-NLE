@@ -36,6 +36,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -311,6 +313,8 @@ private:
     /// Each worker owns its own SpinePrerenderer and processes jobs
     /// from the shared m_jobQueue concurrently.
     void workerLoop();
+    /// Start one more worker (callers hold m_mutex).
+    void addWorkerThread();
 
     /// Holds a single render job description (queued from main thread).
     struct RenderJob {
@@ -340,7 +344,7 @@ private:
     std::unordered_set<std::string> m_pendingKeys;
     std::deque<RenderJob>           m_jobQueue;
     std::condition_variable         m_jobCv;
-    std::vector<std::thread>        m_workerThreads;
+    std::vector<WorkerThread>       m_workerThreads;
     bool                            m_stopWorker{false};
     std::string                     m_currentJobDesc;  ///< Set by worker thread
 

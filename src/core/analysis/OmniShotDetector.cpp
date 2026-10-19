@@ -80,7 +80,7 @@ int parseProgress(const std::string& line) {
 
 } // anon
 
-OmniShotDetector::~OmniShotDetector() { cancel(); if (m_worker.joinable()) m_worker.join(); }
+OmniShotDetector::~OmniShotDetector() { cancel(); m_worker.stop(); }
 void OmniShotDetector::cancel() { m_cancelled.store(true); }
 bool OmniShotDetector::isAvailable() {
     // Check both install dir and user data dir
@@ -94,10 +94,13 @@ void OmniShotDetector::detectAsync(
     const std::filesystem::path& mp, int64_t sf, int64_t ef, float th,
     SceneDetectProgressFn onP, SceneDetectCompleteFn onC, SceneDetectErrorFn onE)
 {
-    if (m_worker.joinable()) m_worker.join();
+    m_worker.join();   // the previous detection, if any
     m_cancelled.store(false); m_running.store(true);
-    m_worker = std::thread(&OmniShotDetector::workerFunc, this, mp, sf, ef, th,
-                           std::move(onP), std::move(onC), std::move(onE));
+    m_worker.start("Shot detection",
+                   [this, mp, sf, ef, th, onP = std::move(onP), onC = std::move(onC),
+                    onE = std::move(onE)](std::stop_token) {
+                       workerFunc(mp, sf, ef, th, onP, onC, onE);
+                   });
 }
 
 void OmniShotDetector::workerFunc(

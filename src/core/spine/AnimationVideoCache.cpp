@@ -45,10 +45,18 @@ AnimationVideoCache::~AnimationVideoCache()
     }
     m_jobCv.notify_all();
     for (auto& t : m_workerThreads)
-        if (t.joinable()) t.join();
+        t.stop();
 
     // Release media handles
     clear();
+}
+
+void AnimationVideoCache::addWorkerThread()
+{
+    WorkerThread worker;
+    worker.start("AnimCache worker " + std::to_string(m_workerThreads.size() + 1),
+                 [this](std::stop_token) { workerLoop(); });
+    m_workerThreads.push_back(std::move(worker));
 }
 
 // ─── Key / Path helpers ──────────────────────────────────────────────────────
@@ -358,7 +366,7 @@ void AnimationVideoCache::queueRender(const std::string& characterName,
             constexpr unsigned numWorkers = 1;
             spdlog::info("AnimCache: starting {} worker thread(s)", numWorkers);
             for (unsigned i = 0; i < numWorkers; ++i)
-                m_workerThreads.emplace_back(&AnimationVideoCache::workerLoop, this);
+                addWorkerThread();
         }
     }
     m_jobCv.notify_one();
@@ -924,9 +932,8 @@ void AnimationVideoCache::recheckStaleness()
             m_jobQueue.push_back({charName, outfit, animName});
 
             // Ensure worker thread pool is running (1 worker: GPU session limits)
-            if (m_workerThreads.empty()) {
-                m_workerThreads.emplace_back(&AnimationVideoCache::workerLoop, this);
-            }
+            if (m_workerThreads.empty())
+                addWorkerThread();
         } else {
             ++it;
         }
@@ -995,9 +1002,8 @@ void AnimationVideoCache::migrateToProRes()
     }
 
     // Ensure worker thread pool is running (1 worker: GPU session limits)
-    if (!m_jobQueue.empty() && m_workerThreads.empty()) {
-        m_workerThreads.emplace_back(&AnimationVideoCache::workerLoop, this);
-    }
+    if (!m_jobQueue.empty() && m_workerThreads.empty())
+        addWorkerThread();
 
     // Notify workers
     m_jobCv.notify_all();

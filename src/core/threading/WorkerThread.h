@@ -5,7 +5,8 @@
  * `name` (visible in debuggers and crash stacks) and lists it in the
  * ThreadRegistry until it has been joined. stop() asks it to stop and
  * joins; it is idempotent, also runs from the destructor, and logs a
- * warning when the join takes longer than a second.
+ * warning when the join takes longer than a second. join() waits for a
+ * thread that ends on its own (a one-shot job) without asking it to stop.
  *
  * Waiting: a worker that sleeps until it has work waits with
  *     std::condition_variable_any::wait(lock, stopToken, predicate)
@@ -44,6 +45,9 @@ public:
     void requestStop() noexcept;
     /// requestStop() and join. Safe to call more than once.
     void stop();
+    /// Wait for the thread to finish by itself (no stop request, no
+    /// slow-stop warning). Safe to call more than once.
+    void join();
 
     [[nodiscard]] bool running() const noexcept { return m_thread.joinable(); }
     [[nodiscard]] const std::string& name() const noexcept { return m_name; }
@@ -52,6 +56,8 @@ public:
     static constexpr int kSlowStopMs = 1000;
 
 private:
+    void finish(bool stopping);
+
     std::jthread m_thread;
     std::string m_name;
     uint64_t m_registryId{0};

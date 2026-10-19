@@ -28,6 +28,8 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+
+#include "threading/WorkerThread.h"
 #include <map>
 #include <string>
 #include <thread>
@@ -89,7 +91,7 @@ private:
     static std::string stillKey(const std::string& path, double timeSec, QSize size);
     static void deliver(const Request& request, const QImage& image);
 
-    std::thread                 m_thread;
+    WorkerThread                m_thread;
     mutable std::mutex          m_mutex;
     std::condition_variable     m_cv;
     bool                        m_shutdown{false};

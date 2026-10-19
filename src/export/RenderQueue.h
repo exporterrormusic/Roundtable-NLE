@@ -21,6 +21,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <vector>
 
 namespace rt {
@@ -361,7 +363,7 @@ private:
     uint32_t                    m_nextJobId{1};
     std::atomic<bool>           m_running{false};
     std::atomic<bool>           m_cancelAll{false};
-    std::thread                 m_worker;
+    WorkerThread                m_worker;
     const Project*              m_project{nullptr};
     Timeline*                   m_timeline{nullptr};
     Compositor*                 m_compositor{nullptr};

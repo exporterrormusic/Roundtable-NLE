@@ -114,6 +114,24 @@ TEST(WorkerThread, StartingAgainStopsThePreviousThread)
     EXPECT_EQ(worker.name(), "restart-second");
 }
 
+TEST(WorkerThread, JoinWaitsForAOneShotJobWithoutAskingItToStop)
+{
+    bool finished = false;
+    bool askedToStop = true;
+    rt::WorkerThread worker;
+    worker.start("one-shot-job", [&](std::stop_token stop) {
+        std::this_thread::sleep_for(50ms);
+        askedToStop = stop.stop_requested();
+        finished = true;
+    });
+    worker.join();
+    EXPECT_TRUE(finished);
+    EXPECT_FALSE(askedToStop);
+    EXPECT_FALSE(worker.running());
+    EXPECT_EQ(liveNamed("one-shot-job"), 0u);
+    worker.join();   // idempotent
+}
+
 TEST(WorkerThread, ScopeListsAOneShotTask)
 {
     {

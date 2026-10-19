@@ -22,6 +22,8 @@
 #include <memory>
 #include <string>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <vector>
 
 class QApplication;
@@ -121,7 +123,7 @@ private:
     std::unique_ptr<ModelManager>         m_modelManager;
 
     // ── Async init ──────────────────────────────────────────────────────
-    std::thread m_scanThread;
+    WorkerThread m_scanThread;
 
     // ── UI (owned) ──────────────────────────────────────────────────────
     std::unique_ptr<MainWindow>      m_mainWindow;

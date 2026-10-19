@@ -48,6 +48,8 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -1008,10 +1010,10 @@ private:
     void doPrewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH,
                                     Timeline* timeline);
 
-    std::thread m_prewarmThread;
+    WorkerThread m_prewarmThread;
     /// Bulk-open thread spawned by prewarm iteration (now tracked so
     /// shutdown can join it instead of leaving it detached).
-    std::thread m_bulkOpenThread;
+    WorkerThread m_bulkOpenThread;
     std::mutex              m_prewarmMutex;
     std::condition_variable m_prewarmCv;
     PrewarmRequest          m_prewarmRequest{};

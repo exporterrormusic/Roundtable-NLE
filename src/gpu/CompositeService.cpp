@@ -165,7 +165,8 @@ CompositeService::CompositeService(GpuResourceMode gpuResourceMode)
     // of blocking the UI thread at play-start.  The thread loop waits on
     // a condition variable and wakes up when a new prewarm request arrives
     // or when m_destroying is set.
-    m_prewarmThread = std::thread(&CompositeService::prewarmThreadLoop, this);
+    m_prewarmThread.start("Compositor prewarm",
+                          [this](std::stop_token) { prewarmThreadLoop(); });
 }
 
 CompositeService::~CompositeService()
@@ -457,10 +458,8 @@ void CompositeService::shutdown()
         std::lock_guard lock(m_prewarmMutex);
         m_prewarmCv.notify_one();
     }
-    if (m_prewarmThread.joinable())
-        m_prewarmThread.join();
-    if (m_bulkOpenThread.joinable())
-        m_bulkOpenThread.join();
+    m_prewarmThread.stop();
+    m_bulkOpenThread.join();
 
     // 2. Drop every shared_ptr<CachedFrame> this service holds.
     //    Each CachedFrame's gpuTextureOwner is a shared_ptr<Texture>

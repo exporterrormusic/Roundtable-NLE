@@ -22,7 +22,10 @@ void MediaPool::startPrefetchThread()
     const int threadCount = perfProfile().prefetchThreadCount;
     m_prefetchThreads.reserve(threadCount);
     for (int i = 0; i < threadCount; ++i) {
-        m_prefetchThreads.emplace_back(&MediaPool::prefetchWorker, this, i);
+        WorkerThread worker;
+        worker.start("MediaPool prefetch " + std::to_string(i + 1),
+                     [this, i](std::stop_token) { prefetchWorker(i); });
+        m_prefetchThreads.push_back(std::move(worker));
     }
     spdlog::info("MediaPool: {} prefetch worker threads started", threadCount);
     startLoopPreDecodeWorkers();
@@ -37,10 +40,8 @@ void MediaPool::stopPrefetchThread()
         m_prefetchPackedOwner.clear();
     }
     m_prefetchCv.notify_all();
-    for (auto& t : m_prefetchThreads) {
-        if (t.joinable())
-            t.join();
-    }
+    for (auto& t : m_prefetchThreads)
+        t.stop();
     m_prefetchThreads.clear();
 
     stopLoopPreDecodeWorkers();

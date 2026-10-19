@@ -2,7 +2,7 @@
  * OmniShotDetector — AI-powered scene cut detection via OmniShotCut.
  *
  * Launches a Python subprocess to run OmniShotCut inference.
- * Uses std::thread + std::system for the subprocess bridge
+ * Uses a WorkerThread + std::system for the subprocess bridge
  * (no Qt dependency — safe to compile into roundtable_core).
  *
  * This is the sole scene-cut detector (it superseded the old SceneDetector).
@@ -15,6 +15,8 @@
 #include <functional>
 #include <string>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <vector>
 
 namespace rt {
@@ -71,7 +73,7 @@ private:
                     SceneDetectCompleteFn onComplete,
                     SceneDetectErrorFn onError);
 
-    std::thread       m_worker;
+    WorkerThread      m_worker;
     std::atomic<bool> m_cancelled{false};
     std::atomic<bool> m_running{false};
 };
