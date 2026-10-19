@@ -292,3 +292,28 @@ TEST(WorkspaceWiring, RecordedEditsAndUndoReachTheRenderSnapshot)
     ASSERT_TRUE(afterUndo && afterUndo->timeline);
     EXPECT_EQ(countClips(*afterUndo), 1u);
 }
+
+TEST(WorkspaceWiring, DraggedSequenceTabsStillSwitchToTheirOwnSequence)
+{
+    Rig rig;
+    rig.ws->openSequenceTab(1);
+    rig.ws->refreshSequenceTabs();
+    QTabBar* tabs = rig.sequenceTabs();
+    ASSERT_EQ(tabs->count(), 2);
+
+    // The user drags "Sequence 02" in front of "Sequence 01".
+    tabs->moveTab(1, 0);
+    ASSERT_EQ(tabs->tabText(0), QStringLiteral("Sequence 02"));
+
+    std::vector<size_t> changed;
+    QObject::connect(rig.ws.get(), &rt::TimelineWorkspace::sequenceTabChanged,
+                     [&](size_t index) { changed.push_back(index); });
+    tabs->setCurrentIndex(0);
+    EXPECT_EQ(changed, (std::vector<size_t>{1}));
+
+    // A later refresh (e.g. a rename) keeps the user's order.
+    rig.seq1->setName("Renamed");
+    rig.ws->refreshSequenceTabs();
+    EXPECT_EQ(tabs->tabText(0), QStringLiteral("Renamed"));
+    EXPECT_EQ(tabs->tabText(1), QStringLiteral("Sequence 01"));
+}

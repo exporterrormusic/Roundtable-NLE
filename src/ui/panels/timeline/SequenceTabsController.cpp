@@ -9,6 +9,8 @@
 #include <QString>
 #include <QTabBar>
 
+#include <algorithm>
+
 namespace rt {
 
 QTabBar* SequenceTabsController::createTabBar()
@@ -49,6 +51,14 @@ QTabBar* SequenceTabsController::createTabBar()
         if (tabIdx < 0 || tabIdx >= static_cast<int>(m_tabToSeq.size())) return;
         if (!m_cfg.project()) return;
         closeSequence(m_tabToSeq[static_cast<size_t>(tabIdx)]);
+    });
+    // Tabs are movable: keep the tab→sequence map in the order shown.
+    connect(m_tabBar, &QTabBar::tabMoved, this, [this](int from, int to) {
+        const auto count = static_cast<int>(m_tabToSeq.size());
+        if (from < 0 || to < 0 || from >= count || to >= count) return;
+        const size_t seq = m_tabToSeq[static_cast<size_t>(from)];
+        m_tabToSeq.erase(m_tabToSeq.begin() + from);
+        m_tabToSeq.insert(m_tabToSeq.begin() + to, seq);
     });
     m_tabBar->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_tabBar, &QWidget::customContextMenuRequested, this,
@@ -191,6 +201,11 @@ void SequenceTabsController::refresh()
         if (m_openSequenceTabs.find(i) != m_openSequenceTabs.end())
             desired.push_back(i);
     }
+    // The same tabs in an order the user dragged them into: keep that order.
+    std::vector<size_t> shownSorted = m_tabToSeq;
+    std::sort(shownSorted.begin(), shownSorted.end());
+    if (shownSorted == desired)
+        desired = m_tabToSeq;
 
     // Resolve the active sequence (may have been closed → fall back to first open).
     size_t activeIdx = project->activeSequenceIndex();
