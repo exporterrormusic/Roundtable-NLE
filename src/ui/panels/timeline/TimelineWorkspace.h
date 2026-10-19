@@ -116,6 +116,7 @@ class PanelMaximizeController;
 class PlaybackController;
 class SequenceTabsController;
 class ShortcutController;
+class ShotSwitchController;
 class ShotPresetManager;
 class SpineClip;
 class TitleClip;
@@ -620,6 +621,7 @@ private:
 
     /// Apply a shot preset to a clip group, wrapped in an undo command.
     void applyShotSwitch(uint64_t groupId, const std::string& newShotName);
+    std::unique_ptr<ShotSwitchController> m_shotSwitch;
 
 
 

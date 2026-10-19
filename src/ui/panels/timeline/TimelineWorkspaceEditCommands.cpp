@@ -9,6 +9,7 @@
 
 #include "panels/timeline/TimelineWorkspace.h"
 #include "panels/timeline/SequenceTabsController.h"
+#include "panels/timeline/ShotSwitchController.h"
 
 #include "CompositeService.h"
 
@@ -107,6 +108,11 @@ void TimelineWorkspace::syncSequenceTabStateToProject()
 void TimelineWorkspace::refreshSequenceTabs()
 {
     m_sequenceTabs->refresh();
+}
+
+void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& newShotName)
+{
+    m_shotSwitch->apply(groupId, newShotName);
 }
 
 void TimelineWorkspace::nestSequence(size_t sequenceIndex, const QString& sequenceName)

@@ -205,7 +205,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelineWorkspaceWiringTrack.cpp
     panels/timeline/TimelineWorkspaceComposite.cpp
     panels/timeline/TimelineWorkspaceExport.cpp
-    panels/timeline/TimelineWorkspaceShotSwitch.cpp
+    panels/timeline/ShotSwitchController.cpp
     panels/timeline/TimelineWorkspaceSpine.cpp
     panels/timeline/TimelineWorkspaceAudio.cpp
     panels/timeline/ShortcutControllerKeys.cpp
@@ -293,7 +293,7 @@ set_source_files_properties(
     panels/timeline/TimelineWorkspaceDock.cpp
     panels/timeline/MediaWatchController.cpp
     panels/timeline/PanelMaximizeController.cpp
-    panels/timeline/TimelineWorkspaceShotSwitch.cpp
+    panels/timeline/ShotSwitchController.cpp
     panels/timeline/DockTabBarWatcher.cpp
     panels/timeline/DockTabDragFilter.cpp
     panels/timeline/DockEdgeOverlay.cpp

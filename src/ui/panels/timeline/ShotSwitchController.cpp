@@ -1,20 +1,9 @@
 /*
- * TimelineWorkspaceShotSwitch.cpp - Undo-aware shot-preset switching.
- * applyShotSwitch() is shared by the PropertiesPanel and CharacterShotPanel
- * signal handlers.  Split out of TimelineWorkspaceOverlay.cpp (it is an edit
- * command, not overlay code) ahead of the OverlayController extraction.
+ * ShotSwitchController.cpp - undo-aware shot-preset switching
+ * (see ShotSwitchController.h).
  */
-#include "panels/timeline/TimelineWorkspace.h"
-#include "CompositeService.h"
-#include "panels/monitors/ProgramMonitor.h"
-#include "panels/timeline/TimelinePanel.h"
-#include "panels/properties/PropertiesPanel.h"
+#include "panels/timeline/ShotSwitchController.h"
 #include "panels/characters/PuppetLibrary.h"
-#include "panels/effects/EffectControlsPanel.h"
-#include "panels/effects/GraphicsEditorPanel.h"
-#include "panels/effects/ColorGradingPanel.h"
-#include "viewport/Viewport.h"
-#include "viewport/TransformOverlayWidget.h"
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "timeline/Timeline.h"
@@ -27,7 +16,6 @@
 #include "timeline/Position2D.h"
 #include "timeline/GraphicLayer.h"
 #include "playback/MediaPool.h"
-#include "playback/PlaybackController.h"
 #include <QFileInfo>
 #include <QImage>
 #include <algorithm>
@@ -56,19 +44,18 @@ namespace rt {
 // PropertiesPanel and ShotPanel signal handlers.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& newShotName)
+void ShotSwitchController::apply(uint64_t groupId, const std::string& newShotName)
 {
-    if (!m_timeline || !m_shotPresetManager || groupId == 0) {
-        if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-        if (m_programMonitor) m_programMonitor->requestRefresh();
+    if (!timeline() || !m_cfg.presets() || groupId == 0) {
+        m_cfg.refreshViews();
         return;
     }
 
     // A shot switch replaces every visual member and updates metadata on the
     // rest of the group.  Refuse the whole operation if any member is on a
     // locked track; partially switching a group would leave a broken shot.
-    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-        Track* track = m_timeline->track(ti);
+    for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+        Track* track = timeline()->track(ti);
         if (!track || !track->isLocked()) continue;
         for (size_t ci = 0; ci < track->clipCount(); ++ci) {
             const Clip* clip = track->clip(ci);
@@ -81,11 +68,10 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         }
     }
 
-    auto presetOpt = m_shotPresetManager->load(newShotName);
+    auto presetOpt = m_cfg.presets()->load(newShotName);
     if (!presetOpt) {
         spdlog::warn("TimelineWorkspace: shot preset '{}' not found", newShotName);
-        if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
-        if (m_programMonitor) m_programMonitor->requestRefresh();
+        m_cfg.refreshViews();
         return;
     }
 
@@ -113,8 +99,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     int64_t groupEnd = 48000; // 1s fallback (used only if no group clips found)
     std::vector<size_t> groupVideoTracks; // ascending; front (top) -> back (bottom)
     bool foundGroupTime = false;
-    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-        Track* trk = m_timeline->track(ti);
+    for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+        Track* trk = timeline()->track(ti);
         if (!trk) continue;
         bool trackHasGroupVisual = false;
         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
@@ -150,8 +136,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     // recognise the (shot-swapped) group and would rebuild it from the
     // default shot, losing the user's swap.
     int32_t oldSyncLine = -1;
-    for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-        Track* trk = m_timeline->track(ti);
+    for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+        Track* trk = timeline()->track(ti);
         for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
             Clip* c = trk->clip(ci);
             if (c && c->groupId() == groupId && c->isVisual()) {
@@ -228,7 +214,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         // time span [groupStart, groupEnd].  Tracks with clips elsewhere
         // on the timeline are still usable when they're clear at this spot.
         auto trackEmptyInRange = [this](size_t ti, int64_t start, int64_t end) -> bool {
-            Track* t = m_timeline->track(ti);
+            Track* t = timeline()->track(ti);
             if (!t || t->isLocked()) return false;
             for (size_t ci = 0; ci < t->clipCount(); ++ci) {
                 Clip* c = t->clip(ci);
@@ -246,8 +232,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         if (shortage > 0) {
             // Scan every video track, checking for clips that overlap
             // the group's time span (not the entire track lifetime).
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                Track* t = m_timeline->track(ti);
+            for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+                Track* t = timeline()->track(ti);
                 if (!t || t->isDivider() || t->type() != TrackType::Video)
                     continue;
                 if (!trackEmptyInRange(ti, groupStart, groupEnd)) continue;
@@ -290,8 +276,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             if (shortage > 0) {
                 numInserts   = shortage;
                 insertPlanAt = groupVideoTracks.front();
-                if (insertPlanAt < m_timeline->trackCount()) {
-                    Track* refTrack = m_timeline->track(insertPlanAt);
+                if (insertPlanAt < timeline()->trackCount()) {
+                    Track* refTrack = timeline()->track(insertPlanAt);
                     if (refTrack && refTrack->height() >= 1.0f)
                         insertHeight = refTrack->height();
                 }
@@ -341,8 +327,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         // No existing group on timeline -- place layers at the bottom of
         // the video stack, appending tracks (via addVideoTrack) as needed.
         std::vector<size_t> videoIndices;
-        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti)
-            if (m_timeline->track(ti)->type() == TrackType::Video)
+        for (size_t ti = 0; ti < timeline()->trackCount(); ++ti)
+            if (timeline()->track(ti)->type() == TrackType::Video)
                 videoIndices.push_back(ti);
         if (videoIndices.size() < neededTracks)
             appendPlan = neededTracks - videoIndices.size();
@@ -541,18 +527,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     // A deferred paint event firing between removeClip() and the rebuild
     // would otherwise dereference freed std::string members (label,
     // shotName) and crash inside QString::fromStdString.
-    auto clearPanelSelections = [this]() {
-        m_selection.clip = nullptr;
-        if (m_propertiesPanel)     m_propertiesPanel->clearClip();
-        if (m_effectControlsPanel) m_effectControlsPanel->setClip(nullptr, nullptr);
-        if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->setClip(nullptr, nullptr);
-        if (m_ColorGradingPanel)   m_ColorGradingPanel->setClip(nullptr, nullptr);
-        if (m_timelinePanel)       m_timelinePanel->selection().clear();
-    };
+    auto clearPanelSelections = [this]() { m_cfg.releaseClipPanels(); };
 
     auto removeGroupVisualClips = [this, groupId]() {
-        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-            Track* trk = m_timeline->track(ti);
+        for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+            Track* trk = timeline()->track(ti);
             if (!trk) continue;
             for (int ci = static_cast<int>(trk->clipCount()) - 1; ci >= 0; --ci) {
                 Clip* c = trk->clip(static_cast<size_t>(ci));
@@ -570,15 +549,15 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             if (!snap.clip) continue;
             Track* trk = nullptr;
             size_t idx = snap.trackIndex;
-            if (idx < m_timeline->trackCount()) {
-                trk = m_timeline->track(idx);
+            if (idx < timeline()->trackCount()) {
+                trk = timeline()->track(idx);
                 if (trk && (trk->type() != TrackType::Video || trk->isLocked()))
                     trk = nullptr;
             }
             if (!trk) {
                 // Fallback: nearest video track upward, then downward.
-                for (size_t si = idx; si < m_timeline->trackCount(); ++si) {
-                    Track* t = m_timeline->track(si);
+                for (size_t si = idx; si < timeline()->trackCount(); ++si) {
+                    Track* t = timeline()->track(si);
                     if (t && t->type() == TrackType::Video && !t->isLocked()) {
                         trk = t;
                         break;
@@ -586,14 +565,14 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 }
                 if (!trk) {
                     for (size_t si = idx; si > 0; --si) {
-                        Track* t = m_timeline->track(si - 1);
+                        Track* t = timeline()->track(si - 1);
                         if (t && t->type() == TrackType::Video && !t->isLocked()) {
                             trk = t;
                             break;
                         }
                     }
                 }
-                if (!trk) trk = m_timeline->addVideoTrack("");
+                if (!trk) trk = timeline()->addVideoTrack("");
             }
             if (trk) {
                 // Preserve the snapshot's clip id on the live re-inserted
@@ -610,8 +589,8 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         }
         // Propagate the shot name to remaining group members (audio).
         if (!shotNameToPropagate.empty()) {
-            for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-                Track* trk = m_timeline->track(ti);
+            for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+                Track* trk = timeline()->track(ti);
                 if (!trk) continue;
                 for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                     Clip* c = trk->clip(ci);
@@ -629,23 +608,10 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
     // frame and the user sees stale/black until they nudge the playhead),
     // and reselect a representative clip in the group.
     auto finaliseAndReselect = [this, groupId]() {
-        invalidateCompositeCache();
-        if (m_timelinePanel) m_timelinePanel->rebuildTracks();
-        // Kick off background opens for the new shot's media (NVDEC init
-        // + FFmpeg probe is 100-170ms per character clip). preOpenVideoMedia
-        // posts a second requestRefresh() back to the UI thread once the
-        // background opens finish, so the composite that finally samples
-        // the new clips finds the media warm.
-        preOpenVideoMedia();
-        if (m_programMonitor) {
-            m_programMonitor->notifyScrub();
-            m_programMonitor->requestRefresh();
-        }
-
         Clip* picked = nullptr;
         Track* pickedTrack = nullptr;
-        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
-            Track* trk = m_timeline->track(ti);
+        for (size_t ti = 0; ti < timeline()->trackCount(); ++ti) {
+            Track* trk = timeline()->track(ti);
             if (!trk) continue;
             for (size_t ci = 0; ci < trk->clipCount(); ++ci) {
                 Clip* c = trk->clip(ci);
@@ -655,18 +621,13 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
             }
             if (picked) break;
         }
-        if (picked) {
-            m_selection.clip = picked;
-            // The track is required: without it the panel's edit guard
-            // (canMutateClip) rejects every change to the reselected clip.
-            if (m_propertiesPanel) m_propertiesPanel->setClip(picked, pickedTrack);
-        }
+        m_cfg.shotSwitched(picked, pickedTrack);
     };
 
     // ---- Execute via undo command ------------------------------------
     // The redo lambda inserts the planned tracks (so undo can remove
     // them); the undo lambda undoes both the clip swap AND the inserts.
-    if (m_commandStack) {
+    if (CommandStack* stack = m_cfg.commandStack()) {
         auto cmd = std::make_unique<LambdaCommand>(
             "Switch Shot to " + newShotName,
             // REDO
@@ -679,11 +640,11 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 for (size_t e = 0; e < numInserts; ++e) {
                     auto t = std::make_unique<Track>(TrackType::Video, std::string{});
                     t->setHeight(insertHeight);
-                    m_timeline->insertTrack(insertPlanAt, std::move(t));
+                    timeline()->insertTrack(insertPlanAt, std::move(t));
                 }
                 // Append planned tracks at the bottom of the video stack.
                 for (size_t e = 0; e < appendPlan; ++e)
-                    (void)m_timeline->addVideoTrack("");
+                    (void)timeline()->addVideoTrack("");
                 insertSnapshots(*newClips, newShotName);
                 finaliseAndReselect();
             },
@@ -699,17 +660,17 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 // an index that's still valid.
                 for (size_t e = 0; e < numInserts; ++e) {
                     size_t removeAt = insertPlanAt + (numInserts - 1 - e);
-                    if (removeAt < m_timeline->trackCount())
-                        (void)m_timeline->takeTrack(removeAt);
+                    if (removeAt < timeline()->trackCount())
+                        (void)timeline()->takeTrack(removeAt);
                 }
                 // Remove the tracks that REDO appended. These should be
                 // the last `appendPlan` video tracks. Walk from the end.
                 for (size_t e = 0; e < appendPlan; ++e) {
-                    for (size_t i = m_timeline->trackCount(); i-- > 0; ) {
-                        Track* t = m_timeline->track(i);
+                    for (size_t i = timeline()->trackCount(); i-- > 0; ) {
+                        Track* t = timeline()->track(i);
                         if (t && t->type() == TrackType::Video
                                 && t->clipCount() == 0) {
-                            (void)m_timeline->takeTrack(i);
+                            (void)timeline()->takeTrack(i);
                             break;
                         }
                     }
@@ -718,7 +679,7 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
                 finaliseAndReselect();
             });
         cmd->execute();
-        m_commandStack->pushWithoutExecute(std::move(cmd));
+        stack->pushWithoutExecute(std::move(cmd));
     } else {
         // No command stack: run the redo body inline.
         clearPanelSelections();
@@ -726,10 +687,10 @@ void TimelineWorkspace::applyShotSwitch(uint64_t groupId, const std::string& new
         for (size_t e = 0; e < numInserts; ++e) {
             auto t = std::make_unique<Track>(TrackType::Video, std::string{});
             t->setHeight(insertHeight);
-            m_timeline->insertTrack(insertPlanAt, std::move(t));
+            timeline()->insertTrack(insertPlanAt, std::move(t));
         }
         for (size_t e = 0; e < appendPlan; ++e)
-            (void)m_timeline->addVideoTrack("");
+            (void)timeline()->addVideoTrack("");
         insertSnapshots(*newClips, newShotName);
         finaliseAndReselect();
     }

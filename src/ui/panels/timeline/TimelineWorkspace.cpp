@@ -45,9 +45,15 @@
 #include "panels/timeline/PanelMaximizeController.h"
 #include "panels/timeline/SequenceTabsController.h"
 #include "panels/timeline/ShortcutController.h"
+#include "panels/timeline/ShotSwitchController.h"
 #include "panels/timeline/TimelinePanel.h"
 
+#include "panels/effects/ColorGradingPanel.h"
+#include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
+#include "panels/properties/PropertiesPanel.h"
+#include "timeline/Track.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "playback/PlaybackController.h"
 #include "playback/SnapshotPublisher.h"
@@ -154,6 +160,47 @@ TimelineWorkspace::TimelineWorkspace(QWidget* parent)
         /*progress=*/  [this](int done, int total) { emit backgroundWarmupProgress(done, total); },
         /*warmed=*/    [this] { if (m_programMonitor) m_programMonitor->requestRefresh(); },
         /*finished=*/  [this] { emit backgroundWarmupFinished(); },
+    });
+
+    // Shot-preset switching (Properties panel / character shot panel).
+    m_shotSwitch = std::make_unique<ShotSwitchController>(ShotSwitchController::Config{
+        /*timeline=*/    [this] { return m_timeline; },
+        /*commandStack=*/[this] { return m_commandStack; },
+        /*presets=*/     [this] { return m_shotPresetManager; },
+        /*refreshViews=*/[this] {
+            if (m_timelinePanel) m_timelinePanel->refreshTrackContents();
+            if (m_programMonitor) m_programMonitor->requestRefresh();
+        },
+        /*releaseClipPanels=*/[this] {
+            // A deferred paint between removeClip() and the rebuild would
+            // otherwise read the freed clips' strings.
+            m_selection.clip = nullptr;
+            if (m_propertiesPanel)     m_propertiesPanel->clearClip();
+            if (m_effectControlsPanel) m_effectControlsPanel->setClip(nullptr, nullptr);
+            if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->setClip(nullptr, nullptr);
+            if (m_ColorGradingPanel)   m_ColorGradingPanel->setClip(nullptr, nullptr);
+            if (m_timelinePanel)       m_timelinePanel->selection().clear();
+        },
+        /*shotSwitched=*/[this](Clip* picked, Track* track) {
+            // Rebuild track widgets (new tracks need widgets), then recompose
+            // the current frame: notifyScrub + requestRefresh is what the
+            // seek path uses; requestRefresh alone can coalesce and leave a
+            // stale frame. preOpenVideoMedia warms the new shot's media
+            // (100-170 ms per character clip) and refreshes again when done.
+            invalidateCompositeCache();
+            if (m_timelinePanel) m_timelinePanel->rebuildTracks();
+            preOpenVideoMedia();
+            if (m_programMonitor) {
+                m_programMonitor->notifyScrub();
+                m_programMonitor->requestRefresh();
+            }
+            if (picked) {
+                m_selection.clip = picked;
+                // The track is required: without it the panel's edit guard
+                // (canMutateClip) rejects every change to the reselected clip.
+                if (m_propertiesPanel) m_propertiesPanel->setClip(picked, track);
+            }
+        },
     });
 
     // Sequence tab bar (open sequences, tab close/context menu).
