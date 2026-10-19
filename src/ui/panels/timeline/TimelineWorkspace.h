@@ -20,6 +20,35 @@
  * │  │ ⇆   │                                         │     │      │
  * │  └─────┴─────────────────────────────────────────┴─────┘      │
  * └─────────────────────────────────────────────────────────────────┘
+ *
+ * Modules. The workspace builds the panels and wires their signals; the
+ * logic lives in modules it owns. Each is a std::unique_ptr built with a
+ * Config of narrow pointers and callbacks, except the three binders marked
+ * *, which take the workspace itself:
+ *   SnapshotSync             when the edited model is copied for render
+ *                            threads (history, commits, idle check)
+ *   ClipBindingController    which clip the clip panels show: selection,
+ *                            clearing, letting go of removed clips
+ *   SequenceTabsController   the sequence tab bar
+ *   MediaWarmupController    background pre-open of the timeline's media
+ *   ShotSwitchController     undoable shot-preset switching
+ *   MediaWatchController     hot-reload of media overwritten on disk
+ *   PanelMaximizeController  ` maximize / restore
+ *   DockLayoutManager        dock layout save / restore
+ *   OverlayController*       Program Monitor transform overlay and drags
+ *   DropController*          drops onto the timeline and monitors
+ *   ShortcutController*      keyboard routing
+ *   AudioPlaybackService (core) and CompositeService (gpu): audio, compositing
+ *
+ * The workspace's own files:
+ *   TimelineWorkspacePanels*.cpp  panel construction (createPanelWidgets
+ *                                 calls one helper per area, in a fixed
+ *                                 order) and the default dock layout
+ *   TimelineWorkspaceWiring*.cpp  signal wiring between the panels
+ *   TimelineWorkspaceIntegration  setTimeline, cache invalidation, undo refresh
+ *   ...Deps, Dock, EditCommands, Export, Audio, Spine, Composite
+ * New behaviour goes into the module that owns it (or a new one), not into
+ * the workspace. tests/ui/test_workspace_wiring.cpp pins the wiring.
  */
 
 #pragma once
