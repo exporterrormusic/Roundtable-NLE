@@ -29,7 +29,7 @@ void FrameClock::start()
 {
     if (m_running.load()) return;
     m_running.store(true);
-    m_thread = std::thread(&FrameClock::clockLoop, this);
+    m_thread.start("RT-FrameClock", [this](std::stop_token) { clockLoop(); });
     spdlog::info("[FrameClock] Started");
 }
 
@@ -38,7 +38,7 @@ void FrameClock::stop()
     if (!m_running.load()) return;
     m_running.store(false);
     m_wakeCV.notify_all();
-    if (m_thread.joinable()) m_thread.join();
+    m_thread.stop();
     spdlog::info("[FrameClock] Stopped");
 }
 
@@ -55,7 +55,6 @@ void FrameClock::clockLoop()
 {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-    SetThreadDescription(GetCurrentThread(), L"RT-FrameClock");
 #endif
 
     using clock = std::chrono::steady_clock;

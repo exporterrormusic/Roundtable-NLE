@@ -36,6 +36,8 @@
 #include <optional>
 #include <thread>
 
+#include "threading/WorkerThread.h"
+
 namespace rt {
 
 namespace frame_clock_detail {
@@ -190,7 +192,7 @@ private:
     FrameCallback       m_frameCB;
     StateCallback       m_stateCB;
 
-    std::thread        m_thread;
+    WorkerThread       m_thread;
     std::atomic<bool>  m_running{false};
 
     // Wake mechanism for play/pause transitions

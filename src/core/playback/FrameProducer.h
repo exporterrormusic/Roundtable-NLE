@@ -30,6 +30,8 @@
 #include <optional>
 #include <thread>
 
+#include "threading/WorkerThread.h"
+
 namespace rt {
 
 class PlaybackController;
@@ -212,7 +214,7 @@ private:
     std::atomic<int>      m_resDivisor{2};
 
     // Worker thread
-    std::thread       m_thread;
+    WorkerThread      m_thread;
     std::atomic<bool> m_running{false};
 
     // Request queue (FrameClock → producer thread)

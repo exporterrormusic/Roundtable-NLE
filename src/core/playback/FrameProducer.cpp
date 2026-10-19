@@ -83,7 +83,7 @@ void FrameProducer::start()
     m_running.store(true);
     m_destroying.store(false);
     s_active.store(this, std::memory_order_release);
-    m_thread = std::thread(&FrameProducer::producerLoop, this);
+    m_thread.start("RT-Producer", [this](std::stop_token) { producerLoop(); });
     spdlog::info("[FrameProducer] Started");
 }
 
@@ -96,7 +96,7 @@ void FrameProducer::stop()
     m_running.store(false);
     m_reqCV.notify_one();       // wake worker if blocked
     m_exchangeCV.notify_one();  // wake presenter if blocked
-    if (m_thread.joinable()) m_thread.join();
+    m_thread.stop();
     // Clear the diag pointer last so any in-flight CACHE-DUMP read on
     // another thread cannot observe a producer that has joined.
     FrameProducer* expected = this;
@@ -198,7 +198,6 @@ void FrameProducer::producerLoop()
 {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-    SetThreadDescription(GetCurrentThread(), L"RT-Producer");
 #endif
 
     spdlog::info("[FrameProducer] Thread started");

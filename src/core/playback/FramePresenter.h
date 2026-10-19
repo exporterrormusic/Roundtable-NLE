@@ -30,6 +30,8 @@
 #include <mutex>
 #include <thread>
 
+#include "threading/WorkerThread.h"
+
 namespace rt {
 
 class PlaybackController;
@@ -83,7 +85,7 @@ private:
     PresentCallback     m_presentCB;
     PresentNotify       m_presentNotify;
 
-    std::thread       m_thread;
+    WorkerThread      m_thread;
     std::atomic<bool> m_running{false};
 
     // Use-after-free guard

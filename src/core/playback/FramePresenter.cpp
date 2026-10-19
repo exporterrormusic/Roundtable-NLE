@@ -31,7 +31,7 @@ void FramePresenter::start()
     if (m_running.load()) return;
     m_running.store(true);
     m_destroying.store(false);
-    m_thread = std::thread(&FramePresenter::presentLoop, this);
+    m_thread.start("RT-Presenter", [this](std::stop_token) { presentLoop(); });
     spdlog::info("[FramePresenter] Started");
 }
 
@@ -41,7 +41,7 @@ void FramePresenter::stop()
     m_destroying.store(true);
     m_running.store(false);
     if (m_producer) m_producer->notifyPresenter();  // wake if blocked
-    if (m_thread.joinable()) m_thread.join();
+    m_thread.stop();
     spdlog::info("[FramePresenter] Stopped");
 }
 
@@ -72,7 +72,6 @@ void FramePresenter::presentLoop()
 {
 #ifdef _WIN32
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-    SetThreadDescription(GetCurrentThread(), L"RT-Presenter");
 #endif
 
     spdlog::info("[FramePresenter] Thread started (deadline-driven)");
