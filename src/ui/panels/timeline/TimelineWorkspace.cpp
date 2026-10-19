@@ -46,6 +46,7 @@
 #include "panels/timeline/SequenceTabsController.h"
 #include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/ShotSwitchController.h"
+#include "panels/timeline/SnapshotSync.h"
 #include "panels/timeline/TimelinePanel.h"
 
 #include "panels/effects/ColorGradingPanel.h"
@@ -58,7 +59,6 @@
 #include "timeline/Track.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "playback/PlaybackController.h"
-#include "playback/SnapshotPublisher.h"
 #include "command/CommandStack.h"
 #include "edit/EditSession.h"
 
@@ -107,32 +107,19 @@ void TimelineWorkspace::setSourceTransportActive(bool active)
 TimelineWorkspace::TimelineWorkspace(QWidget* parent)
     : QWidget(parent)
     , m_audioPlayback(std::make_unique<AudioPlaybackService>())
-    , m_snapshotPublisher(std::make_unique<SnapshotPublisher>())
+    , m_snapshotSync(std::make_unique<SnapshotSync>(SnapshotSync::Config{
+          /*destroying=*/    [this] { return isDestroying(); },
+          /*timeline=*/      [this] { return m_timeline; },
+          /*programMonitor=*/[this] { return m_programMonitor; },
+          /*playback=*/      [this] { return m_playbackController; },
+          /*revalidatePanelClipBindings=*/[this] { revalidatePanelClipBindings(); },
+      }))
     , m_compositeService(std::make_unique<CompositeService>())
 {
     setObjectName("TimelineWorkspace");
 
     // Render threads read published snapshots, never the live model.
-    m_compositeService->setSnapshotPublisher(m_snapshotPublisher.get());
-    m_snapshotPublishTimer = new QTimer(this);
-    m_snapshotPublishTimer->setSingleShot(true);
-    m_snapshotPublishTimer->setInterval(0);
-    connect(m_snapshotPublishTimer, &QTimer::timeout, this, [this] {
-        const bool wasDirty = m_snapshotPublisher->isDirty();
-        publishSnapshotNow();
-        // An edit that only invalidated the cache (no requestRefresh) is
-        // visible only after this publish: re-render the paused frame.
-        if (wasDirty && m_programMonitor && m_playbackController
-                && !m_playbackController->isPlaying()) {
-            m_refreshFromSnapshotPublish = true;
-            m_programMonitor->requestRefresh();
-            m_refreshFromSnapshotPublish = false;
-        }
-    });
-    m_snapshotVerifyTimer = new QTimer(this);
-    m_snapshotVerifyTimer->setInterval(1000);
-    connect(m_snapshotVerifyTimer, &QTimer::timeout, this, [this] { verifySnapshot(); });
-    m_snapshotVerifyTimer->start();
+    m_compositeService->setSnapshotPublisher(m_snapshotSync->publisher());
 
     // Live media file-swap watcher.  Collaborators are injected as accessor
     // functions because timeline/pool/bin are (re)set over our lifetime.
@@ -301,14 +288,9 @@ TimelineWorkspace::~TimelineWorkspace()
         m_programMonitor->setCompositeCallback(nullptr);
         m_programMonitor->setBeforeRefreshHook({});
     }
-    if (m_snapshotPublishTimer) m_snapshotPublishTimer->stop();
-    if (m_snapshotVerifyTimer) m_snapshotVerifyTimer->stop();
     // The edit session and stack outlive this widget; drop the listeners that
     // capture us.
-    if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
-        edits->setCommitListener({});
-    if (m_commandStack && m_historyListenerId)
-        m_commandStack->removeHistoryListener(m_historyListenerId);
+    m_snapshotSync->detach();
 
     // Cancel any in-flight background audio decode before destroying
     if (m_audioPlayback) {

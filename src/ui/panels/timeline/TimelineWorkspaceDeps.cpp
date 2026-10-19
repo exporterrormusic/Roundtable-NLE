@@ -13,6 +13,7 @@
 #include "panels/timeline/SequenceTabsController.h"
 
 #include "panels/timeline/MediaWatchController.h"
+#include "panels/timeline/SnapshotSync.h"
 
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
@@ -47,29 +48,11 @@ namespace rt {
 
 void TimelineWorkspace::setCommandStack(CommandStack* stack)
 {
-    if (m_commandStack && m_historyListenerId)
-        m_commandStack->removeHistoryListener(m_historyListenerId);
-    m_historyListenerId = 0;
     m_commandStack = stack;
-    // Every undo/redo — whichever panel, shortcut or History jump drove it —
-    // and every recorded step must reach the render snapshot, even when the
-    // caller skips refreshAfterUndoRedo (AudioSync's own Ctrl+Z, History).
-    if (stack) {
-        m_historyListenerId = stack->addHistoryListener(
-            [this](CommandStack::HistoryEvent event) {
-                markSnapshotDirty(event != CommandStack::HistoryEvent::Recorded);
-                // A step leaving history (trimmed, cleared) frees the clips
-                // it kept; a step undone may remove a bound clip.
-                revalidatePanelClipBindings();
-            });
-    }
-    // Each recorded edit (and its undo/redo) names the sequence it changed.
-    if (EditSession* edits = stack ? stack->editSession() : nullptr) {
+    // History and commits republish the render snapshot (SnapshotSync).
+    m_snapshotSync->setCommandStack(stack);
+    if (EditSession* edits = stack ? stack->editSession() : nullptr)
         edits->setActiveSequence(m_timeline);
-        edits->setCommitListener([this](uint64_t sequenceId) {
-            markSnapshotDirty(!m_timeline || m_timeline->id() != sequenceId);
-        });
-    }
 }
 void TimelineWorkspace::setShortcutManager(ShortcutManager* mgr) { m_shortcutManager = mgr; }
 
@@ -158,8 +141,7 @@ void TimelineWorkspace::setProject(Project* project)
     if (projectChanged)
         m_sequenceTabs->projectChanged(project);
     if (m_compositeService) m_compositeService->setProject(project);
-    m_snapshotProject = project;
-    rebindSnapshotPublisher();
+    m_snapshotSync->setProject(project);
     if (m_audioPlayback) m_audioPlayback->setProject(project);
     if (m_sourceMonitor) m_sourceMonitor->setSequenceProject(project);
     if (m_voiceGenerationService) m_voiceGenerationService->setProject(project);

@@ -9,7 +9,8 @@
  *   - the playhead reaching playback and the toolbar timecode;
  *   - in/out points reaching the Program Monitor mini-timeline;
  *   - the sequence tab bar following the project's open sequences;
- *   - recorded edits and undo reaching the render snapshot.
+ *   - recorded edits and undo reaching the render snapshot, including an
+ *     edit to a sequence that isn't open and a change that never signalled.
  */
 
 #include <gtest/gtest.h>
@@ -35,6 +36,7 @@
 
 #include <QApplication>
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QMainWindow>
 #include <QStringList>
@@ -295,6 +297,67 @@ TEST(WorkspaceWiring, RecordedEditsAndUndoReachTheRenderSnapshot)
     auto afterUndo = rig.ws->publishedSnapshot();
     ASSERT_TRUE(afterUndo && afterUndo->timeline);
     EXPECT_EQ(countClips(*afterUndo), 1u);
+}
+
+TEST(WorkspaceWiring, AnEditToTheOtherSequenceReachesItsSnapshotCopy)
+{
+    Rig rig;
+    rt::Track* other = rig.seq1->addVideoTrack("V1");
+    auto c = std::make_unique<rt::VideoClip>();
+    c->setDuration(48000);
+    rt::Clip* otherClip = other->addClip(std::move(c));
+    rig.ws->markSnapshotDirty(/*allSequences=*/true);
+    auto clipsIn = [](const rt::RenderSnapshot& snap, size_t index) {
+        size_t n = 0;
+        const rt::Timeline* seq = snap.sequenceAt(index);
+        for (size_t i = 0; seq && i < seq->trackCount(); ++i)
+            n += seq->track(i)->clipCount();
+        return n;
+    };
+    auto before = rig.ws->publishedSnapshot();
+    ASSERT_TRUE(before);
+    ASSERT_EQ(before->sequences.size(), 2u);
+    EXPECT_EQ(clipsIn(*before, 1), 1u);
+
+    // Sequence 01 stays open; the edit names Sequence 02.
+    size_t otherIndex = 0;
+    while (otherIndex < rig.seq1->trackCount() && rig.seq1->track(otherIndex) != other)
+        ++otherIndex;
+    rt::SelectionSet selection;
+    selection.selectClip(rt::ClipRef{otherIndex, otherClip->id()});
+    ASSERT_TRUE(rig.edits.execute(
+        *rig.seq1, rt::EditOperations::deleteSelection(*rig.seq1, selection)));
+    auto afterDelete = rig.ws->publishedSnapshot();
+    ASSERT_TRUE(afterDelete);
+    EXPECT_EQ(clipsIn(*afterDelete, 1), 0u);
+    EXPECT_EQ(clipsIn(*afterDelete, 0), 1u);
+
+    rig.stack.undo();
+    auto afterUndo = rig.ws->publishedSnapshot();
+    ASSERT_TRUE(afterUndo);
+    EXPECT_EQ(clipsIn(*afterUndo, 1), 1u);
+}
+
+TEST(WorkspaceWiring, TheIdleCheckPublishesAChangeThatDidNotSignal)
+{
+    Rig rig;
+    auto publishedDuration = [&rig] {
+        auto snap = rig.ws->publishedSnapshot();
+        if (!snap || !snap->timeline) return int64_t{-1};
+        const rt::Track* track = snap->timeline->track(rig.v1Index());
+        return track && track->clipCount() ? track->clip(0)->duration() : int64_t{-1};
+    };
+    ASSERT_EQ(publishedDuration(), 48000);
+
+    rig.clip->setDuration(24000);   // a plain setter: nothing marks it dirty
+    EXPECT_EQ(publishedDuration(), 48000);
+
+    // The verify timer runs once a second while paused.
+    QElapsedTimer waited;
+    waited.start();
+    while (publishedDuration() != 24000 && waited.elapsed() < 3000)
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+    EXPECT_EQ(publishedDuration(), 24000);
 }
 
 TEST(WorkspaceWiring, DraggedSequenceTabsStillSwitchToTheirOwnSequence)

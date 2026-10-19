@@ -11,7 +11,7 @@
 #include "panels/timeline/TimelinePanel.h"
 #include "playback/PlaybackController.h"
 #include "playback/EngineContracts.h"
-#include "playback/SnapshotPublisher.h"
+#include "panels/timeline/SnapshotSync.h"
 #include "command/CommandStack.h"
 #include "edit/EditSession.h"
 #include "timeline/Timeline.h"
@@ -80,8 +80,8 @@ RenderResult TimelineWorkspace::renderFrame(const RenderRequest& request)
 {
     // A render requested from the UI thread (Export Frame, export preview)
     // must include an edit made earlier in this same event-loop turn.
-    if (QThread::currentThread() == thread() && m_snapshotPublisher->isDirty())
-        publishSnapshotNow();
+    if (QThread::currentThread() == thread() && m_snapshotSync->isDirty())
+        m_snapshotSync->publishNow();
     if (m_compositeService)
         return m_compositeService->renderFrame(request);
 
@@ -313,11 +313,8 @@ void TimelineWorkspace::shutdownCompositeServices()
     // MainWindow destroys the Project before Qt deletes this widget, and the
     // child-deletion cascade can still fire requestRefresh(). Stop publishing
     // and forget the model now so nothing can copy a freed sequence.
-    if (m_snapshotPublishTimer) m_snapshotPublishTimer->stop();
-    if (m_snapshotVerifyTimer) m_snapshotVerifyTimer->stop();
     if (m_programMonitor) m_programMonitor->setBeforeRefreshHook({});
-    m_snapshotProject = nullptr;
-    m_snapshotPublisher->bind(nullptr, nullptr);
+    m_snapshotSync->shutdown();
     if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
         edits->setActiveSequence(nullptr);
 }

@@ -32,7 +32,7 @@
 #include "playback/MediaPool.h"
 #include "playback/MediaSourceService.h"
 #include "playback/PlaybackController.h"
-#include "playback/SnapshotPublisher.h"
+#include "panels/timeline/SnapshotSync.h"
 #include "spine/ModelManager.h"
 #include "timeline/EditOperations.h"
 #include "timeline/MediaRelinker.h"
@@ -49,7 +49,6 @@
 
 #include <QTimer>
 
-#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <vector>
@@ -133,9 +132,7 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
     }
 
     m_timeline = timeline;
-    if (!timeline)
-        m_snapshotProject = nullptr;
-    rebindSnapshotPublisher();
+    m_snapshotSync->timelineChanged();
     if (EditSession* edits = m_commandStack ? m_commandStack->editSession() : nullptr)
         edits->setActiveSequence(timeline);
     if (m_compositeService) {
@@ -193,14 +190,8 @@ void TimelineWorkspace::setTimeline(Timeline* timeline) {
 
         // requestRefresh() means "something visible changed, re-render now":
         // publish first so the synchronous render sees the edit.
-        m_programMonitor->setBeforeRefreshHook([this] {
-            if (m_destroying.load(std::memory_order_acquire)
-                    || m_refreshFromSnapshotPublish)
-                return;
-            m_snapshotPublisher->markDirty(
-                SnapshotPublisher::DirtyScope::ActiveSequence);
-            publishSnapshotNow();
-        });
+        m_programMonitor->setBeforeRefreshHook(
+            [this] { m_snapshotSync->beforeMonitorRefresh(); });
 
         if (timeline) {
             // Re-wire the composite callback — setCurrentProject() in
@@ -265,41 +256,14 @@ void TimelineWorkspace::invalidateCompositeCacheRange(int64_t fromTick, int64_t 
 
 // ── Render snapshots ────────────────────────────────────────────────────────
 
-void TimelineWorkspace::rebindSnapshotPublisher()
-{
-    m_snapshotPublisher->bind(m_snapshotProject, m_timeline);
-    publishSnapshotNow();
-}
-
 void TimelineWorkspace::markSnapshotDirty(bool allSequences)
 {
-    if (m_destroying.load(std::memory_order_acquire)) return;
-    m_snapshotPublisher->markDirty(allSequences
-        ? SnapshotPublisher::DirtyScope::AllSequences
-        : SnapshotPublisher::DirtyScope::ActiveSequence);
-    if (m_snapshotPublishTimer && !m_snapshotPublishTimer->isActive())
-        m_snapshotPublishTimer->start();
+    m_snapshotSync->markDirty(allSequences);
 }
 
 void TimelineWorkspace::publishSnapshotNow()
 {
-    if (m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_snapshotPublisher->publish()) return;
-
-    const auto stats = m_snapshotPublisher->lastPublishStats();
-    spdlog::debug("[SNAPSHOT] v{} published in {:.2f} ms ({} sequence(s) copied, "
-                  "{} shared, {} clips)", stats.editVersion, stats.cloneMs,
-                  stats.sequencesCloned, stats.sequencesShared, stats.clipsCloned);
-    // A copy this slow per edit would make dragging feel heavy; surface it
-    // (throttled) so it can be measured on real projects.
-    constexpr double kSlowPublishMs = 8.0;
-    static auto s_lastSlowLog = std::chrono::steady_clock::time_point{};
-    const auto now = std::chrono::steady_clock::now();
-    if (stats.cloneMs > kSlowPublishMs && now - s_lastSlowLog > std::chrono::seconds(10)) {
-        s_lastSlowLog = now;
-        spdlog::warn("[SNAPSHOT] slow publish: {:.1f} ms for {} clips in {} sequence(s)",
-                     stats.cloneMs, stats.clipsCloned, stats.sequencesCloned);
-    }
+    m_snapshotSync->publishNow();
 }
 
 void TimelineWorkspace::revalidatePanelClipBindings()
@@ -332,33 +296,7 @@ void TimelineWorkspace::revalidatePanelClipBindings()
 
 std::shared_ptr<const RenderSnapshot> TimelineWorkspace::publishedSnapshot()
 {
-    if (m_destroying.load(std::memory_order_acquire)) return nullptr;
-    publishSnapshotNow();
-    return m_snapshotPublisher->latest();
-}
-
-void TimelineWorkspace::verifySnapshot()
-{
-    if (m_destroying.load(std::memory_order_acquire)) return;
-    // Free copies render/export threads have finished with, even when no
-    // edit triggers a publish (e.g. after an export job completes).
-    m_snapshotPublisher->collectRetired();
-    if (!m_timeline) return;
-    if (m_playbackController && m_playbackController->isPlaying()) return;
-
-    std::string detail;
-    if (m_snapshotPublisher->verifySequences(&detail)) return;
-
-    // An edit changed the model without invalidating the composite cache or
-    // refreshing the monitor. Log it so the call site can be fixed, and show
-    // the edit now.
-    spdlog::warn("[SNAPSHOT] stale render copy (an edit did not signal): {}", detail);
-    publishSnapshotNow();
-    if (m_programMonitor) {
-        m_refreshFromSnapshotPublish = true;
-        m_programMonitor->requestRefresh();
-        m_refreshFromSnapshotPublish = false;
-    }
+    return m_snapshotSync->latest();
 }
 
 void TimelineWorkspace::relinkMedia(const QString& oldPath,

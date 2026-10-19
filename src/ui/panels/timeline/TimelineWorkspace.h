@@ -104,7 +104,7 @@ class AudioPlaybackService;
 class AnimationVideoCache;
 class Clip;
 class CompositeService;
-class SnapshotPublisher;
+class SnapshotSync;
 class ExportRenderSession;
 struct OpacityMask;
 class DockLayoutManager;
@@ -426,20 +426,10 @@ private:
     // the reload reaction is refreshChangedMedia() above.
     std::unique_ptr<MediaWatchController> m_mediaWatch;
 
-    // Read-only copies of the edited model for render threads (see
-    // SnapshotPublisher.h). Declared before m_compositeService so it outlives
-    // the compositor and its prewarm thread.
-    std::unique_ptr<SnapshotPublisher> m_snapshotPublisher;
-    QTimer* m_snapshotPublishTimer{nullptr};   // coalesces markSnapshotDirty()
-    QTimer* m_snapshotVerifyTimer{nullptr};    // idle check for missed signals
-    bool m_refreshFromSnapshotPublish{false};  // refresh issued by the publish itself
-    size_t m_historyListenerId{0};             // CommandStack history listener
-    // The project the publisher may read. Set by setProject(), cleared by
-    // setTimeline(nullptr): on a project switch setTimeline(new) runs before
-    // setProject(new) while m_project still names the destroyed project.
-    Project* m_snapshotProject{nullptr};
-    void rebindSnapshotPublisher();
-    void verifySnapshot();
+    // Read-only copies of the edited model for render threads, and when to
+    // publish them (see SnapshotSync.h). Declared before m_compositeService
+    // so its publisher outlives the compositor and its prewarm thread.
+    std::unique_ptr<SnapshotSync> m_snapshotSync;
     /// After any model change: every panel still bound to a clip that is no
     /// longer on the timeline is cleared (pointers compared, never
     /// dereferenced). Clips leave history 200 steps later, so a panel bound
