@@ -10,6 +10,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/SequenceTabsController.h"
 
 #include "panels/timeline/MediaWatchController.h"
 
@@ -154,14 +155,8 @@ void TimelineWorkspace::setProject(Project* project)
 {
     const bool projectChanged = (m_project != project);
     m_project = project;
-    if (projectChanged) {
-        m_openSequenceTabs.clear();
-        m_tabToSeq.clear();
-        if (project) {
-            for (size_t index : project->openSequenceIndices())
-                m_openSequenceTabs.insert(index);
-        }
-    }
+    if (projectChanged)
+        m_sequenceTabs->projectChanged(project);
     if (m_compositeService) m_compositeService->setProject(project);
     m_snapshotProject = project;
     rebindSnapshotPublisher();

@@ -113,6 +113,7 @@ class MediaWatchController;
 class OverlayController;
 class PanelMaximizeController;
 class PlaybackController;
+class SequenceTabsController;
 class ShortcutController;
 class ShotPresetManager;
 class SpineClip;
@@ -478,16 +479,8 @@ private:
     // Timecode display in timeline toolbar
     QLabel*           m_timelineTimecode{nullptr};
 
-    // Sequence tab bar (Premiere Pro style — multiple open sequences)
-    QTabBar*          m_sequenceTabBar{nullptr};
-    bool              m_suppressTabChange{false};
-
-    /// Set of sequence indices currently open as tabs.
-    /// When empty, refreshSequenceTabs() seeds it with all sequences.
-    std::set<size_t>  m_openSequenceTabs;
-
-    /// Tab-index → sequence-index mapping, rebuilt by refreshSequenceTabs().
-    std::vector<size_t> m_tabToSeq;
+    // Sequence tab bar (Premiere Pro style — multiple open sequences).
+    std::unique_ptr<SequenceTabsController> m_sequenceTabs;
 
     // Tool buttons (for sync with keyboard shortcuts)
     QToolButton*      m_toolButtons[9]{};  // Selection, Ripple, Rolling, Razor, Slip, Slide, Text, Zoom, Mask tool group

@@ -186,6 +186,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/TimelineWorkspaceDeps.cpp
     panels/timeline/TimelineWorkspaceDock.cpp
     panels/timeline/PanelMaximizeController.cpp
+    panels/timeline/SequenceTabsController.cpp
     panels/timeline/TimelineWorkspacePanels.cpp
     panels/timeline/TimelineWorkspacePanelsCreate.cpp
     panels/timeline/TimelineWorkspacePanelsLayout.cpp

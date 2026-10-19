@@ -7,6 +7,7 @@
  */
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/SequenceTabsController.h"
 #include "PathUtils.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "Constants.h"
@@ -836,130 +837,7 @@ void TimelineWorkspace::createPanelWidgets()
     centerLayout->setSpacing(0);
 
     // -- Sequence tab bar row ---------------------------------------------
-    m_sequenceTabBar = new QTabBar;
-    m_sequenceTabBar->setObjectName(QStringLiteral("SequenceTabBar"));
-    m_sequenceTabBar->setTabsClosable(true);
-    m_sequenceTabBar->setExpanding(false);
-    m_sequenceTabBar->setMovable(true);
-    m_sequenceTabBar->setDrawBase(false);
-    m_sequenceTabBar->setDocumentMode(true);
-    m_sequenceTabBar->setStyleSheet(QStringLiteral(
-        "QTabBar { background: %1; }"
-        "QTabBar::tab { background: %1; color: %2; padding: 4px 12px; "
-        "border: none; border-right: 1px solid %3; font-size: 12px; }"
-        "QTabBar::tab:selected { background: %4; color: %5; font-weight: bold; }"
-        "QTabBar::tab:hover { background: %6; }"
-        "QTabBar::close-button { image: none; width: 12px; height: 12px; "
-        "subcontrol-position: right; padding: 2px; }"
-        "QTabBar::close-button:hover { background: %7; border-radius: 3px; }")
-        .arg(Theme::hex(tc.surface1))
-        .arg(Theme::hex(tc.textTertiary))
-        .arg(Theme::hex(tc.border))
-        .arg(Theme::hex(tc.surface3))
-        .arg(Theme::hex(tc.textPrimary))
-        .arg(Theme::hex(tc.surface2))
-        .arg(Theme::hex(tc.error)));
-    m_sequenceTabBar->addTab(QStringLiteral("Sequence 1"));
-    connect(m_sequenceTabBar, &QTabBar::currentChanged, this, [this](int index) {
-        if (m_destroying.load(std::memory_order_acquire)) return;
-        if (m_suppressTabChange || index < 0) return;
-        if (index >= static_cast<int>(m_tabToSeq.size())) return;
-        emit sequenceTabChanged(m_tabToSeq[static_cast<size_t>(index)]);
-    });
-    connect(m_sequenceTabBar, &QTabBar::tabCloseRequested, this, [this](int tabIdx) {
-        if (m_destroying.load(std::memory_order_acquire)) return;
-        if (tabIdx < 0 || tabIdx >= static_cast<int>(m_tabToSeq.size())) return;
-        if (!m_project) return;
-
-        size_t seqIdx = m_tabToSeq[static_cast<size_t>(tabIdx)];
-
-        // Don't close the last open tab
-        if (m_openSequenceTabs.size() <= 1) return;
-
-        // Remove from open set
-        m_openSequenceTabs.erase(seqIdx);
-        syncSequenceTabStateToProject();
-
-        // If closing the active sequence, switch to the first remaining one.
-        // Don't call setActiveSequence here — let switchSequence() handle
-        // all the timeline/playback/UI wiring.
-        // IMPORTANT: emit sequenceTabChanged BEFORE refreshSequenceTabs so
-        // switchSequence() sees a different old-vs-new active index and
-        // takes the full refresh path (setTimeline, rebuildTracks,
-        // pm->refresh).  If refreshSequenceTabs runs first it silently
-        // changes the project's active to newActive, causing switchSequence
-        // to hit the early-return "already active" path which skips all
-        // UI refresh — leaving the timeline/program monitor stuck on the
-        // closed sequence until the user clicks another tab.
-        if (m_project->activeSequenceIndex() == seqIdx) {
-            size_t newActive = *m_openSequenceTabs.begin();
-            emit sequenceTabChanged(newActive);
-        } else {
-            refreshSequenceTabs();
-        }
-    });
-    m_sequenceTabBar->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_sequenceTabBar, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
-        if (m_destroying.load(std::memory_order_acquire)) return;
-        int tabIdx = m_sequenceTabBar->tabAt(pos);
-        if (tabIdx < 0 || tabIdx >= static_cast<int>(m_tabToSeq.size()) || !m_project) return;
-
-        size_t seqIdx = m_tabToSeq[static_cast<size_t>(tabIdx)];
-
-        QMenu menu(m_sequenceTabBar);
-        QAction* renameAction = menu.addAction("Rename Sequence...");
-        QAction* settingsAction = menu.addAction("Sequence Settings...");
-        QAction* dupAction    = menu.addAction("Duplicate Sequence");
-        menu.addSeparator();
-        QAction* closeAction  = menu.addAction("Close");
-        closeAction->setEnabled(m_openSequenceTabs.size() > 1);
-        QAction* closeOthersAction = menu.addAction("Close Other Tabs");
-        closeOthersAction->setEnabled(m_openSequenceTabs.size() > 1);
-
-        QAction* chosen = menu.exec(m_sequenceTabBar->mapToGlobal(pos));
-        if (chosen == renameAction) {
-            emit sequenceTabRenameRequested(seqIdx);
-        } else if (chosen == settingsAction) {
-            emit sequenceTabSettingsRequested(seqIdx);
-        } else if (chosen == dupAction) {
-            emit sequenceTabDuplicateRequested(seqIdx);
-        } else if (chosen == closeAction) {
-            // Don't close the last open tab
-            if (m_openSequenceTabs.size() <= 1) return;
-            m_openSequenceTabs.erase(seqIdx);
-            syncSequenceTabStateToProject();
-            // IMPORTANT: when closing the active sequence, emit
-            // sequenceTabChanged BEFORE refreshSequenceTabs (see the
-            // tabCloseRequested handler above for the full rationale).
-            // refreshSequenceTabs silently flips the backend's active to
-            // newActive; if it runs first, switchSequence() then hits its
-            // "already active" early-return and skips the timeline rebuild,
-            // leaving the panel stuck on the just-closed sequence.
-            if (m_project->activeSequenceIndex() == seqIdx) {
-                size_t newActive = *m_openSequenceTabs.begin();
-                emit sequenceTabChanged(newActive);
-            } else {
-                refreshSequenceTabs();
-            }
-        } else if (chosen == closeOthersAction) {
-            // Close every other open sequence, keeping only the right-clicked
-            // one (Premiere's "Close Other Tabs"). The kept tab becomes active.
-            if (m_openSequenceTabs.size() <= 1) return;
-            const bool keptWasActive = (m_project->activeSequenceIndex() == seqIdx);
-            m_openSequenceTabs.clear();
-            m_openSequenceTabs.insert(seqIdx);
-            syncSequenceTabStateToProject();
-            // Same ordering hazard as Close above: if the kept tab wasn't the
-            // active one, emit BEFORE refreshing so switchSequence() takes the
-            // full refresh path instead of the "already active" early-return.
-            if (!keptWasActive) {
-                emit sequenceTabChanged(seqIdx);
-            } else {
-                refreshSequenceTabs();
-            }
-        }
-    });
-    centerLayout->addWidget(m_sequenceTabBar);
+    centerLayout->addWidget(m_sequenceTabs->createTabBar());
 
     // -- Timeline toolbar row ---------------------------------------------
     auto* toolbar = new QWidget;

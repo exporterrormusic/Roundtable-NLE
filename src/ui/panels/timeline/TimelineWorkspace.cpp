@@ -42,6 +42,7 @@
 #include "panels/timeline/MediaWatchController.h"
 #include "panels/timeline/OverlayController.h"
 #include "panels/timeline/PanelMaximizeController.h"
+#include "panels/timeline/SequenceTabsController.h"
 #include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/TimelinePanel.h"
 
@@ -140,6 +141,17 @@ TimelineWorkspace::TimelineWorkspace(QWidget* parent)
         /*edgeSplitter=*/   [this] { return m_edgeSplitter; },
         /*dockWidgets=*/    &m_dockWidgets,
         /*fallbackPanel=*/  [this] { return static_cast<QWidget*>(m_timelinePanel); },
+    });
+
+    // Sequence tab bar (open sequences, tab close/context menu).
+    m_sequenceTabs = std::make_unique<SequenceTabsController>(SequenceTabsController::Config{
+        /*project=*/           [this] { return m_project; },
+        /*destroying=*/        [this] { return isDestroying(); },
+        /*sequencesChanged=*/  [this] { markSnapshotDirty(/*allSequences=*/true); },
+        /*switchRequested=*/   [this](size_t i) { emit sequenceTabChanged(i); },
+        /*renameRequested=*/   [this](size_t i) { emit sequenceTabRenameRequested(i); },
+        /*settingsRequested=*/ [this](size_t i) { emit sequenceTabSettingsRequested(i); },
+        /*duplicateRequested=*/[this](size_t i) { emit sequenceTabDuplicateRequested(i); },
     });
 
     // Program Monitor transform-overlay binder (drag handlers, overlay
