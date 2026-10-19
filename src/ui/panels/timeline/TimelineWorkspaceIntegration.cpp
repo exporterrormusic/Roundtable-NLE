@@ -527,23 +527,10 @@ void TimelineWorkspace::refreshAfterUndoRedo()
             m_playbackController->seekTo(modelTick);
     }
 
-    // After undo/redo, clips may have been added or removed. Clear any
-    // selected-clip / ShotPanel pointer that might now be dangling.
-    if (m_selection.clip && m_timeline) {
-        bool found = false;
-        for (size_t ti = 0; ti < m_timeline->trackCount() && !found; ++ti) {
-            auto* track = m_timeline->track(ti);
-            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-                if (track->clip(ci) == m_selection.clip) { found = true; break; }
-            }
-        }
-        if (!found) {
-            m_selection.clip = nullptr;
-            m_selection.graphicLayerIdx = -1;
-            if (m_propertiesPanel) m_propertiesPanel->clearClip();
-            if (m_effectControlsPanel) m_effectControlsPanel->clearClip();
-        }
-    }
+    // After undo/redo, clips may have been added or removed: the selection
+    // and every clip panel let go of clips that are no longer on the
+    // timeline (the history listener already did this for recorded steps).
+    m_clipBinding->releaseClipsNotOnTimeline();
 
     // Rebuild the timeline track widgets so split/merged clips are visible.
     if (m_timelinePanel) m_timelinePanel->rebuildTracks();

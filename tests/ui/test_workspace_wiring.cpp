@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "command/CommandStack.h"
+#include "command/commands/ClipCommands.h"
 #include "edit/EditSession.h"
 #include "panels/effects/ColorGradingPanel.h"
 #include "panels/effects/EffectControlsPanel.h"
@@ -333,6 +334,31 @@ TEST(WorkspaceWiring, SelectingOneClipBindsEveryPanelAndRaisesItsEditor)
     EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), rig.clip);
     EXPECT_EQ(rig.ws->propertiesPanel()->clip(), rig.clip);
     EXPECT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
+}
+
+TEST(WorkspaceWiring, UndoingTheSelectedClipsAdditionReleasesEveryClipPanel)
+{
+    Rig rig;
+    auto g = std::make_unique<rt::GraphicClip>();
+    g->setTimelineIn(48000);
+    g->setDuration(48000);
+    rt::Clip* graphic = g.get();
+    ASSERT_TRUE(rig.edits.execute(
+        *rig.seq0, std::make_unique<rt::AddClipCommand>(rig.v1, std::move(g))));
+    auto* panel = rig.ws->timelinePanel();
+    panel->selection().selectClip(rt::ClipRef{rig.v1Index(), graphic->id()});
+    emit panel->selectionChanged();
+    QApplication::processEvents();
+    ASSERT_EQ(rig.ws->graphicsEditorPanel()->clip(), graphic);
+
+    rig.stack.undo();
+    rig.ws->refreshAfterUndoRedo();
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->selection().clip, nullptr);
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), nullptr);
+    EXPECT_EQ(rig.ws->graphicsEditorPanel()->clip(), nullptr);
+    EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), nullptr);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), nullptr);
 }
 
 // The snap toggle used to be connected to the toolbar's FIRST tool button
