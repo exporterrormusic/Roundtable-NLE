@@ -48,6 +48,7 @@
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/monitors/ScopesPanel.h"
+#include "../support/StallGuard.h"
 #include "playback/PlaybackController.h"
 #include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
@@ -2030,6 +2031,21 @@ TEST(ExportSafetyTest, CancelProtectsDirectAndQueuedDestinations)
         } else {
             EXPECT_FALSE(QFileInfo::exists(path));
         }
+    }
+}
+
+// Stage 12 stop-stress (see tests/core/test_worker_shutdown.cpp): the
+// panel's worker starts in the constructor and stops in the destructor.
+TEST(ScopesPanelTest, WorkerStopsRightAfterStartAndAfterAFeed)
+{
+    std::vector<uint8_t> pixels(16 * 16 * 4, 90);
+    rt::test::StallGuard guard("ScopesPanel stop");
+    for (int i = 0; i < 300; ++i) {
+        {
+            ScopesPanel panel;
+            if (i % 2) panel.feedFrame(pixels.data(), 16, 16);
+        }
+        guard.tick();
     }
 }
 
