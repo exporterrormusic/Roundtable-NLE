@@ -141,6 +141,7 @@ add_roundtable_test(test_animation_video_cache LIBS roundtable_gpu roundtable_co
 # creates a device at run time, so they stay headless-safe ("core" group).
 add_roundtable_test(test_media_source_service LIBS roundtable_gpu roundtable_core)
 add_roundtable_test(test_worker_shutdown LIBS roundtable_gpu roundtable_core)
+add_roundtable_test(test_worker_thread LIBS roundtable_core)
 add_roundtable_test(test_playback_scheduler   LIBS roundtable_gpu roundtable_core)
 # CPU-only mask rasterizer (effects/CpuComposite in core)
 add_roundtable_test(test_mask_raster          LIBS roundtable_core)
