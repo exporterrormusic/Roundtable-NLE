@@ -82,12 +82,11 @@ ShotComposer::~ShotComposer()
     }
 
     // Stop video playback worker threads
+    // (These used to store a stop flag and join without waking an idle
+    // worker, which then never returned.)
     for (auto& [path, player] : m_videoPlayers) {
-        if (player) {
-            player->stopWorker.store(true);
-            if (player->workerThread.joinable())
-                player->workerThread.join();
-        }
+        if (player)
+            player->workerThread.stop();
     }
 }
 

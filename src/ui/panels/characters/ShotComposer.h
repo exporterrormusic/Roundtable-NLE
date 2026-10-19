@@ -56,6 +56,8 @@
 #include <mutex>
 #include <thread>
 
+#include "threading/WorkerThread.h"
+
 #include <QImage>
 
 namespace rt {
@@ -368,16 +370,17 @@ private:
         std::atomic<bool> frameReady{false};
         std::atomic<bool> decoding{false};  ///< Worker is busy
 
-        // Persistent worker thread — avoids per-frame thread creation overhead
-        std::thread workerThread;
-        std::condition_variable wakeWorker;
+        // Persistent worker thread — avoids per-frame thread creation overhead.
+        // Stopped through its stop_token; `decoding` is set under workerMutex.
+        WorkerThread workerThread;
+        std::condition_variable_any wakeWorker;
         std::mutex workerMutex;
-        std::atomic<bool> stopWorker{false};
 
         ~VideoPlaybackState();
     };
 
     // Video playback helpers
+    friend struct ShotComposerTestAccess;   // tests/ui/test_shot_composer.cpp
     std::shared_ptr<VideoPlaybackState> getOrCreateVideoPlayer(const std::string& path);
     static QImage advanceVideoPlayer(const std::shared_ptr<VideoPlaybackState>& player, float dt);
 

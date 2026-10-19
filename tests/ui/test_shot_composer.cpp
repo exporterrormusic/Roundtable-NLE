@@ -13,6 +13,8 @@
 
 #include "spine/ShotPreset.h"
 #include "panels/characters/ShotComposer.h"
+#include "../gpu/IndexedVideoFixture.h"
+#include "../support/StallGuard.h"
 
 #include <QApplication>
 #include <QTemporaryDir>
@@ -24,8 +26,10 @@
 #include <QSignalSpy>
 #include <QTest>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 static int    s_argc = 1;
 static char   s_arg0[] = "test_shot_composer";
@@ -1296,4 +1300,45 @@ TEST_F(ShotComposerUITest, FailedRenameSavePreservesPreviousPreset)
     EXPECT_EQ(reloaded.scan(tmpDir.path()), 1);
     EXPECT_TRUE(reloaded.hasPreset("Original Shot"));
     EXPECT_FALSE(reloaded.hasPreset("Renamed Shot"));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ShotComposer video players — worker shutdown (Stage 12)
+// ═════════════════════════════════════════════════════════════════════════════
+
+namespace rt {
+struct ShotComposerTestAccess {
+    static bool openVideo(ShotComposer& composer, const std::string& path)
+    {
+        return composer.getOrCreateVideoPlayer(path) != nullptr;
+    }
+    static void requestFrame(ShotComposer& composer, const std::string& path)
+    {
+        auto player = composer.getOrCreateVideoPlayer(path);
+        if (player) (void)ShotComposer::advanceVideoPlayer(player, 1.0f);
+    }
+};
+} // namespace rt
+
+TEST(ShotComposerVideo, DestroyingTheComposerStopsItsIdleVideoWorkers)
+{
+    // The destructor used to store a stop flag and join without waking the
+    // worker, so an idle video player's worker never returned.
+    const auto video = std::filesystem::temp_directory_path() /
+        ("rt_shot_composer_video_" +
+         std::to_string(QCoreApplication::applicationPid()) + ".mp4");
+    ASSERT_TRUE(rt_test::writeIndexedVideo(video.string()));
+    rt::test::StallGuard guard("ShotComposer teardown with a video player",
+                               std::chrono::seconds(5));
+    for (int i = 0; i < 5; ++i) {
+        {
+            ShotComposer composer;
+            ASSERT_TRUE(ShotComposerTestAccess::openVideo(composer, video.string()));
+            if (i % 2) ShotComposerTestAccess::requestFrame(composer, video.string());
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));   // worker goes idle
+        }
+        guard.tick();
+    }
+    std::error_code ec;
+    std::filesystem::remove(video, ec);
 }

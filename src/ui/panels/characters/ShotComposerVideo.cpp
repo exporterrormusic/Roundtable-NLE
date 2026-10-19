@@ -249,11 +249,9 @@ QImage ShotComposer::extractVideoThumbnail(const std::string& path)
 
 ShotComposer::VideoPlaybackState::~VideoPlaybackState()
 {
-    // Signal the worker thread to exit and wait for it
-    stopWorker.store(true, std::memory_order_release);
-    wakeWorker.notify_one();
-    if (workerThread.joinable())
-        workerThread.join();
+    // Wakes and joins the worker. If the worker itself dropped the last
+    // reference, WorkerThread detaches instead of joining itself.
+    workerThread.stop();
 }
 
 std::shared_ptr<ShotComposer::VideoPlaybackState>
@@ -263,6 +261,10 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
     auto it = m_videoPlayers.find(path);
     if (it != m_videoPlayers.end() && it->second->decoder && it->second->decoder->isOpen())
         return it->second;
+    // Replaced below: its worker holds the state while it waits, so it must
+    // be stopped or it waits forever.
+    if (it != m_videoPlayers.end() && it->second)
+        it->second->workerThread.stop();
 
     // Resolve the video file path — use as-is (no forced .mov extension).
     QString qpath = QString::fromStdString(path);
@@ -333,21 +335,20 @@ ShotComposer::getOrCreateVideoPlayer(const std::string& path)
     // It sleeps until woken by advanceVideoPlayer(), decodes one frame,
     // then goes back to sleep. No per-frame thread creation overhead.
     std::weak_ptr<VideoPlaybackState> wp = state;
-    state->workerThread = std::thread([wp]() {
+    state->workerThread.start("Shot composer video", [wp](std::stop_token stop) {
         while (true) {
             auto sp = wp.lock();
             if (!sp) return;
 
-            // Wait until signalled to decode (or stop)
+            // Wait until signalled to decode (or stopped)
             {
                 std::unique_lock<std::mutex> lk(sp->workerMutex);
-                sp->wakeWorker.wait(lk, [&sp]() {
-                    return sp->decoding.load(std::memory_order_acquire)
-                        || sp->stopWorker.load(std::memory_order_acquire);
+                sp->wakeWorker.wait(lk, stop, [&sp]() {
+                    return sp->decoding.load(std::memory_order_acquire);
                 });
             }
 
-            if (sp->stopWorker.load(std::memory_order_acquire))
+            if (stop.stop_requested())
                 return;
 
             if (!sp->decoder) {
@@ -430,8 +431,14 @@ QImage ShotComposer::advanceVideoPlayer(
     if (player->decoding.load(std::memory_order_acquire))
         return result;
 
-    // Signal the persistent worker thread to decode the next frame
-    player->decoding.store(true, std::memory_order_release);
+    // Signal the persistent worker thread to decode the next frame. Set
+    // under the worker's mutex: a notify that lands between its check and
+    // its sleep would otherwise be lost, leaving `decoding` stuck true and
+    // the preview frozen.
+    {
+        std::lock_guard<std::mutex> lk(player->workerMutex);
+        player->decoding.store(true, std::memory_order_release);
+    }
     player->wakeWorker.notify_one();
 
     return result;
