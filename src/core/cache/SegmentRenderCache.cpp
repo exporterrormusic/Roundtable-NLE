@@ -44,10 +44,8 @@ SegmentRenderCache::SegmentRenderCache(size_t budgetBytes)
 
 SegmentRenderCache::~SegmentRenderCache()
 {
-    if (m_writerRunning.exchange(false)) {
-        m_writerCv.notify_all();
-        if (m_writer.joinable()) m_writer.join();
-    }
+    // Writes what is queued, then stops (before the members it uses go).
+    m_writer.stop();
 }
 
 // ── In-memory store ─────────────────────────────────────────────────────────
@@ -231,8 +229,9 @@ void SegmentRenderCache::enableDiskCache(const std::filesystem::path& dir,
         m_diskEnabled = true;
     }
     scanDiskCache();
-    if (!m_writerRunning.exchange(true))
-        m_writer = std::thread(&SegmentRenderCache::diskWriterLoop, this);
+    if (!m_writerStarted.exchange(true))
+        m_writer.start("SegmentRenderCache writer",
+                       [this](std::stop_token stop) { diskWriterLoop(stop); });
 
     spdlog::info("SegmentRenderCache: disk cache '{}' ({} MB), {} existing frame(s)",
                  rt::pathToUtf8(dir), budgetBytes / (1024 * 1024), m_diskIndex.size());
@@ -361,17 +360,15 @@ void SegmentRenderCache::enqueueDiskWrite(const DiskKey& k,
     m_writerCv.notify_one();
 }
 
-void SegmentRenderCache::diskWriterLoop()
+void SegmentRenderCache::diskWriterLoop(std::stop_token stop)
 {
+    // After a stop the wait returns at once, so the queue is drained first.
     while (true) {
         PendingWrite job;
         {
             std::unique_lock wl(m_writerMtx);
-            m_writerCv.wait(wl, [this] {
-                return !m_writerRunning.load() || !m_writeQueue.empty();
-            });
-            if (!m_writerRunning.load() && m_writeQueue.empty()) return;
-            if (m_writeQueue.empty()) continue;
+            m_writerCv.wait(wl, stop, [this] { return !m_writeQueue.empty(); });
+            if (m_writeQueue.empty()) return;   // stopped, everything written
             job = std::move(m_writeQueue.front());
             m_writeQueue.pop_front();
         }

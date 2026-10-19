@@ -47,7 +47,8 @@ DiskFrameCache::DiskFrameCache(const std::filesystem::path& cacheDir,
 
     scanExistingCache();
 
-    m_writer = std::thread([this]() { writerThread(); });
+    m_writer.start("DiskFrameCache writer",
+                   [this](std::stop_token stop) { writerThread(stop); });
 
     spdlog::info("DiskFrameCache: dir='{}', budget={:.1f} GB, existing={} entries ({:.1f} MB)",
                  pathToUtf8(m_cacheDir),
@@ -58,10 +59,8 @@ DiskFrameCache::DiskFrameCache(const std::filesystem::path& cacheDir,
 
 DiskFrameCache::~DiskFrameCache()
 {
-    m_running.store(false);
-    m_writerCv.notify_all();
-    if (m_writer.joinable())
-        m_writer.join();
+    // Before any member goes. A stop_token wait cannot miss the stop.
+    m_writer.stop();
 }
 
 // ─── Media registration ─────────────────────────────────────────────────────
@@ -210,19 +209,16 @@ void DiskFrameCache::putAsync(std::shared_ptr<CachedFrame> frame)
 
 // ─── Writer thread ──────────────────────────────────────────────────────────
 
-void DiskFrameCache::writerThread()
+void DiskFrameCache::writerThread(std::stop_token stop)
 {
-    while (m_running.load()) {
+    // After a stop, at most the frame already taken is still written.
+    while (!stop.stop_requested()) {
         std::shared_ptr<CachedFrame> frame;
         {
             std::unique_lock lock(m_writerMutex);
-            m_writerCv.wait(lock, [this]() {
-                return !m_writeQueue.empty() || !m_running.load();
-            });
-            if (!m_running.load() && m_writeQueue.empty())
+            m_writerCv.wait(lock, stop, [this]() { return !m_writeQueue.empty(); });
+            if (m_writeQueue.empty())   // stop requested, nothing queued
                 break;
-            if (m_writeQueue.empty())
-                continue;
             frame = std::move(m_writeQueue.front());
             m_writeQueue.pop_front();
         }

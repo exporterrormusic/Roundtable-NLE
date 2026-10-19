@@ -32,6 +32,8 @@
 #include <filesystem>
 #include <mutex>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <unordered_map>
 #include <unordered_set>
 
@@ -147,7 +149,7 @@ private:
         const std::filesystem::path& path,
         uint64_t mediaId) const;
 
-    void writerThread();
+    void writerThread(std::stop_token stop);
     void enforceBudget();
     void scanExistingCache(); // acquires m_mutex internally
 
@@ -160,11 +162,11 @@ private:
     std::unordered_set<DiskKey, DiskKeyHash>        m_diskIndex;   // what's on disk
 
     // Write-behind thread
-    std::thread              m_writer;
+    // Stopped first in the destructor: the writer uses the members below.
+    WorkerThread             m_writer;
     mutable std::mutex       m_writerMutex;
-    std::condition_variable  m_writerCv;
+    std::condition_variable_any m_writerCv;   // waits on the writer's stop_token
     std::deque<std::shared_ptr<CachedFrame>> m_writeQueue;
-    std::atomic<bool>        m_running{true};
 
     // Hard ceiling on the write queue (UPGRADE_PLAN 2026-05-22 v4).
     //

@@ -22,6 +22,7 @@
 #pragma once
 
 #include "cache/FrameCache.h"   // CachedFrame, ResolutionTier
+#include "threading/WorkerThread.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -163,7 +164,7 @@ private:
     [[nodiscard]] std::shared_ptr<CachedFrame> readFrameFromDisk(
         const std::filesystem::path& path, const DiskKey& k) const;
     void enqueueDiskWrite(const DiskKey& k, std::shared_ptr<CachedFrame> frame);
-    void diskWriterLoop();
+    void diskWriterLoop(std::stop_token stop);
     void scanDiskCache();              // rebuild index + used-bytes from dir
     void enforceDiskBudget();          // LRU-by-mtime delete when over budget
 
@@ -176,11 +177,12 @@ private:
     std::unordered_map<Key, size_t, KeyHash> m_diskCandidateCounts;
     std::atomic<size_t>   m_diskUsed{0};
 
-    std::thread             m_writer;
+    // Stopped first in the destructor: the writer uses the members above.
+    WorkerThread            m_writer;
     mutable std::mutex      m_writerMtx;
-    std::condition_variable m_writerCv;
+    std::condition_variable_any m_writerCv;   // waits on the writer's stop_token
     std::deque<PendingWrite> m_writeQueue;
-    std::atomic<bool>       m_writerRunning{false};
+    std::atomic<bool>       m_writerStarted{false};
 };
 
 } // namespace rt
