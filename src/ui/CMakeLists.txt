@@ -191,6 +191,10 @@ add_library(roundtable_ui STATIC
     panels/timeline/SnapshotSync.cpp
     panels/timeline/TimelineWorkspacePanels.cpp
     panels/timeline/TimelineWorkspacePanelsCreate.cpp
+    panels/timeline/TimelineWorkspacePanelsMedia.cpp
+    panels/timeline/TimelineWorkspacePanelsMonitors.cpp
+    panels/timeline/TimelineWorkspacePanelsClip.cpp
+    panels/timeline/TimelineWorkspacePanelsCentral.cpp
     panels/timeline/TimelineWorkspacePanelsLayout.cpp
     panels/timeline/TimelineWorkspacePanelsPlayback.cpp
     panels/timeline/ShortcutControllerRegister.cpp

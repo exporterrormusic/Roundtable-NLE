@@ -554,8 +554,26 @@ private:
 
 
     // ── Panel build helpers (extracted from TimelineWorkspacePanels.cpp) ─
-    /// Create all dock widgets and panel instances.
+    /// Create all dock widgets and panel instances, in a fixed order (the
+    /// default layout and the saved dock state depend on it), through the
+    /// per-area helpers below (TimelineWorkspacePanels*.cpp).
     void createPanelWidgets();
+    /// Wrap `widget` in a titled dock on the inner main window and register
+    /// it in m_dockWidgets. Every dock is movable and floatable.
+    QDockWidget* makeDock(const QString& title, QWidget* widget, bool closable = true);
+    void createBinDocks();          ///< Project Bin, Voice Generator
+    void createMonitorDocks();      ///< Source Monitor, Program Monitor
+    void createClipPanelDocks();    ///< Properties .. Tier List
+    void createLibraryDock();       ///< Library (Characters)
+    void createAudioMetersDock();   ///< VU meter
+    /// Tool column dock + sequence tab bar + toolbar + timeline panel.
+    void createCentralWidget();
+    [[nodiscard]] QWidget* createToolColumn();
+    [[nodiscard]] QWidget* createTimelineToolbar();
+    /// Source Monitor drops: a Spine animation ("spine:Char|outfit|stance|anim")
+    /// or a project sequence by index.
+    void loadSpineInSourceMonitor(const QString& uri);
+    void loadSequenceInSourceMonitor(size_t seqIdx);
     /// Arrange the dock layout (Premiere Pro default arrangement).
     void arrangeDockLayout();
     /// Wire all playback controller signals (scrub, position, state, composite).

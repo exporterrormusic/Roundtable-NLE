@@ -41,6 +41,7 @@
 #include <QMainWindow>
 #include <QStringList>
 #include <QTabBar>
+#include <QToolButton>
 
 #include <algorithm>
 #include <filesystem>
@@ -243,6 +244,37 @@ TEST(WorkspaceWiring, InAndOutPointsReachTheProgramMonitor)
     EXPECT_EQ(rig.seq0->inPoint(), -1);
     EXPECT_FALSE(mini->hasInPoint());
     EXPECT_FALSE(mini->hasOutPoint());
+}
+
+// FOUND (owner question, pinned as-is): the snap toggle is connected to the
+// toolbar's FIRST tool button (findChild), which is Nest, not Snap. The Snap
+// button changes nothing; turning Nest off also turns snapping off.
+TEST(WorkspaceWiring, ToolbarSnapToggleIsWiredToTheNestButton)
+{
+    Rig rig;
+    auto* toolbar = rig.ws->findChild<QWidget*>(QStringLiteral("timelineToolbar"));
+    ASSERT_NE(toolbar, nullptr);
+    QToolButton* snap = nullptr;
+    QToolButton* nest = nullptr;
+    for (QToolButton* b : toolbar->findChildren<QToolButton*>()) {
+        if (b->toolTip().startsWith(QStringLiteral("Snap"))) snap = b;
+        if (b->toolTip().startsWith(QStringLiteral("Insert or overwrite"))) nest = b;
+    }
+    ASSERT_NE(snap, nullptr);
+    ASSERT_NE(nest, nullptr);
+    rt::TimelinePanel* panel = rig.ws->timelinePanel();
+    ASSERT_TRUE(panel->snapEngine().isEnabled());
+
+    snap->click();
+    EXPECT_FALSE(snap->isChecked());
+    EXPECT_TRUE(panel->snapEngine().isEnabled());
+
+    nest->click();
+    EXPECT_TRUE(panel->nestSequencesEnabled());
+    EXPECT_TRUE(panel->snapEngine().isEnabled());
+    nest->click();
+    EXPECT_FALSE(panel->nestSequencesEnabled());
+    EXPECT_FALSE(panel->snapEngine().isEnabled());
 }
 
 TEST(WorkspaceWiring, SequenceTabsFollowTheOpenSequences)
