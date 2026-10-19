@@ -405,3 +405,95 @@ TEST(WorkspaceWiring, ShotSwitchReplacesTheGroupAndUndoRestoresIt)
     rig.ws.reset();
     fs::remove_all(dir);
 }
+
+namespace {
+
+// One token per track, top to bottom: "<V|A><clip types and layer ids>".
+std::string trackLayout(const rt::Timeline& timeline)
+{
+    std::string out;
+    for (size_t ti = 0; ti < timeline.trackCount(); ++ti) {
+        const rt::Track* track = timeline.track(ti);
+        if (!out.empty()) out += " | ";
+        out += track->type() == rt::TrackType::Video ? "V[" : "A[";
+        for (size_t ci = 0; ci < track->clipCount(); ++ci) {
+            const rt::Clip* c = track->clip(ci);
+            if (ci) out += ",";
+            out += std::to_string(static_cast<int>(c->clipType())) + ":" + c->layerId();
+        }
+        out += "]";
+    }
+    return out;
+}
+
+} // namespace
+
+TEST(WorkspaceWiring, ShotSwitchToABiggerShotAddsTracksAndUndoRemovesThem)
+{
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() /
+        ("rt_ws_shot_switch_big_" + std::to_string(QCoreApplication::applicationPid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    rt::ShotPresetManager presets;
+    presets.scan(dir);
+    rt::ShotPreset big("Big");
+    rt::BackgroundState bg;
+    bg.path = "C:/missing/stage.png";
+    bg.posX = 0.25f;
+    big.addBackground(bg);
+    rt::CharacterState a;
+    a.characterName = "Rapi";
+    a.animation = "idle";
+    a.flipX = true;
+    big.addCharacter(a);
+    rt::CharacterState b;
+    b.characterName = "Anis";
+    big.addCharacter(b);
+    rt::CharacterState hidden;
+    hidden.characterName = "Hidden";
+    hidden.visible = false;
+    big.addCharacter(hidden);
+    ASSERT_TRUE(presets.save(big));
+
+    Rig rig;
+    rig.ws->setShotPresetManager(&presets);
+    rig.clip->setGroupId(9);
+    // A clip on another track overlapping the group keeps that track busy.
+    rt::Track* v2 = rig.seq0->addVideoTrack("V2");
+    auto busy = std::make_unique<rt::VideoClip>();
+    busy->setDuration(48000);
+    busy->setLayerId("busy");
+    v2->addClip(std::move(busy));
+    const std::string before = trackLayout(*rig.seq0);
+
+    emit rig.ws->propertiesPanel()->shotSwitchRequested(9, "Big");
+    QApplication::processEvents();
+    const std::string after = trackLayout(*rig.seq0);
+    // The preset lists the background first, so it is the FRONT layer.
+    EXPECT_EQ(after, "V[1:background_0] | V[0:char_0] | V[0:char_1] | V[1:busy] | V[] | A[]");
+    std::vector<std::string> labels;
+    for (size_t ti = 0; ti < rig.seq0->trackCount(); ++ti)
+        for (size_t ci = 0; ci < rig.seq0->track(ti)->clipCount(); ++ci) {
+            rt::Clip* c = rig.seq0->track(ti)->clip(ci);
+            if (c->groupId() == 9)
+                labels.push_back(c->label() + "@" + std::to_string(c->timelineIn()) + "+" +
+                                 std::to_string(c->duration()) + " x" +
+                                 std::to_string(c->positionX().defaultValue()) + " s" +
+                                 std::to_string(c->scaleX().defaultValue()));
+        }
+    std::string joined;
+    for (const auto& l : labels) joined += l + ";";
+    EXPECT_EQ(joined,
+              "stage@0+48000 x-480.000000 s1.000000;"
+              "Rapi - idle@0+48000 x0.000000 s-1.000000;"
+              "Anis - idle@0+48000 x0.000000 s1.000000;");
+
+    ASSERT_TRUE(rig.stack.undo());
+    EXPECT_EQ(trackLayout(*rig.seq0), before);
+    ASSERT_TRUE(rig.stack.redo());
+    EXPECT_EQ(trackLayout(*rig.seq0), after);
+
+    rig.ws.reset();
+    fs::remove_all(dir);
+}
