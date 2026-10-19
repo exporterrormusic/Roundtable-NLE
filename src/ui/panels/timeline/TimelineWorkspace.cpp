@@ -39,6 +39,7 @@
 #include "audio/AudioPlaybackService.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "panels/timeline/DropController.h"
+#include "panels/timeline/MediaWarmupController.h"
 #include "panels/timeline/MediaWatchController.h"
 #include "panels/timeline/OverlayController.h"
 #include "panels/timeline/PanelMaximizeController.h"
@@ -141,6 +142,18 @@ TimelineWorkspace::TimelineWorkspace(QWidget* parent)
         /*edgeSplitter=*/   [this] { return m_edgeSplitter; },
         /*dockWidgets=*/    &m_dockWidgets,
         /*fallbackPanel=*/  [this] { return static_cast<QWidget*>(m_timelinePanel); },
+    });
+
+    // Background media warm-up (worker threads; joined in the destructor).
+    m_mediaWarmup = std::make_unique<MediaWarmupController>(MediaWarmupController::Config{
+        /*timeline=*/  [this] { return m_timeline; },
+        /*mediaPool=*/ [this] { return m_mediaPool; },
+        /*canWarm=*/   [this] { return m_compositeService != nullptr; },
+        /*destroying=*/[this] { return isDestroying(); },
+        /*invalidateCompositeCache=*/[this] { invalidateCompositeCache(); },
+        /*progress=*/  [this](int done, int total) { emit backgroundWarmupProgress(done, total); },
+        /*warmed=*/    [this] { if (m_programMonitor) m_programMonitor->requestRefresh(); },
+        /*finished=*/  [this] { emit backgroundWarmupFinished(); },
     });
 
     // Sequence tab bar (open sequences, tab close/context menu).

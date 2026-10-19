@@ -109,6 +109,7 @@ class ExportRenderSession;
 struct OpacityMask;
 class DockLayoutManager;
 class DropController;
+class MediaWarmupController;
 class MediaWatchController;
 class OverlayController;
 class PanelMaximizeController;
@@ -536,11 +537,6 @@ private:
     void preOpenVideoMedia();
     void cancelBackgroundMediaWarmups() noexcept;
     void cancelAndJoinBackgroundMediaWarmups() noexcept;
-    void reapFinishedBackgroundMediaWarmups();
-
-    /// Upgrade legacy media masks after MediaPool supplies authoritative
-    /// dimensions/rotation. Offline sources remain safely in legacy space.
-    int migrateDeferredLegacyMediaMasks();
 
     /// Warm active playback media/GPU resources before the first visible frame.
     void prewarmPlaybackResources(int64_t tick, uint32_t outW, uint32_t outH);
@@ -551,15 +547,11 @@ public:
     /// use-after-free crashes during startup (Keyframe<float> iteration in
     /// the compositor can race with timeline population).  MainWindow also
     /// uses it to decide whether to hold the project-open input lock.
-    [[nodiscard]] bool isBackgroundWarmupActive() const noexcept { return m_backgroundWarmupActive.load(std::memory_order_acquire); }
+    [[nodiscard]] bool isBackgroundWarmupActive() const noexcept;
 
 private:
-    struct MediaWarmupBatch;
-
-    /// Number of background warmup threads still running.
-    std::atomic<int> m_backgroundWarmupActive{0};
-    std::atomic<uint64_t> m_mediaWarmupGeneration{0};
-    std::vector<std::shared_ptr<MediaWarmupBatch>> m_mediaWarmupBatches;
+    /// Background pre-opening of the timeline's media (worker threads).
+    std::unique_ptr<MediaWarmupController> m_mediaWarmup;
 
     /// Destruction guard — checked by lambdas and callbacks.
     std::atomic<bool> m_destroying{false};
