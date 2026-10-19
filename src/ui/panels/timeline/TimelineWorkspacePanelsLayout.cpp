@@ -149,19 +149,6 @@ void TimelineWorkspace::arrangeDockLayout()
         });
     }
 
-    // Snap button retained in createPanelWidgets to be passed here
-    // Find the snap button via toolbar children
-    auto* toolbar = m_innerMainWindow->findChild<QWidget*>("timelineToolbar");
-    if (toolbar) {
-        auto* btnSnap = toolbar->findChild<QToolButton*>();
-        // Connect snap toggle
-        if (btnSnap) {
-            connect(btnSnap, &QToolButton::toggled, this, [this](bool checked) {
-                if (m_timelinePanel) m_timelinePanel->setSnappingEnabled(checked);
-            });
-        }
-    }
-
     // Sync tool buttons when tool is changed via keyboard shortcut
     if (m_timelinePanel) {
         connect(m_timelinePanel, &TimelinePanel::toolChanged,

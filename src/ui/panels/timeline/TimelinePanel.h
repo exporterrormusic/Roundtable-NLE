@@ -387,6 +387,9 @@ signals:
     /// Emitted when the active tool changes.
     void toolChanged(EditTool tool);
 
+    /// Emitted when snapping is switched on or off (button or N key).
+    void snappingChanged(bool enabled);
+
     /// Emitted when selection changes.
     void selectionChanged();
 

@@ -55,7 +55,9 @@ void TimelinePanel::setActiveTool(EditTool tool)
 
 void TimelinePanel::setSnappingEnabled(bool enabled)
 {
+    if (m_snapEngine.isEnabled() == enabled) return;
     m_snapEngine.setEnabled(enabled);
+    emit snappingChanged(enabled);
 }
 
 void TimelinePanel::setCaptionTrackVisible(bool visible)

@@ -19,6 +19,7 @@
 #include "edit/EditSession.h"
 #include "panels/effects/ColorGradingPanel.h"
 #include "panels/effects/EffectControlsPanel.h"
+#include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/timeline/TimelinePanel.h"
@@ -29,6 +30,7 @@
 #include "spine/ShotPreset.h"
 #include "timeline/AudioClip.h"
 #include "timeline/EditOperations.h"
+#include "timeline/GraphicClip.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
@@ -37,6 +39,7 @@
 #include <QApplication>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMainWindow>
 #include <QStringList>
@@ -246,10 +249,95 @@ TEST(WorkspaceWiring, InAndOutPointsReachTheProgramMonitor)
     EXPECT_FALSE(mini->hasOutPoint());
 }
 
-// FOUND (owner question, pinned as-is): the snap toggle is connected to the
-// toolbar's FIRST tool button (findChild), which is Nest, not Snap. The Snap
-// button changes nothing; turning Nest off also turns snapping off.
-TEST(WorkspaceWiring, ToolbarSnapToggleIsWiredToTheNestButton)
+namespace {
+// A Graphic clip right after the rig's video clip on V1 (clip index 1).
+rt::Clip* addGraphicClip(Rig& rig)
+{
+    auto g = std::make_unique<rt::GraphicClip>();
+    g->setTimelineIn(48000);
+    g->setDuration(48000);
+    return rig.v1->addClip(std::move(g));
+}
+
+// The front tab of its group. Tabs behind it still report isVisible().
+bool dockInFront(const Rig& rig, const QString& name)
+{
+    QDockWidget* dock = rig.ws->dockForPanel(name);
+    return dock && !dock->visibleRegion().isEmpty();
+}
+} // namespace
+
+// clipSelected (S-split re-focus, context menu "Properties...") skips a clip
+// panel whose dock is CLOSED (tabs behind the front one still bind), then
+// raises the editor for the clip's kind. Real mouse clicks go through
+// selectionChanged instead (next test).
+// FOUND (pinned as-is): a closed Effect Controls re-opened by that raise
+// shows the previous clip; Color is never skipped (it looks up a dock
+// named "Color Grading", which doesn't exist; the dock is "Color Correction").
+TEST(WorkspaceWiring, FocusingAClipSkipsClosedDocksAndRaisesItsEditor)
+{
+    Rig rig;
+    rt::Clip* graphic = addGraphicClip(rig);
+    auto* panel = rig.ws->timelinePanel();
+    ASSERT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
+
+    emit panel->clipSelected(rig.v1Index(), 0);
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), rig.clip);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), rig.clip);
+    EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), rig.clip);
+    EXPECT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
+
+    emit panel->clipSelected(rig.v1Index(), 1);
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->selection().clip, graphic);
+    EXPECT_EQ(rig.ws->selection().clipIdx, 1u);
+    EXPECT_EQ(rig.ws->graphicsEditorPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), graphic);
+    EXPECT_TRUE(dockInFront(rig, QStringLiteral("Graphics Editor")));
+
+    for (const char* name : {"Effect Controls", "Properties", "Color Correction"})
+        rig.ws->dockForPanel(QString::fromLatin1(name))->close();
+    QApplication::processEvents();
+    emit panel->clipSelected(rig.v1Index(), 0);
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->selection().clip, rig.clip);
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), rig.clip);
+    EXPECT_TRUE(rig.ws->dockForPanel(QStringLiteral("Effect Controls"))->isVisible());
+    EXPECT_FALSE(rig.ws->dockForPanel(QStringLiteral("Properties"))->isVisible());
+}
+
+TEST(WorkspaceWiring, SelectingOneClipBindsEveryPanelAndRaisesItsEditor)
+{
+    Rig rig;
+    rt::Clip* graphic = addGraphicClip(rig);
+    auto* panel = rig.ws->timelinePanel();
+
+    panel->selection().selectClip(rt::ClipRef{rig.v1Index(), graphic->id()});
+    emit panel->selectionChanged();
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->selection().clip, graphic);
+    EXPECT_EQ(rig.ws->selection().clipIdx, 1u);
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->graphicsEditorPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->colorGradingPanel()->clip(), graphic);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), graphic);
+    EXPECT_TRUE(dockInFront(rig, QStringLiteral("Graphics Editor")));
+
+    panel->selection().clear();
+    panel->selection().selectClip(rt::ClipRef{rig.v1Index(), rig.clip->id()});
+    emit panel->selectionChanged();
+    QApplication::processEvents();
+    EXPECT_EQ(rig.ws->effectControlsPanel()->clip(), rig.clip);
+    EXPECT_EQ(rig.ws->propertiesPanel()->clip(), rig.clip);
+    EXPECT_TRUE(dockInFront(rig, QStringLiteral("Effect Controls")));
+}
+
+// The snap toggle used to be connected to the toolbar's FIRST tool button
+// (Nest): the Snap button did nothing and Nest off turned snapping off.
+TEST(WorkspaceWiring, ToolbarSnapButtonTogglesSnappingAndFollowsTheNKey)
 {
     Rig rig;
     auto* toolbar = rig.ws->findChild<QWidget*>(QStringLiteral("timelineToolbar"));
@@ -267,6 +355,8 @@ TEST(WorkspaceWiring, ToolbarSnapToggleIsWiredToTheNestButton)
 
     snap->click();
     EXPECT_FALSE(snap->isChecked());
+    EXPECT_FALSE(panel->snapEngine().isEnabled());
+    snap->click();
     EXPECT_TRUE(panel->snapEngine().isEnabled());
 
     nest->click();
@@ -274,7 +364,17 @@ TEST(WorkspaceWiring, ToolbarSnapToggleIsWiredToTheNestButton)
     EXPECT_TRUE(panel->snapEngine().isEnabled());
     nest->click();
     EXPECT_FALSE(panel->nestSequencesEnabled());
+    EXPECT_TRUE(panel->snapEngine().isEnabled());
+
+    // N (Toggle Snapping) switches it off; the button follows.
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_N, Qt::NoModifier);
+    QApplication::sendEvent(rig.ws.get(), &press);
     EXPECT_FALSE(panel->snapEngine().isEnabled());
+    EXPECT_FALSE(snap->isChecked());
+    QKeyEvent pressAgain(QEvent::KeyPress, Qt::Key_N, Qt::NoModifier);
+    QApplication::sendEvent(rig.ws.get(), &pressAgain);
+    EXPECT_TRUE(panel->snapEngine().isEnabled());
+    EXPECT_TRUE(snap->isChecked());
 }
 
 TEST(WorkspaceWiring, SequenceTabsFollowTheOpenSequences)

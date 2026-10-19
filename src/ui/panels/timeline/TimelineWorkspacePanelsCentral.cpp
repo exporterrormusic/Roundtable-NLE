@@ -27,6 +27,7 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QMenu>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSlider>
 #include <QToolButton>
@@ -72,6 +73,12 @@ void TimelineWorkspace::createCentralWidget()
         m_timelinePanel->setAnimVideoCache(m_compositeService->animVideoCache());
 #endif
     centerLayout->addWidget(m_timelinePanel, 1);
+    // The Snap button shows snapping however it was switched.
+    connect(m_timelinePanel, &TimelinePanel::snappingChanged,
+            m_snapButton, [button = m_snapButton](bool enabled) {
+        const QSignalBlocker block(button);
+        button->setChecked(enabled);
+    });
 
     centralLayout->addWidget(centerContainer);
 
@@ -312,6 +319,14 @@ QWidget* TimelineWorkspace::createTimelineToolbar()
                 child->update();
         }
     });
+
+    // Connect Snap toggle. The N key toggles snapping too; the button
+    // follows TimelinePanel::snappingChanged (createCentralWidget).
+    connect(btnSnap, &QToolButton::toggled, this, [this](bool checked) {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        if (m_timelinePanel) m_timelinePanel->setSnappingEnabled(checked);
+    });
+    m_snapButton = btnSnap;
 
     // Connect linked selection toggle
     connect(btnLinked, &QToolButton::toggled, this, [this](bool checked) {

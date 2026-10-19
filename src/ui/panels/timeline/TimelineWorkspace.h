@@ -470,6 +470,8 @@ private:
 
     // Timecode display in timeline toolbar
     QLabel*           m_timelineTimecode{nullptr};
+    // Snap toggle in the timeline toolbar (follows the N key too)
+    QToolButton*      m_snapButton{nullptr};
 
     // Sequence tab bar (Premiere Pro style — multiple open sequences).
     std::unique_ptr<SequenceTabsController> m_sequenceTabs;
