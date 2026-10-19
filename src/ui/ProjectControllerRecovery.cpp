@@ -6,6 +6,7 @@
 #include "ProjectController.h"
 #include "MainWindow.h"
 #include "PathUtils.h"
+#include "ShutdownPhases.h"
 #include "ShortcutManager.h"
 #include "Theme.h"
 #include "widgets/DockTitleBar.h"
@@ -118,8 +119,10 @@ constexpr qint64 kGpuRestartGuardMs = 2 * 60 * 1000;
 // so Restart/Quit cannot strand an invisible process indefinitely.
 void armFatalShutdownWatchdog()
 {
+    ShutdownManager::instance().markCloseStarted();
     std::thread([] {
         std::this_thread::sleep_for(std::chrono::seconds(10));
+        logForcedShutdown(10);
         std::_Exit(EXIT_FAILURE);
     }).detach();
 }

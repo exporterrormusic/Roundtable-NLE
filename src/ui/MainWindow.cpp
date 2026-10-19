@@ -38,6 +38,7 @@
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
 #include "CrashHandler.h"
+#include "ShutdownPhases.h"
 #include "audio/AudioEngine.h"
 #include "cache/FrameCache.h"
 #include "playback/PlaybackController.h"
@@ -290,6 +291,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
     CrashHandler::clearCrashMarker();
 
     event->accept();
+    // The shutdown clock (crash_log SESSION END / SHUTDOWN HANG) starts here.
+    ShutdownManager::instance().markCloseStarted();
 
     // Close all windows (belt-and-suspenders) and quit the event loop.
     QApplication::closeAllWindows();
@@ -303,15 +306,19 @@ void MainWindow::closeEvent(QCloseEvent* event)
     // an FFmpeg demuxer stuck on a network share).  This runs OUTSIDE
     // the Qt event loop, so it works even after the event loop exits
     // and ~App blocks on a hung thread join.  A distinct exit code keeps a
-    // forced shutdown from looking like a clean one.
+    // forced shutdown from looking like a clean one, and crash_log.txt
+    // gets the phase it was stuck in, the threads still running and the
+    // UI thread's stack.
     constexpr int kShutdownHangExitCode = 3;
 #ifdef _WIN32
     std::thread([]() {
         Sleep(8000);
+        logForcedShutdown(8);
         TerminateProcess(GetCurrentProcess(), kShutdownHangExitCode);
     }).detach();
 #else
     QTimer::singleShot(8000, QApplication::instance(), []() {
+        logForcedShutdown(8);
         ::_exit(kShutdownHangExitCode);
     });
 #endif

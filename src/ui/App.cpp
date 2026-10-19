@@ -300,6 +300,7 @@ App::~App()
     m_timeline.reset();
 
     sm.advanceTo(ShutdownPhase::Phase5_Done);
+    logCleanShutdown();   // crash_log.txt: "=== SESSION END === clean shutdown ..."
 
     if (s_instance == this)
         s_instance = nullptr;

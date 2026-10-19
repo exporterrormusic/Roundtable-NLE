@@ -265,11 +265,32 @@ void HangWatchdog::stop()
     g_thread.join();
 }
 
+void HangWatchdog::logUiThreadStack(const char* header)
+{
+    const DWORD uiThreadId = g_uiThreadId;
+    if (uiThreadId == 0 || uiThreadId == GetCurrentThreadId()) return;
+    HANDLE uiThread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT
+                                     | THREAD_QUERY_INFORMATION,
+                                 FALSE, uiThreadId);
+    if (!uiThread) return;
+
+    DWORD64 frames[kMaxFrames] = {};
+    const int n = captureThreadStack(uiThread, frames, kMaxFrames);
+    CloseHandle(uiThread);
+
+    char line[192];
+    std::snprintf(line, sizeof(line), "%s (%d frames):", header, n);
+    CrashHandler::writeCrashLog(line);
+    for (int i = 0; i < n; ++i)
+        CrashHandler::writeCrashLog(describeFrame(i, frames[i]));
+}
+
 #else  // !RT_HANG_WATCHDOG_ENABLED
 
 void HangWatchdog::start() {}
 void HangWatchdog::heartbeat() noexcept {}
 void HangWatchdog::stop() {}
+void HangWatchdog::logUiThreadStack(const char*) {}
 
 #endif
 

@@ -32,6 +32,10 @@ public:
     /// Stop and join the watchdog thread.  Call at the start of shutdown —
     /// teardown legitimately blocks the UI thread for long stretches.
     static void stop();
+    /// From another thread: append `header` and the UI thread's current
+    /// stack to crash_log.txt (the shutdown forced-exit timers use this).
+    /// Works after stop(); does nothing before start() or on the UI thread.
+    static void logUiThreadStack(const char* header);
 
 private:
     HangWatchdog() = delete;

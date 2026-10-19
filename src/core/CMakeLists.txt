@@ -23,6 +23,7 @@ add_library(roundtable_core STATIC
     CrashHandler.cpp
     AtomicFile.cpp
     HangWatchdog.cpp
+    ShutdownPhases.cpp
     threading/ThreadRegistry.cpp
     threading/WorkerThread.cpp
     WorkerBreadcrumb.cpp
