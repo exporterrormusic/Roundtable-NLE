@@ -26,6 +26,8 @@
 #include <cstdint>
 #include <mutex>
 #include <thread>
+
+#include "threading/WorkerThread.h"
 #include <vector>
 
 class QResizeEvent;
@@ -73,7 +75,7 @@ private:
     // ── Worker thread (all heavy work runs here, never on UI thread) ────
     void startWorker();
     void stopWorker();
-    void workerLoop();
+    void workerLoop(std::stop_token stop);
 
     // Analysis (runs on worker thread)
     void analyzeWaveform(const uint8_t* pixels, int w, int h);
@@ -97,10 +99,9 @@ private:
     QImage m_renderedScope;
 
     // ── Worker thread state ─────────────────────────────────────────────
-    std::thread             m_worker;
-    std::atomic<bool>       m_workerRunning{false};
+    WorkerThread            m_worker;        // stopped in the destructor
     std::mutex              m_workerMtx;
-    std::condition_variable m_workerCv;
+    std::condition_variable_any m_workerCv;  // waits on the worker's stop_token
 
     // Pending frame buffer (double-buffered: UI writes, worker reads)
     std::vector<uint8_t>    m_pendingPixels;

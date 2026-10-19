@@ -184,21 +184,16 @@ void ScopesPanel::feedFrame(const uint8_t* pixels, int width, int height)
 
 void ScopesPanel::startWorker()
 {
-    if (m_workerRunning.load()) return;
-    m_workerRunning.store(true);
-    m_worker = std::thread(&ScopesPanel::workerLoop, this);
+    if (m_worker.running()) return;
+    m_worker.start("Scopes", [this](std::stop_token stop) { workerLoop(stop); });
 }
 
 void ScopesPanel::stopWorker()
 {
-    if (!m_workerRunning.load()) return;
-    m_workerRunning.store(false);
-    m_workerCv.notify_all();
-    if (m_worker.joinable())
-        m_worker.join();
+    m_worker.stop();   // a stop_token wait cannot miss the stop
 }
 
-void ScopesPanel::workerLoop()
+void ScopesPanel::workerLoop(std::stop_token stop)
 {
     spdlog::info("[SCOPES] Worker thread started");
 
@@ -209,14 +204,12 @@ void ScopesPanel::workerLoop()
     int localRenderW = 200, localRenderH = 160;
     quint64 localRevision = 0;
 
-    while (m_workerRunning.load()) {
+    while (!stop.stop_requested()) {
         // Wait for new frame data
         {
             std::unique_lock lock(m_workerMtx);
-            m_workerCv.wait(lock, [this] {
-                return m_hasPending || !m_workerRunning.load();
-            });
-            if (!m_workerRunning.load()) break;
+            m_workerCv.wait(lock, stop, [this] { return m_hasPending; });
+            if (stop.stop_requested()) break;
 
             // Swap pending data to local (fast, lock held briefly)
             localPixels.swap(m_pendingPixels);
