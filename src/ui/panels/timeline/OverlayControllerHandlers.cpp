@@ -15,6 +15,7 @@
 
 #include "panels/timeline/OverlayController.h"
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/ClipBindingController.h"
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
@@ -1238,17 +1239,11 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
     // m_ws->selection().graphicLayerIdx and calls updateTransformOverlay().
     // We must NOT call updateTransformOverlay() before setClip,
     // otherwise it runs with layerIdx == -1 → full-canvas overlay.
-    if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->setClip(ptr, targetTrack);
-    if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->setClip(ptr, targetTrack);
-    if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->setClip(ptr, targetTrack);
-    if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->setClip(ptr, targetTrack);
+    m_ws->clipBinding().bindClipPanels(ptr, targetTrack);
     scheduleOverlayRefresh();
 
     // Raise Essential Graphics for the new graphic clip
-    if (auto* dock = m_ws->dockForPanel(QStringLiteral("Graphics Editor"))) {
-        dock->setVisible(true);
-        dock->raise();
-    }
+    m_ws->clipBinding().raiseDock(QStringLiteral("Graphics Editor"));
 
     spdlog::info("Text tool: created GraphicClip at frame ({}, {}), track {}", frameX, frameY, targetTrackIdx);
 }

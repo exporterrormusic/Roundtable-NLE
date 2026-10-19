@@ -9,6 +9,7 @@
 
 #include "panels/timeline/DropController.h"
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/ClipBindingController.h"
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
@@ -158,10 +159,7 @@ void DropController::wireNestSignals()
                 m_ws->selection().clip = nullptr;
                 m_ws->selection().graphicLayerIdx = -1;
                 m_ws->timelinePanel()->selection().clear();
-                if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->clearClip();
-                if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->clearClip();
-                if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->clearClip();
-                if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->clearClip();
+                m_ws->clipBinding().clearClipPanels();
                 if (m_ws->programMonitor() && m_ws->programMonitor()->viewport())
                     m_ws->programMonitor()->viewport()->clearTransformOverlay();
                 if (m_ws->programMonitor() && m_ws->programMonitor()->transformOverlay())

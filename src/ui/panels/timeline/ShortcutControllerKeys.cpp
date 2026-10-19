@@ -5,6 +5,7 @@
 
 #include "panels/timeline/ShortcutController.h"
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/ClipBindingController.h"
 #include "ShortcutManager.h"
 
 #include "panels/effects/EffectControlsPanel.h"
@@ -320,10 +321,7 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
                 // Clear panels that were showing the now-deleted clip
                 m_ws->selection().clip = nullptr;
                 m_ws->selection().graphicLayerIdx = -1;
-                if (m_ws->effectControlsPanel()) m_ws->effectControlsPanel()->clearClip();
-                if (m_ws->graphicsEditorPanel()) m_ws->graphicsEditorPanel()->clearClip();
-                if (m_ws->colorGradingPanel()) m_ws->colorGradingPanel()->clearClip();
-                if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->clearClip();
+                m_ws->clipBinding().clearClipPanels();
                 EditImpact impact;
                 impact.selection = true;
                 m_ws->applyEditImpact(impact);

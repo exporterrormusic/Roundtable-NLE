@@ -15,6 +15,7 @@
 #include <volk.h>
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/ClipBindingController.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "Theme.h"
 
@@ -59,6 +60,14 @@ void TimelineWorkspace::buildPanels()
 
     // Phase 1: Create all panel widgets and central widget
     createPanelWidgets();
+    m_clipBinding->setPanels({
+        /*effectControls=*/m_effectControlsPanel,
+        /*graphicsEditor=*/m_GraphicsEditorPanel,
+        /*colorGrading=*/  m_ColorGradingPanel,
+        /*properties=*/    m_propertiesPanel,
+        /*tierList=*/      m_tierListPanel,
+        /*effects=*/       m_effectsPanel,
+    });
 
     // Phase 2: Arrange dock layout
     arrangeDockLayout();

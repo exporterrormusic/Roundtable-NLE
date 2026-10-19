@@ -37,6 +37,7 @@
 #include "CompositeService.h"
 #include "cache/CachePolicy.h"
 #include "audio/AudioPlaybackService.h"
+#include "panels/timeline/ClipBindingController.h"
 #include "panels/timeline/DockLayoutManager.h"
 #include "panels/timeline/DropController.h"
 #include "panels/timeline/MediaWarmupController.h"
@@ -53,6 +54,8 @@
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/GraphicsEditorPanel.h"
 #include "panels/monitors/ProgramMonitor.h"
+#include "viewport/TransformOverlayWidget.h"
+#include "viewport/Viewport.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "project/Project.h"
 #include "timeline/Timeline.h"
@@ -152,6 +155,20 @@ TimelineWorkspace::TimelineWorkspace(QWidget* parent)
     });
 
     // Shot-preset switching (Properties panel / character shot panel).
+    // Which clip the clip panels show (panels handed over in buildPanels).
+    m_clipBinding = std::make_unique<ClipBindingController>(ClipBindingController::Config{
+        /*selection=*/   &m_selection,
+        /*timeline=*/    [this] { return m_timeline; },
+        /*dockForPanel=*/[this](const QString& name) { return dockForPanel(name); },
+        /*scheduleOverlayRefresh=*/[this] { scheduleOverlayRefresh(); },
+        /*clearTransformOverlays=*/[this] {
+            if (m_programMonitor && m_programMonitor->viewport())
+                m_programMonitor->viewport()->clearTransformOverlay();
+            if (m_programMonitor && m_programMonitor->transformOverlay())
+                m_programMonitor->transformOverlay()->clearTransformOverlay();
+        },
+    });
+
     m_shotSwitch = std::make_unique<ShotSwitchController>(ShotSwitchController::Config{
         /*timeline=*/    [this] { return m_timeline; },
         /*sequenceById=*/[this](uint64_t id) -> Timeline* {

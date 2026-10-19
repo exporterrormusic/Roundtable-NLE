@@ -109,6 +109,7 @@ class ExportRenderSession;
 struct OpacityMask;
 class DockLayoutManager;
 class DropController;
+class ClipBindingController;
 class MediaWarmupController;
 class MediaWatchController;
 class OverlayController;
@@ -230,6 +231,9 @@ public:
     [[nodiscard]] TierListPanel*       tierListPanel()       const noexcept { return m_tierListPanel; }
     [[nodiscard]] SelectionState&       selection()       noexcept { return m_selection; }
     [[nodiscard]] const SelectionState& selection() const noexcept { return m_selection; }
+    /// Points the clip panels at a clip or releases them (see
+    /// ClipBindingController.h).
+    [[nodiscard]] ClipBindingController& clipBinding() noexcept { return *m_clipBinding; }
     /// The 9 edit-tool buttons (Selection..mask tool group), for keyboard-
     /// shortcut focus-policy / active-tool sync.  Returns a reference to the array.
     [[nodiscard]] QToolButton* (&toolButtons() noexcept)[9] { return m_toolButtons; }
@@ -632,6 +636,9 @@ private:
     /// Apply a shot preset to a clip group, wrapped in an undo command.
     void applyShotSwitch(uint64_t groupId, const std::string& newShotName);
     std::unique_ptr<ShotSwitchController> m_shotSwitch;
+
+    // Clip panels ↔ selected clip (selection, edits, history cleanup).
+    std::unique_ptr<ClipBindingController> m_clipBinding;
 
 
 

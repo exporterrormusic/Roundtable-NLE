@@ -189,6 +189,7 @@ add_library(roundtable_ui STATIC
     panels/timeline/SequenceTabsController.cpp
     panels/timeline/MediaWarmupController.cpp
     panels/timeline/SnapshotSync.cpp
+    panels/timeline/ClipBindingController.cpp
     panels/timeline/TimelineWorkspacePanels.cpp
     panels/timeline/TimelineWorkspacePanelsCreate.cpp
     panels/timeline/TimelineWorkspacePanelsMedia.cpp

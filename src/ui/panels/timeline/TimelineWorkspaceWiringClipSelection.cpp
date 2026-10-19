@@ -8,6 +8,7 @@
 #include <set>
 
 #include "panels/timeline/TimelineWorkspace.h"
+#include "panels/timeline/ClipBindingController.h"
 #include "ClipRenderers.h"  // src/core/ClipRenderers.h — shared with the gpu module
 #include "CompositeService.h"
 #include "spine/AnimationVideoCache.h"
@@ -81,8 +82,6 @@
 
 namespace rt {
 
-// Returns true for still-image media. Such files have no real "source duration",
-
 void TimelineWorkspace::wireClipSelectionSignals() {
     //  CLIP SELECTION -> EFFECT CONTROLS / PROPERTIES PANEL
     // =====================================================================
@@ -96,90 +95,8 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             // but we still want to populate panels with the clicked clip.
             auto* track = m_timeline->track(trackIdx);
             if (!track) return;
-            auto* clip = track->clip(clipIdx);
-            if (clip) {
-                auto cs0 = std::chrono::steady_clock::now();
-                // Set m_selection.clip BEFORE setClip, because setClip's
-                // layerSelected signal triggers updateTransformOverlay()
-                // which reads m_selection.clip.
-                // Only reset m_selection.graphicLayerIdx when the clip
-                // actually changes — if same clip, setClip returns early
-                // and layerSelected won't fire to re-establish the index.
-                if (clip != m_selection.clip)
-                    m_selection.graphicLayerIdx = -1;
-                m_selection.clip = clip;
-                m_selection.trackIdx = trackIdx;
-                m_selection.clipIdx = clipIdx;
-                if (m_effectControlsPanel) {
-                    auto* dock = dockForPanel(QStringLiteral("Effect Controls"));
-                    if (!dock || dock->isVisible())
-                        m_effectControlsPanel->setClip(clip, track);
-                }
-                if (m_GraphicsEditorPanel) {
-                    // Always call setClip for Graphic clips — the layerSelected
-                    // signal is required to set m_selection.graphicLayerIdx for
-                    // per-layer transform overlay mode.
-                    bool isGraphic = (clip->clipType() == ClipType::Graphic);
-                    auto* dock = dockForPanel(QStringLiteral("Graphics Editor"));
-                    if (!dock || dock->isVisible() || isGraphic)
-                        m_GraphicsEditorPanel->setClip(clip, track);
-                }
-                if (m_ColorGradingPanel) {
-                    auto* dock = dockForPanel(QStringLiteral("Color Grading"));
-                    if (!dock || dock->isVisible())
-                        m_ColorGradingPanel->setClip(clip, track);
-                }
-                if (m_propertiesPanel) {
-                    auto* dock = dockForPanel(QStringLiteral("Properties"));
-                    if (!dock || dock->isVisible())
-                        m_propertiesPanel->setClip(clip, track);
-                }
-                if (m_tierListPanel) {
-                    // Always bind (cheap) so the panel populates even when the
-                    // dock is hidden and later raised.
-                    m_tierListPanel->setClip(clip, track);
-                }
-                auto cs1 = std::chrono::steady_clock::now();
-                scheduleOverlayRefresh();
-                auto cs2 = std::chrono::steady_clock::now();
-
-                // Auto-raise the appropriate dock tab
-                if (clip->clipType() == ClipType::Spine) {
-                    if (auto* dock = dockForPanel(QStringLiteral("Properties"))) {
-                        dock->setVisible(true);
-                        dock->raise();
-                    }
-                } else if (clip->clipType() == ClipType::Video) {
-                    auto* vc = static_cast<VideoClip*>(clip);
-                    if (vc->isVideoCharacter()) {
-                        if (auto* dock = dockForPanel(QStringLiteral("Properties"))) {
-                            dock->setVisible(true);
-                            dock->raise();
-                        }
-                    } else {
-                        if (auto* dock = dockForPanel(QStringLiteral("Effect Controls"))) {
-                            dock->setVisible(true);
-                            dock->raise();
-                        }
-                    }
-                } else if (clip->clipType() == ClipType::Graphic) {
-                    if (auto* dock = dockForPanel(QStringLiteral("Graphics Editor"))) {
-                        dock->setVisible(true);
-                        dock->raise();
-                    }
-                } else {
-                    if (auto* dock = dockForPanel(QStringLiteral("Effect Controls"))) {
-                        dock->setVisible(true);
-                        dock->raise();
-                    }
-                }
-                auto cs3 = std::chrono::steady_clock::now();
-                spdlog::info("clipSelected  props={:.1f}ms  overlay={:.1f}ms  dockRaise={:.1f}ms  total={:.1f}ms",
-                    std::chrono::duration<double, std::milli>(cs1 - cs0).count(),
-                    std::chrono::duration<double, std::milli>(cs2 - cs1).count(),
-                    std::chrono::duration<double, std::milli>(cs3 - cs2).count(),
-                    std::chrono::duration<double, std::milli>(cs3 - cs0).count());
-            }
+            m_clipBinding->selectClip(track->clip(clipIdx), track, trackIdx, clipIdx,
+                                      ClipBindingController::Bind::OpenDocks);
         });
         connect(m_timelinePanel, &TimelinePanel::clipDoubleClicked,
                 this, [this](size_t trackIdx, size_t clipIdx) {
@@ -277,10 +194,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             m_selection.clip = nullptr;
             if (m_propertiesPanel) {
                 m_propertiesPanel->setTransition(track, transIdx);
-                if (auto* dock = dockForPanel(QStringLiteral("Properties"))) {
-                    dock->setVisible(true);
-                    dock->raise();
-                }
+                m_clipBinding->raiseDock(QStringLiteral("Properties"));
             }
         });
         connect(m_timelinePanel, &TimelinePanel::selectionChanged,
@@ -288,69 +202,16 @@ void TimelineWorkspace::wireClipSelectionSignals() {
             if (m_destroying.load(std::memory_order_acquire)) return;
             const auto& sel = m_timelinePanel->selection();
             if (sel.empty()) {
-                if (m_effectControlsPanel) m_effectControlsPanel->clearClip();
-                if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->clearClip();
-                if (m_ColorGradingPanel) m_ColorGradingPanel->clearClip();
-                if (m_propertiesPanel) m_propertiesPanel->clearClip();
-                m_selection.clip = nullptr;
-                m_selection.graphicLayerIdx = -1;
-                if (m_programMonitor && m_programMonitor->viewport())
-                    m_programMonitor->viewport()->clearTransformOverlay();
-                if (m_programMonitor && m_programMonitor->transformOverlay())
-                    m_programMonitor->transformOverlay()->clearTransformOverlay();
+                m_clipBinding->clearSelection();
             } else if (sel.count() == 1) {
-                // Single clip selected (e.g. via drag/marquee) — populate
-                // all panels the same way clipSelected does.
+                // Single clip selected (click, drag, marquee).
                 const auto& ref = sel.clips().front();
                 auto* trk = m_timeline->track(ref.trackIndex);
                 if (trk) {
                     size_t idx = trk->findClipIndexById(ref.clipId);
-                    if (idx < trk->clipCount()) {
-                        auto* clip = trk->clip(idx);
-                        // Set clip state BEFORE setClip so layerSelected
-                        // handler can see the correct m_selection.clip.
-                        if (clip != m_selection.clip)
-                            m_selection.graphicLayerIdx = -1;
-                        m_selection.clip = clip;
-                        m_selection.trackIdx = ref.trackIndex;
-                        m_selection.clipIdx = idx;
-                        if (m_effectControlsPanel) m_effectControlsPanel->setClip(clip, trk);
-                        if (m_GraphicsEditorPanel) m_GraphicsEditorPanel->setClip(clip, trk);
-                        if (m_ColorGradingPanel) m_ColorGradingPanel->setClip(clip, trk);
-                        if (m_propertiesPanel) m_propertiesPanel->setClip(clip, trk);
-                        scheduleOverlayRefresh();
-
-                        // Auto-raise the appropriate dock tab
-                        if (clip->clipType() == ClipType::Graphic) {
-                            if (auto* dock = dockForPanel(QStringLiteral("Graphics Editor"))) {
-                                dock->setVisible(true);
-                                dock->raise();
-                            }
-                        } else if (clip->clipType() == ClipType::Spine) {
-                            if (auto* dock = dockForPanel(QStringLiteral("Properties"))) {
-                                dock->setVisible(true);
-                                dock->raise();
-                            }
-                        } else if (clip->clipType() == ClipType::Video) {
-                            auto* vc = static_cast<VideoClip*>(clip);
-                            if (vc->isVideoCharacter()) {
-                                if (auto* dock = dockForPanel(QStringLiteral("Properties"))) {
-                                    dock->setVisible(true);
-                                    dock->raise();
-                                }
-                            } else {
-                                if (auto* dock = dockForPanel(QStringLiteral("Effect Controls"))) {
-                                    dock->setVisible(true);
-                                    dock->raise();
-                                }
-                            }
-                        } else {
-                            if (auto* dock = dockForPanel(QStringLiteral("Effect Controls"))) {
-                                dock->setVisible(true);
-                                dock->raise();
-                            }
-                        }
-                    }
+                    if (idx < trk->clipCount())
+                        m_clipBinding->selectClip(trk->clip(idx), trk, ref.trackIndex, idx,
+                                                  ClipBindingController::Bind::ClipPanels);
                 }
             } else if (sel.count() > 1) {
                 std::vector<Clip*> clips;
@@ -364,7 +225,7 @@ void TimelineWorkspace::wireClipSelectionSignals() {
                             clips.push_back(trk->clip(idx));
                     }
                 }
-                m_propertiesPanel->setMultiSelection(clips, editable);
+                m_clipBinding->selectClips(clips, editable);
             }
         });
     }
