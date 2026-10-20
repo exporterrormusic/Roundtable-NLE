@@ -5,8 +5,8 @@
  * subsystem from UI orchestration.  Lives in gpu/ — no Qt dependency.
  *
  * Owns: composite frame orchestration, layer building, prewarm, spine
- *       rendering, sticky-frame handling, and the
- *       CompositeEngine (GPU compositing pipeline).
+ *       rendering, the frames held between frames (CompositeHold), and
+ *       the CompositeEngine (GPU compositing pipeline).
  *
  * GPU resources (command buffers, staging ring, texture cache, upload
  * manager, layer pool) are owned by CompositeEngine, accessible via
@@ -36,6 +36,31 @@
  * Specialised renderers (SpineRenderer, TransitionRenderer, TextRenderer,
  * EffectProcessor, Nv12Converter) are siblings invoked by CompositeEngine /
  * CompositeService, not layers of this stack.
+ *
+ * ── One frame, start to finish ─────────────────────────────────────────────
+ *
+ *   renderFrame / compositeFrame          CompositeServiceFrame.cpp
+ *     → compositeFrameImpl: guards (shutdown, modal dialog, recursion
+ *       depth, composite lock), then its stages in order
+ *                                         CompositeServiceFrameStages.cpp
+ *       (list and shared request: CompositeServiceFrameState.h)
+ *         segment cache, composite LRU, shot-boundary warm-up
+ *         buildLayersForFrame             CompositeServiceLayerBuild*.cpp
+ *         settle hold / stale frame / static reuse
+ *                                         core/playback/CompositeHold.h
+ *     → tryCompositeOnGpu                 CompositeServiceGpuOrchestration.cpp
+ *     → CompositeEngine::composite → compositeViaRenderGraph
+ *       (stage list and shared frame state: CompositeEngineFrame.h)
+ *         begin, graph, compositor layers, masks
+ *                                         CompositeEngineRenderGraph.cpp
+ *         upload / effect / transition / composite / readback passes
+ *                                         CompositeEnginePasses.cpp
+ *         submit, result frame, slow-frame log
+ *                                         CompositeEngineSubmit.cpp
+ *
+ * New behaviour goes into the stage that owns it; keep both stage lists
+ * (the FrameState and FrameRecording headers) in step with the code.
+ * Pixel changes are caught by tests/ui/test_golden_frames.cpp.
  */
 
 #pragma once

@@ -9,6 +9,11 @@
  * CompositeService holds an instance and delegates to it, keeping only
  * the higher-level orchestration (layer building, prewarm, spine, recovery).
  *
+ * One composite is a list of stages (compositeViaRenderGraph): their order,
+ * the frame state they share and the file each lives in are listed in
+ * CompositeEngineFrame.h. Per-layer GPU resources belong to the submission
+ * slot that records them (SlotLayerResources).
+ *
  * NOTE: This class is in the global namespace (not rt::) to avoid a
  * vexing C2888 "symbol cannot be defined within namespace 'rt'" compiler
  * error that occurs when the header is processed after volk.h redefines
