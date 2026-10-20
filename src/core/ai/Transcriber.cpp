@@ -1109,16 +1109,6 @@ TranscriptionResult Transcriber::transcribe(
     return result;
 }
 
-std::future<TranscriptionResult> Transcriber::transcribeAsync(
-    const std::string& audioPath,
-    const std::string& language,
-    const TranscribeProgressFn& progress)
-{
-    return std::async(std::launch::async, [this, audioPath, language, progress]() {
-        return transcribe(audioPath, language, progress);
-    });
-}
-
 void Transcriber::cancelAsync()
 {
     m_impl->cancelRequested.store(true);

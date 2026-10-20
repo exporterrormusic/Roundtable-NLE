@@ -13,7 +13,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -180,19 +179,13 @@ public:
         const std::string& language = "",
         const TranscribeProgressFn& progress = nullptr);
 
-    // ── Asynchronous transcription ──────────────────────────────────────
+    // ── Cancellation (from another thread) ──────────────────────────────
 
-    /// Transcribe asynchronously on a background thread.
-    /// Returns a future that will hold the result.
-    [[nodiscard]] std::future<TranscriptionResult> transcribeAsync(
-        const std::string& audioPath,
-        const std::string& language = "",
-        const TranscribeProgressFn& progress = nullptr);
-
-    /// Cancel any running async transcription.
+    /// Ask the transcribe() running on another thread to stop; it returns
+    /// early, marked cancelled.
     void cancelAsync();
 
-    /// True if async transcription is in progress.
+    /// True while transcribe() runs.
     [[nodiscard]] bool isTranscribing() const noexcept;
 
     // ── Device info ─────────────────────────────────────────────────────

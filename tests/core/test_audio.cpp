@@ -1102,7 +1102,6 @@ TEST(WaveformCacheTest, DiskCacheRoundTrip)
     // (computeFromSamples doesn't set it, so we need loadFromDisk to work)
     cache.saveToDisk(99);
     // saveToDisk may fail if filePath is empty — that's okay for this test
-    // Let's test with computeAsync path instead
 
     // Test loadFromDisk with a separate cache
     WaveformCache cache2;
@@ -1110,7 +1109,7 @@ TEST(WaveformCacheTest, DiskCacheRoundTrip)
 
     // Since computeFromSamples doesn't set filePath, loadFromDisk would need
     // the file. Let's verify the basic disk cache mechanism works.
-    // (Full round-trip requires computeAsync which sets filePath)
+    // (A full round-trip needs a filePath, which computeFromSamples does not set.)
 
     // Cleanup
     std::error_code ec;

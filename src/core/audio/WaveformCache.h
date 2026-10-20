@@ -5,12 +5,11 @@
  * for fast reload. The timeline UI queries this cache to draw waveforms.
  *
  * Design:
- *   • computeAsync() launches a background thread to process an audio file
  *   • Multiple mip levels are generated (1 peak per N samples)
  *   • Results cached to disk as binary files (keyed by file hash + mod time)
  *   • getPeaks() returns the best-fit mip level for a given zoom
  *
- * Thread-safe: computation runs on a worker thread, results read from UI thread.
+ * Thread-safe: every member takes m_mutex.
  */
 
 #pragma once
@@ -19,7 +18,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <future>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -73,14 +71,10 @@ enum class WaveformStatus : uint8_t
     Error
 };
 
-/// Progress callback: (framesProcessed, totalFrames)
-using WaveformProgressCallback = std::function<void(int64_t, int64_t)>;
-
 class WaveformCache
 {
 public:
     WaveformCache();
-    ~WaveformCache();
 
     // Non-copyable
     WaveformCache(const WaveformCache&) = delete;
@@ -96,13 +90,6 @@ public:
 
     // ── Computation ─────────────────────────────────────────────────────
 
-    /// Compute waveform data for an audio file. Non-blocking — runs on a
-    /// background thread. Returns immediately.
-    /// Call status() or waitUntilReady() to check completion.
-    void computeAsync(uint64_t mediaId,
-                      const std::filesystem::path& audioPath,
-                      WaveformProgressCallback progress = nullptr);
-
     /// Compute waveform data from pre-loaded samples (synchronous).
     /// Useful for testing or when samples are already in memory.
     bool computeFromSamples(uint64_t mediaId,
@@ -112,9 +99,6 @@ public:
     /// Get the computation status for a media ID.
     [[nodiscard]] WaveformStatus status(uint64_t mediaId) const;
 
-    /// Wait until computation is complete. Returns false on timeout.
-    bool waitUntilReady(uint64_t mediaId,
-                        int timeoutMs = 30000) const;
 
     // ── Query ───────────────────────────────────────────────────────────
 
@@ -159,7 +143,6 @@ private:
 
     mutable std::mutex                                    m_mutex;
     std::unordered_map<uint64_t, std::shared_ptr<WaveformData>>  m_cache;
-    std::unordered_map<uint64_t, std::future<void>>       m_pending;
     std::unordered_map<uint64_t, WaveformStatus>          m_status;
     std::filesystem::path                                 m_cacheDir;
 };

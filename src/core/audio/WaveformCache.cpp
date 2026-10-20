@@ -10,7 +10,6 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
-#include <thread>
 
 namespace rt {
 
@@ -55,17 +54,6 @@ WaveformCache::WaveformCache()
     m_cacheDir = std::filesystem::temp_directory_path() / "roundtable_waveforms";
 }
 
-WaveformCache::~WaveformCache()
-{
-    // Wait for any pending computations
-    std::lock_guard lock(m_mutex);
-    for (auto& [id, future] : m_pending) {
-        if (future.valid()) {
-            future.wait();
-        }
-    }
-}
-
 // ─── Configuration ──────────────────────────────────────────────────────────
 
 void WaveformCache::setCacheDirectory(const std::filesystem::path& dir)
@@ -77,79 +65,6 @@ void WaveformCache::setCacheDirectory(const std::filesystem::path& dir)
 const std::filesystem::path& WaveformCache::cacheDirectory() const noexcept
 {
     return m_cacheDir;
-}
-
-// ─── Async computation ──────────────────────────────────────────────────────
-
-void WaveformCache::computeAsync(uint64_t mediaId,
-                                  const std::filesystem::path& audioPath,
-                                  WaveformProgressCallback progress)
-{
-    {
-        std::lock_guard lock(m_mutex);
-        if (m_status.count(mediaId) && m_status[mediaId] == WaveformStatus::Computing) {
-            spdlog::warn("WaveformCache: already computing for media {}", mediaId);
-            return;
-        }
-        m_status[mediaId] = WaveformStatus::Computing;
-    }
-
-    // Launch background thread
-    auto future = std::async(std::launch::async,
-        [this, mediaId, audioPath, progress = std::move(progress)]()
-    {
-        spdlog::info("WaveformCache: computing waveform for '{}'",
-                     pathToUtf8(audioPath.filename()));
-
-        AudioFile audioFile;
-        if (!audioFile.open(audioPath)) {
-            spdlog::error("WaveformCache: failed to open '{}'", pathToUtf8(audioPath));
-            std::lock_guard lock(m_mutex);
-            m_status[mediaId] = WaveformStatus::Error;
-            return;
-        }
-
-        const auto& info = audioFile.info();
-        auto samples = audioFile.readAll();
-        if (samples.empty()) {
-            spdlog::error("WaveformCache: no samples in '{}'", pathToUtf8(audioPath));
-            std::lock_guard lock(m_mutex);
-            m_status[mediaId] = WaveformStatus::Error;
-            return;
-        }
-
-        if (progress) progress(info.frames / 2, info.frames);
-
-        // Generate mip levels
-        auto mipLevels = generateMipLevels(
-            samples.data(), info.frames, info.channels);
-
-        if (progress) progress(info.frames, info.frames);
-
-        // Store result
-        auto data = std::make_shared<WaveformData>();
-        data->mediaId     = mediaId;
-        data->filePath    = pathToUtf8(audioPath);
-        data->sampleRate  = info.sampleRate;
-        data->channels    = info.channels;
-        data->totalFrames = info.frames;
-        data->mipLevels   = std::move(mipLevels);
-
-        {
-            std::lock_guard lock(m_mutex);
-            m_cache[mediaId]  = std::move(data);
-            m_status[mediaId] = WaveformStatus::Ready;
-        }
-
-        // Save to disk cache
-        saveToDisk(mediaId);
-
-        spdlog::info("WaveformCache: done for media {} ({} frames)",
-                     mediaId, info.frames);
-    });
-
-    std::lock_guard lock(m_mutex);
-    m_pending[mediaId] = std::move(future);
 }
 
 // ─── Synchronous computation from samples ───────────────────────────────────
@@ -182,34 +97,6 @@ WaveformStatus WaveformCache::status(uint64_t mediaId) const
     std::lock_guard lock(m_mutex);
     auto it = m_status.find(mediaId);
     return (it != m_status.end()) ? it->second : WaveformStatus::NotStarted;
-}
-
-bool WaveformCache::waitUntilReady(uint64_t mediaId, int timeoutMs) const
-{
-    // Check if already ready
-    {
-        std::lock_guard lock(m_mutex);
-        auto it = m_status.find(mediaId);
-        if (it != m_status.end() && it->second == WaveformStatus::Ready)
-            return true;
-        if (it != m_status.end() && it->second == WaveformStatus::Error)
-            return false;
-    }
-
-    // Poll until ready or timeout
-    const auto deadline = std::chrono::steady_clock::now()
-                        + std::chrono::milliseconds(timeoutMs);
-
-    while (std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        std::lock_guard lock(m_mutex);
-        auto it = m_status.find(mediaId);
-        if (it != m_status.end()) {
-            if (it->second == WaveformStatus::Ready) return true;
-            if (it->second == WaveformStatus::Error) return false;
-        }
-    }
-    return false;
 }
 
 // ─── Query ──────────────────────────────────────────────────────────────────
@@ -263,20 +150,13 @@ void WaveformCache::remove(uint64_t mediaId)
     std::lock_guard lock(m_mutex);
     m_cache.erase(mediaId);
     m_status.erase(mediaId);
-    m_pending.erase(mediaId);
 }
 
 void WaveformCache::clearAll()
 {
     std::lock_guard lock(m_mutex);
-
-    for (auto& [id, future] : m_pending) {
-        if (future.valid()) future.wait();
-    }
-
     m_cache.clear();
     m_status.clear();
-    m_pending.clear();
 }
 
 size_t WaveformCache::totalMemoryUsage() const
