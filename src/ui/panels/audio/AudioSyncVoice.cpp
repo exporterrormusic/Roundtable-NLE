@@ -376,32 +376,12 @@ bool AudioSync::auditionVoiceDraft(const QString& path)
 
     stopFilePlayback();
     stopPlayback();
-    m_voiceDraftSamples = std::move(samples);
-
-    AudioTrackSource source{};
-    source.trackId = 9997;
-    source.samples = m_voiceDraftSamples.data();
-    source.totalFrames = static_cast<int64_t>(m_voiceDraftSamples.size() / channels);
-    source.startFrame = 0;
-    source.channels = channels;
-    source.sampleRate = sampleRate;
-    source.volume = 1.0f;
-
-    if (!m_savedSyncClock) {
-        m_savedSyncClock = m_audioEngine->syncClock();
-        m_audioEngine->setSyncClock(nullptr);
-    }
-    m_audioEngine->setPlaybackSpeed(1.0);
-    m_audioEngine->setTrackSources({source});
-    m_audioEngine->seekToFrame(0);
-    m_audioEngine->play();
-    m_voiceDraftAuditionActive = true;
-    return true;
+    return m_player.playDraft(std::move(samples), channels, sampleRate);
 }
 
 void AudioSync::stopVoiceDraftAudition()
 {
-    if (!m_voiceDraftAuditionActive) return;
+    if (!m_player.draftActive()) return;
     stopPlayback();
 }
 

@@ -51,6 +51,7 @@
 #include "ai/Transcriber.h"    // For TranscriptionResult
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
 #include "panels/audio/AudioSampleLoader.h"
+#include "panels/audio/AudioSyncPlayer.h"
 #include "panels/audio/TranscriptionRunner.h"
 
 #include <atomic>
@@ -583,7 +584,6 @@ private:
     bool              m_exportTransactionActive{false};
     QString           m_lastExportError;
     AudioEngine*      m_audioEngine{nullptr};
-    AVSyncClock*      m_savedSyncClock{nullptr};
     ShotPresetManager* m_shotPresetManager{nullptr};
     std::string        m_currentShow;  ///< Show of the open project (per-show defaults)
 
@@ -595,31 +595,16 @@ private:
     // installAudioSamples().
     std::unique_ptr<AudioSampleLoader> m_sampleLoader;
 
-    // Take preview (playTakeAudio): its own buffer, full take audio from `from`.
-    std::vector<float> m_takeAudioBuffer;
-    double  m_takeAudioFrom{0.0};
-    double  m_takeAudioEnd{0.0};
-    double  m_takeAudioRate{48000.0};
-    bool    m_takeAudioActive{false};
-    std::unordered_map<std::string, AudioSampleData> m_mediaAudioCache;   ///< playMediaAudio decodes
-    std::string m_takeAudioKey;          ///< what the loaded preview buffer holds
+    // The engine side of everything AudioSync plays (clips, previews, files,
+    // TTS drafts): buffers, sync-clock detach. What plays and the widgets
+    // that follow it stay here.
+    AudioSyncPlayer m_player;
     bool loadPreviewAudio(const std::string& key, const AudioSampleData& data, double rangeStart, double rangeEnd);
-    void installPreviewAudio();
 
     // Playback state
     int     m_playingClipIdx{-1};
     int     m_selectedClipIdx{-1};  // Currently highlighted clip row
     QTimer* m_playheadTimer{nullptr};
-    std::vector<float> m_playbackBuffer;  // temp buffer for AudioEngine
-    double  m_playbackSourceRate{44100.0}; // sample rate of current playback source
-
-    // Time mapping: buffer frame offset → original source time (for non-destructive editing)
-    // Each entry is {bufferFrameOffset, originalTimeSeconds} marking the start of a contiguous segment
-    std::vector<std::pair<int64_t, double>> m_playbackTimeMap;
-
-    // Unapproved TTS draft audition (never added to session().audioPaths/session().clips).
-    std::vector<float> m_voiceDraftSamples;
-    bool m_voiceDraftAuditionActive{false};
 
     // File preview playback (Import / Transcribe lists)
     int     m_previewFileIdx{-1};   // index into session().audioPaths, -1 = none

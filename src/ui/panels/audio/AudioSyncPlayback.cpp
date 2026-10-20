@@ -104,8 +104,6 @@ void AudioSync::playClip(size_t clipIdx)
         return;
     }
 
-    const auto& audioData = it->second;
-
     // Determine playback start: use waveform playhead if available, else trimIn
     double playFromTime = clip.start;
     MiniWaveformWidget* wf = waveformForClip(static_cast<int>(clipIdx));
@@ -115,142 +113,9 @@ void AudioSync::playClip(size_t clipIdx)
             playFromTime = ph;
     }
 
-    // Build buffer from trimIn..trimOut, excluding deletedRegions
-    auto startSample = static_cast<size_t>(clip.start * audioData.sampleRate);
-    auto endSample   = static_cast<size_t>(clip.end * audioData.sampleRate);
-    if (startSample >= audioData.samples.size()) return;
-    if (endSample > audioData.samples.size()) endSample = audioData.samples.size();
-
-    // Sort deleted regions by start time for sequential processing
-    auto sortedDeleted = clip.deletedRegions;
-    std::sort(sortedDeleted.begin(), sortedDeleted.end());
-
-    // Build buffer skipping deleted regions, and build a time-mapping
-    m_playbackBuffer.clear();
-    m_playbackTimeMap.clear();  // maps buffer frame offset → original time
-    double sr = audioData.sampleRate;
-
-    double cursor = clip.start;
-    for (const auto& [delStart, delEnd] : sortedDeleted) {
-        if (delStart >= clip.end) break;
-        double regionStart = std::max(delStart, clip.start);
-        double regionEnd   = std::min(delEnd, clip.end);
-        if (regionStart <= cursor && regionEnd > cursor) {
-            // Cursor is inside this deleted region — skip ahead
-            cursor = regionEnd;
-            continue;
-        }
-        if (regionStart > cursor) {
-            // Copy samples from cursor to regionStart
-            auto from = static_cast<size_t>(cursor * sr);
-            auto to   = static_cast<size_t>(regionStart * sr);
-            from = std::min(from, audioData.samples.size());
-            to   = std::min(to, audioData.samples.size());
-            if (to > from) {
-                m_playbackTimeMap.push_back({static_cast<int64_t>(m_playbackBuffer.size()), cursor});
-                m_playbackBuffer.insert(m_playbackBuffer.end(),
-                    audioData.samples.begin() + static_cast<ptrdiff_t>(from),
-                    audioData.samples.begin() + static_cast<ptrdiff_t>(to));
-            }
-        }
-        cursor = regionEnd;
-    }
-    // Copy remaining samples from cursor to clip.end
-    if (cursor < clip.end) {
-        auto from = static_cast<size_t>(cursor * sr);
-        auto to   = std::min(endSample, audioData.samples.size());
-        from = std::min(from, audioData.samples.size());
-        if (to > from) {
-            m_playbackTimeMap.push_back({static_cast<int64_t>(m_playbackBuffer.size()), cursor});
-            m_playbackBuffer.insert(m_playbackBuffer.end(),
-                audioData.samples.begin() + static_cast<ptrdiff_t>(from),
-                audioData.samples.begin() + static_cast<ptrdiff_t>(to));
-        }
-    }
-
-    // ── Resample buffer to engine output rate if rates differ ─────────
-    // The AudioEngine callback advances m_playPosition at the engine
-    // sample rate and reads source samples by index. If the buffer is at
-    // a different rate, playback speed and duration will be wrong.
-    double engineRate = static_cast<double>(m_audioEngine->config().sampleRate);
-    if (std::abs(sr - engineRate) > 1.0 && !m_playbackBuffer.empty()) {
-        double ratio = engineRate / sr;
-        auto newSize = static_cast<size_t>(
-            static_cast<double>(m_playbackBuffer.size()) * ratio) + 1;
-        std::vector<float> resampled(newSize);
-        for (size_t j = 0; j < newSize; ++j) {
-            double srcPos = static_cast<double>(j) / ratio;
-            auto idx = static_cast<size_t>(srcPos);
-            float frac = static_cast<float>(srcPos - static_cast<double>(idx));
-            if (idx + 1 < m_playbackBuffer.size()) {
-                resampled[j] = m_playbackBuffer[idx] * (1.0f - frac)
-                             + m_playbackBuffer[idx + 1] * frac;
-            } else if (idx < m_playbackBuffer.size()) {
-                resampled[j] = m_playbackBuffer[idx];
-            }
-        }
-        // Scale time-map offsets from source-rate frames to engine-rate frames
-        for (auto& [offset, time] : m_playbackTimeMap) {
-            offset = static_cast<int64_t>(static_cast<double>(offset) * ratio);
-        }
-        m_playbackBuffer = std::move(resampled);
-        sr = engineRate;
-    }
-    m_playbackSourceRate = sr;  // store effective rate for timer / seek
-
-    if (m_playbackBuffer.empty()) {
-        spdlog::warn("AudioSync::playClip: empty playback buffer for clip {}", clipIdx);
+    // Trimmed, deleted regions cut out, at the engine rate.
+    if (!m_player.playClip(it->second, clip, playFromTime))
         return;
-    }
-
-    AudioTrackSource src;
-    src.trackId     = 9999;
-    src.samples     = m_playbackBuffer.data();
-    src.totalFrames = static_cast<int64_t>(m_playbackBuffer.size());
-    src.startFrame  = 0;
-    src.channels    = 1;
-    src.sampleRate  = static_cast<uint32_t>(sr);
-    src.volume      = 1.0f;
-    src.pan         = 0.0f;
-    src.muted       = false;
-    src.solo        = false;
-
-    // Detach the timeline's sync clock so play()/stop() won't
-    // corrupt timeline position (same pattern as SourceMonitor).
-    if (!m_savedSyncClock) {
-        m_savedSyncClock = m_audioEngine->syncClock();
-        m_audioEngine->setSyncClock(nullptr);
-    }
-
-    spdlog::info("AudioSync::playClip: setting sources, buffer.size={} totalFrames={}",
-                 m_playbackBuffer.size(), src.totalFrames);
-    m_audioEngine->setTrackSources({src});
-
-    // Always seek to the correct starting frame before play().
-    // pause() does NOT reset m_playPosition, so after stopPlayback()
-    // the stale position from a previous clip could be past the end
-    // of this buffer — producing silence for short clips.
-    int64_t startAtFrame = 0;
-    if (playFromTime > clip.start) {
-        for (size_t i = 0; i < m_playbackTimeMap.size(); ++i) {
-            auto [segStart, segTime] = m_playbackTimeMap[i];
-            int64_t segEnd = (i + 1 < m_playbackTimeMap.size())
-                ? m_playbackTimeMap[i + 1].first
-                : static_cast<int64_t>(m_playbackBuffer.size());
-            double segDuration = static_cast<double>(segEnd - segStart) / sr;
-            if (playFromTime >= segTime && playFromTime < segTime + segDuration) {
-                startAtFrame = segStart + static_cast<int64_t>((playFromTime - segTime) * sr);
-                break;
-            }
-            if (playFromTime < segTime) {
-                startAtFrame = segStart;
-                break;
-            }
-            startAtFrame = segEnd;
-        }
-    }
-    m_audioEngine->seekToFrame(startAtFrame);
-    m_audioEngine->play();
 
     m_playingClipIdx = static_cast<int>(clipIdx);
     spdlog::info("AudioSync::playClip: started clip={} engineState={}",
@@ -272,24 +137,10 @@ void AudioSync::playClip(size_t clipIdx)
                 stopPlayback();
                 return;
             }
-            auto frame = m_audioEngine->currentFrame();
             const auto& pClip = session().clips[static_cast<size_t>(m_playingClipIdx)];
 
-            // Use the effective playback rate (engine rate after resampling)
-            double sr = m_playbackSourceRate;
-
-            // Convert buffer frame → original source time using the time map
-            double currentTime = pClip.end;  // default: end
-            for (size_t i = 0; i < m_playbackTimeMap.size(); ++i) {
-                auto [segStart, segTime] = m_playbackTimeMap[i];
-                int64_t segEnd = (i + 1 < m_playbackTimeMap.size())
-                    ? m_playbackTimeMap[i + 1].first
-                    : static_cast<int64_t>(m_playbackBuffer.size());
-                if (frame >= segStart && frame < segEnd) {
-                    currentTime = segTime + static_cast<double>(frame - segStart) / sr;
-                    break;
-                }
-            }
+            // The engine position as original source time (the clip's end past it)
+            double currentTime = m_player.clipTime(pClip.end);
 
             if (currentTime >= pClip.end || m_audioEngine->transportState() != TransportState::Playing) {
                 // Set playhead to end position before stopping
@@ -329,180 +180,69 @@ bool AudioSync::loadPreviewAudioForTake(int clipId, double rangeStart, double ra
 
 bool AudioSync::loadPreviewAudioForMedia(const std::string& path)
 {
-    auto it = m_mediaAudioCache.find(path);
-    if (it == m_mediaAudioCache.end()) {
-        if (m_mediaAudioCache.size() >= 6) m_mediaAudioCache.clear();   // renders are short; keep a few
-        AudioFile af;
-        if (!af.open(path)) return false;
-        const auto info = af.info();
-        std::vector<float> all = af.readAll();
-        if (all.empty() || info.channels == 0) return false;
-        std::vector<float> mono(all.size() / info.channels);
-        for (size_t i = 0; i < mono.size(); ++i) {
-            float sum = 0.0f;
-            for (uint32_t ch = 0; ch < info.channels; ++ch) sum += all[i * info.channels + ch];
-            mono[i] = sum / static_cast<float>(info.channels);
-        }
-        AudioSampleData d;
-        d.sampleRate = info.sampleRate;
-        d.samples = SampleBuffer(std::move(mono));
-        it = m_mediaAudioCache.emplace(path, std::move(d)).first;
-    }
-    const auto& data = it->second;
-    return loadPreviewAudio(path + "|media", data, 0.0,
-                            static_cast<double>(data.samples.size()) / std::max(1u, data.sampleRate));
+    const AudioSampleData* data = m_player.mediaAudio(path);
+    if (!data) return false;
+    return loadPreviewAudio(path + "|media", *data, 0.0,
+                            static_cast<double>(data->samples.size()) / std::max(1u, data->sampleRate));
 }
 
 bool AudioSync::loadPreviewAudio(const std::string& key, const AudioSampleData& data,
                                  double rangeStart, double rangeEnd)
 {
     if (!m_audioEngine || data.samples.empty() || data.sampleRate == 0) return false;
-    if (m_takeAudioActive && key == m_takeAudioKey && !m_takeAudioBuffer.empty()) return true;   // already loaded
+    if (m_player.hasPreview(key)) return true;   // already loaded
     stopTakeAudio();
     stopPlayback();
     stopFilePlayback();
-
-    const double srcRate = static_cast<double>(data.sampleRate);
-    const double engineRate = static_cast<double>(m_audioEngine->config().sampleRate);
-    const double from = std::max(0.0, rangeStart);
-    const auto s0 = std::min(data.samples.size(), static_cast<size_t>(from * srcRate));
-    const auto s1 = std::min(data.samples.size(), static_cast<size_t>(std::max(from, rangeEnd) * srcRate));
-    if (s1 <= s0 + 1) return false;
-
-    // Resample the range to the engine rate (linear, like playClip).
-    const double ratio = engineRate / srcRate;
-    const size_t n = static_cast<size_t>(static_cast<double>(s1 - s0) * ratio);
-    m_takeAudioBuffer.assign(n, 0.0f);
-    for (size_t j = 0; j < n; ++j) {
-        const double pos = static_cast<double>(j) / ratio;
-        const size_t i = s0 + static_cast<size_t>(pos);
-        const float frac = static_cast<float>(pos - std::floor(pos));
-        const float a = data.samples[std::min(i, s1 - 1)];
-        const float b = data.samples[std::min(i + 1, s1 - 1)];
-        m_takeAudioBuffer[j] = a + (b - a) * frac;
-    }
-    m_takeAudioKey = key;
-    m_takeAudioFrom = static_cast<double>(s0) / srcRate;
-    m_takeAudioEnd = static_cast<double>(s1) / srcRate;
-    m_takeAudioRate = engineRate;
-    // Same isolation as playClip: never move the timeline's clock.
-    if (!m_savedSyncClock) {
-        m_savedSyncClock = m_audioEngine->syncClock();
-        m_audioEngine->setSyncClock(nullptr);
-    }
-    m_takeAudioActive = true;
-    installPreviewAudio();
-    return true;
-}
-
-void AudioSync::installPreviewAudio()
-{
-    if (!m_audioEngine || m_takeAudioBuffer.empty()) return;
-    AudioTrackSource src;
-    src.trackId     = 9999;
-    src.samples     = m_takeAudioBuffer.data();
-    src.totalFrames = static_cast<int64_t>(m_takeAudioBuffer.size());
-    src.startFrame  = 0;
-    src.channels    = 1;
-    src.sampleRate  = static_cast<uint32_t>(m_takeAudioRate);
-    src.volume      = 1.0f;
-    // Re-installed on every use: the engine is shared across pages.
-    m_audioEngine->setTrackSources({src});
+    return m_player.loadPreview(key, data, rangeStart, rangeEnd);
 }
 
 bool AudioSync::playPreviewAudio(double fromSec, double speed)
 {
-    if (!m_takeAudioActive || !m_audioEngine || m_takeAudioBuffer.empty() || speed == 0.0) return false;
-    installPreviewAudio();
-    const auto last = static_cast<int64_t>(m_takeAudioBuffer.size()) - 1;
-    const auto frame = std::clamp(static_cast<int64_t>((fromSec - m_takeAudioFrom) * m_takeAudioRate), int64_t(0), last);
-    m_audioEngine->pause();
-    m_audioEngine->setPlaybackSpeed(speed);   // time-stretched; negative = reverse
-    m_audioEngine->seekToFrame(frame);
-    m_audioEngine->play();
-    return true;
+    return m_player.playPreview(fromSec, speed);
 }
 
 void AudioSync::scrubPreviewAudio(double atSec)
 {
-    if (!m_takeAudioActive || !m_audioEngine || m_takeAudioBuffer.empty()) return;
-    if (atSec < m_takeAudioFrom || atSec >= m_takeAudioEnd) return;
-    installPreviewAudio();
-    m_audioEngine->setPlaybackSpeed(1.0);
-    const auto frame = static_cast<int64_t>((atSec - m_takeAudioFrom) * m_takeAudioRate);
-    // ~1 video frame of sound, like Premiere's scrub.
-    m_audioEngine->scrub(frame, static_cast<int64_t>(m_takeAudioRate / 24.0));
+    m_player.scrubPreview(atSec);
 }
 
 void AudioSync::pausePreviewAudio()
 {
-    if (!m_takeAudioActive || !m_audioEngine) return;
-    m_audioEngine->pause();
-    m_audioEngine->setPlaybackSpeed(1.0);
+    m_player.pausePreview();
 }
 
 void AudioSync::stopTakeAudio()
 {
-    if (!m_takeAudioActive) return;
-    m_takeAudioActive = false;
-    m_takeAudioKey.clear();
-    if (m_audioEngine) {
-        m_audioEngine->pause();
-        m_audioEngine->setPlaybackSpeed(1.0);
-        m_audioEngine->clearTrackSources();   // before the buffer goes away
-        if (m_savedSyncClock) {
-            m_audioEngine->setSyncClock(m_savedSyncClock);
-            m_savedSyncClock = nullptr;
-        }
-    }
-    m_takeAudioBuffer.clear();
+    m_player.stopPreview();
 }
 
 double AudioSync::takeAudioTime() const
 {
-    if (!m_takeAudioActive || !m_audioEngine) return -1.0;
-    if (m_audioEngine->transportState() != TransportState::Playing) return -1.0;
-    return m_takeAudioFrom + static_cast<double>(m_audioEngine->currentFrame()) / m_takeAudioRate;
+    return m_player.previewTime();
 }
 
 void AudioSync::stopPlayback()
 {
     spdlog::info("AudioSync::stopPlayback: playingClip={}", m_playingClipIdx);
-    // Any other playback supersedes a take preview (its sources are cleared below).
-    m_takeAudioActive = false;
-
-    if (m_audioEngine) {
-        m_audioEngine->pause();
-        m_audioEngine->setPlaybackSpeed(1.0);
-        m_audioEngine->clearTrackSources();
-        m_audioEngine->resetStretchers();
-
-        // Restore the timeline's sync clock
-        if (m_savedSyncClock) {
-            m_audioEngine->setSyncClock(m_savedSyncClock);
-            m_savedSyncClock = nullptr;
-        }
-    }
+    // Also ends a take preview or a TTS draft audition.
+    m_player.stop();
 
     if (m_playheadTimer)
         m_playheadTimer->stop();
 
     // Keep playhead visible at last position (don't hide it)
     m_playingClipIdx = -1;
-    m_voiceDraftAuditionActive = false;
-    m_voiceDraftSamples.clear();
     updateTransportBar();
 }
 
 void AudioSync::togglePlayClip(size_t clipIdx)
 {
-    if (m_playingClipIdx == static_cast<int>(clipIdx) &&
-        m_audioEngine && m_audioEngine->transportState() == TransportState::Playing) {
+    if (m_playingClipIdx == static_cast<int>(clipIdx) && m_player.isPlaying()) {
         pausePlayback();
-    } else if (m_playingClipIdx == static_cast<int>(clipIdx) &&
-               m_audioEngine && m_audioEngine->transportState() == TransportState::Paused) {
+    } else if (m_playingClipIdx == static_cast<int>(clipIdx) && m_player.isPaused()) {
         // Resume from paused
-        m_audioEngine->play();
+        m_player.resume();
         if (m_playheadTimer) m_playheadTimer->start();
     } else {
         playClip(clipIdx);
@@ -511,8 +251,7 @@ void AudioSync::togglePlayClip(size_t clipIdx)
 
 void AudioSync::pausePlayback()
 {
-    if (m_audioEngine)
-        m_audioEngine->pause();
+    m_player.pause();
 
     if (m_playheadTimer)
         m_playheadTimer->stop();
@@ -524,38 +263,8 @@ void AudioSync::seekPlayingClip(double timeSec)
         return;
 
     const auto& clip = session().clips[static_cast<size_t>(m_playingClipIdx)];
-
-    // Use the effective playback rate (engine rate after resampling)
-    double sr = m_playbackSourceRate;
-
-    // If timeSec falls inside a deleted region, snap to end of that region
-    for (const auto& [delStart, delEnd] : clip.deletedRegions) {
-        if (timeSec >= delStart && timeSec < delEnd) {
-            timeSec = delEnd;
-            break;
-        }
-    }
-
-    // Find the buffer frame that corresponds to timeSec using the time map
-    int64_t targetFrame = 0;
-    for (size_t i = 0; i < m_playbackTimeMap.size(); ++i) {
-        auto [segStart, segTime] = m_playbackTimeMap[i];
-        int64_t segEnd = (i + 1 < m_playbackTimeMap.size())
-            ? m_playbackTimeMap[i + 1].first
-            : static_cast<int64_t>(m_playbackBuffer.size());
-        double segDuration = static_cast<double>(segEnd - segStart) / sr;
-        if (timeSec >= segTime && timeSec < segTime + segDuration) {
-            targetFrame = segStart + static_cast<int64_t>((timeSec - segTime) * sr);
-            break;
-        }
-        if (timeSec < segTime) {
-            targetFrame = segStart;
-            break;
-        }
-        targetFrame = segEnd;
-    }
-
-    m_audioEngine->seekToFrame(targetFrame);
+    // A time inside a deleted region seeks to the region's end.
+    timeSec = m_player.seekClip(clip, timeSec);
 
     // Update waveform playhead
     if (auto* wf = waveformForClip(m_playingClipIdx)) {
@@ -580,35 +289,7 @@ void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
     auto it = session().audioSamples.find(clip.sourceFile);
     if (it == session().audioSamples.end())
         return;
-
-    const auto& audioData = it->second;
-    if (audioData.samples.empty())
-        return;
-
-    // Detach sync clock temporarily for scrub
-    AVSyncClock* savedClock = m_audioEngine->syncClock();
-    m_audioEngine->setSyncClock(nullptr);
-
-    // Set up a temporary source for scrub
-    AudioTrackSource src;
-    src.trackId     = 9999;
-    src.samples     = audioData.samples.data();
-    src.totalFrames = static_cast<int64_t>(audioData.samples.size());
-    src.startFrame  = 0;
-    src.channels    = 1;
-    src.sampleRate  = audioData.sampleRate;
-    src.volume      = 1.0f;
-    src.pan         = 0.0f;
-    src.muted       = false;
-    src.solo        = false;
-
-    m_audioEngine->setTrackSources({src});
-
-    int64_t frame = static_cast<int64_t>(timeSec * audioData.sampleRate);
-    m_audioEngine->scrub(frame, 2048);
-
-    // Restore sync clock
-    m_audioEngine->setSyncClock(savedClock);
+    m_player.scrub(it->second, timeSec);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -760,27 +441,7 @@ void AudioSync::playAudioFile(size_t fileIndex)
         }
     }
 
-    // Build a simple track source — startFrame=0 means file starts at timeline origin
-    AudioTrackSource src{};
-    src.trackId     = 9998;
-    src.samples     = audioData.samples.data();
-    src.totalFrames = static_cast<int64_t>(audioData.samples.size());
-    src.startFrame  = 0;
-    src.channels    = 1;
-    src.sampleRate  = audioData.sampleRate;
-    src.volume      = 1.0f;
-
-    // Detach timeline sync clock during preview
-    m_savedSyncClock = nullptr;
-    if (m_audioEngine->syncClock()) {
-        m_savedSyncClock = m_audioEngine->syncClock();
-        m_audioEngine->setSyncClock(nullptr);
-    }
-
-    m_audioEngine->setPlaybackSpeed(1.0);
-    m_audioEngine->setTrackSources({src});
-    m_audioEngine->seekToFrame(seekFrame);
-    m_audioEngine->play();
+    m_player.playFile(audioData, seekFrame);
 
     // Update play button appearance
     updateFilePlayButton(fileIndex, true);
@@ -843,15 +504,8 @@ void AudioSync::stopFilePlayback()
 
     int prevIdx = m_previewFileIdx;
 
-    if (m_previewFileIdx >= 0 && m_audioEngine) {
-        m_audioEngine->pause();
-        m_audioEngine->clearTrackSources();
-        m_audioEngine->setPlaybackSpeed(1.0);
-        if (m_savedSyncClock) {
-            m_audioEngine->setSyncClock(m_savedSyncClock);
-            m_savedSyncClock = nullptr;
-        }
-    }
+    if (m_previewFileIdx >= 0)
+        m_player.stopFile();
 
     m_previewFileIdx = -1;
 

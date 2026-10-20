@@ -185,6 +185,7 @@ void AudioSync::setCommandStack(CommandStack* stack)
 void AudioSync::setAudioEngine(AudioEngine* engine)
 {
     m_audioEngine = engine;
+    m_player.setEngine(engine);
 }
 
 void AudioSync::runClipsMutationWithUndo(const std::string& description,

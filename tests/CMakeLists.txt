@@ -99,6 +99,7 @@ add_roundtable_test(test_video_decoder_seek LIBS roundtable_core)
 add_roundtable_test(test_frame_label LIBS roundtable_core)
 add_roundtable_test(test_composite_hold LIBS roundtable_core)
 add_roundtable_test(test_auto_sync LIBS roundtable_core)
+add_roundtable_test(test_clip_playback LIBS roundtable_core)
 add_roundtable_test(test_threaded_sws LIBS roundtable_core)
 add_roundtable_test(test_av1_decode LIBS roundtable_core)
 add_roundtable_test(test_render_complexity LIBS roundtable_core)
@@ -200,6 +201,8 @@ add_roundtable_test(test_comfy_runner   LIBS roundtable_ui roundtable_export rou
 add_roundtable_test(test_transcription_runner LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
 # AudioSync's background sample decode with a fake decoder.
 add_roundtable_test(test_audio_sample_loader LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
+# AudioSync's use of the shared AudioEngine (an engine with no device).
+add_roundtable_test(test_audio_sync_player LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
 add_roundtable_test(test_comfy_panel LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_video_frame_grabber LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_manual_match_dialog LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
