@@ -190,7 +190,8 @@ bool ComfyTimelineTemplate::build(const std::vector<AssemblyShot>& shots, int64_
         while (video.size() < 6) { timeline.addVideoTrack(""); video = videoTracks(); }
         const auto base = video.size() - 6;
         Track& bar = *video[base]; Track& flashes = *video[base + 1];
-        Track& adjustment = *video[base + 2]; Track& endFlashes = *video[base + 3];
+        Track& adjustment = *video[base + 2];
+        Track& shotTrack = *video[base + 4];   // where ComfyPanel places the shots
         Track& background = *video[base + 5];
         std::vector<Track*> audio;
         for (size_t i = 0; i < timeline.trackCount(); ++i) {
@@ -283,13 +284,19 @@ bool ComfyTimelineTemplate::build(const std::vector<AssemblyShot>& shots, int64_
             first = end;
         }
         if (d->recipe.contains("endingVideo")) {
+            // The ending stinger goes on the shot track, above V1, where the
+            // episode's own footage starts under it; white flashes before and
+            // after it, as around a section's stinger.
             auto& prototype = d->clip(d->recipe, "endingVideo");
             auto ending = d->copy(prototype);
             ending->setTimelineIn(cursor);
             if (d->recipe.contains("endingFlash"))
-                d->addFlash(endFlashes, d->clip(d->recipe, "endingFlash"), cursor, prototype.timelineIn(), start);
+                d->addFlash(flashes, d->clip(d->recipe, "endingFlash"), cursor, prototype.timelineIn(), start);
+            if (d->recipe.contains("endingTailFlash"))
+                d->addFlash(flashes, d->clip(d->recipe, "endingTailFlash"), cursor + ending->duration(),
+                            prototype.timelineOut(), start);
             cursor += ending->duration();
-            background.addClip(std::move(ending));
+            shotTrack.addClip(std::move(ending));
         }
         for (auto [role, track] : {std::pair{"bar", &bar}, std::pair{"adjustment", &adjustment}}) {
             auto overlay = d->copy(d->clip(d->recipe, role));

@@ -141,6 +141,7 @@ protected:
         auto* leadFlash = flash(5 * kTicksPerSecond);
         auto* tailFlash = flash(6 * kTicksPerSecond);
         auto* endingFlash = flash(20 * kTicksPerSecond);
+        auto* endingTailFlash = flash(20 * kTicksPerSecond + kTicksPerSecond / 2);
         auto adjustment = std::make_unique<AdjustmentClip>(); adjustment->setLabel("Grade");
         adjustment->setDuration(25 * kTicksPerSecond);
         auto grade = std::make_unique<ColorGrading>();
@@ -168,6 +169,7 @@ protected:
         QJsonObject recipe{{"version", 1}, {"project", "template.rtp"}, {"sequence", "Template"},
             {"wideCharacter", id(wide)}, {"centeredCharacter", id(centered)}, {"closeUpCharacter", id(closeUp)},
             {"bar", id(bar)}, {"adjustment", id(adjustmentClip)}, {"endingVideo", id(ending)}, {"endingFlash", id(endingFlash)},
+            {"endingTailFlash", id(endingTailFlash)},
             {"sections", QJsonObject{{"INTRO", intro}, {"STORY", section}, {"CONCLUSION", section}, {"MINIGAME", mini}}}};
         EXPECT_TRUE(ProjectSerializer{}.save(*project, std::filesystem::path(dir.filePath("template.rtp").toStdWString())));
         const auto path = dir.filePath("template.json"); QFile file(path);
@@ -445,7 +447,12 @@ TEST_F(ComfyPanelTest, ProductionTemplateBuildsSectionsMusicFlashesAndCharacterE
         (track->type() == TrackType::Video ? video : audio).push_back(track);
     }
     ASSERT_EQ(video.size(), 6u); ASSERT_EQ(audio.size(), 2u);
-    ASSERT_EQ(video[4]->clipCount(), 8u);
+    // Eight shots, then the ending stinger on the same track (the episode's
+    // own footage goes under it, on V1).
+    ASSERT_EQ(video[4]->clipCount(), 9u);
+    const Clip* ending = video[4]->clip(8);
+    EXPECT_EQ(ending->label(), "Ending");
+    EXPECT_GE(ending->timelineIn(), video[4]->clip(7)->timelineOut());
     const bool center[] = {true, false, true, false, true, false, false, true};
     for (size_t i = 0; i < 8; ++i) {
         auto* character = video[4]->clip(i);
@@ -463,13 +470,23 @@ TEST_F(ComfyPanelTest, ProductionTemplateBuildsSectionsMusicFlashesAndCharacterE
     }
     EXPECT_EQ(video[4]->clip(0)->timelineIn(), kTicksPerSecond);
     ASSERT_EQ(video[0]->clipCount(), 1u); ASSERT_EQ(video[2]->clipCount(), 1u);
-    EXPECT_EQ(video[0]->clip(0)->duration(), timeline.duration());
-    EXPECT_EQ(video[2]->clip(0)->duration(), timeline.duration());
+    // Bar and grade run to the end of the ending stinger; only its tail flash
+    // reaches past it, onto where the episode's own footage goes.
+    EXPECT_EQ(video[0]->clip(0)->timelineOut(), ending->timelineOut());
+    EXPECT_EQ(video[2]->clip(0)->timelineOut(), ending->timelineOut());
     const auto& grade = video[2]->clip(0)->effects().effect(0);
     EXPECT_FLOAT_EQ(grade.evalParam(ColorGrading::Vibrance, 0), 40);
     EXPECT_FLOAT_EQ(grade.evalParam(ColorGrading::CreativeSat, 0), 115);
-    EXPECT_EQ(video[1]->clipCount(), 7u); EXPECT_EQ(video[1]->transitionCount(), 14u);
-    EXPECT_EQ(video[3]->clipCount(), 1u); EXPECT_EQ(video[3]->transitionCount(), 2u);
+    // Section flashes plus a white flash before and after the ending stinger.
+    EXPECT_EQ(video[1]->clipCount(), 9u); EXPECT_EQ(video[1]->transitionCount(), 18u);
+    const auto endingFlashes = video[1]->clipsAtTime(ending->timelineIn());
+    ASSERT_EQ(endingFlashes.size(), 1u);
+    EXPECT_EQ(endingFlashes.front()->timelineIn(), ending->timelineIn() - kTicksPerSecond / 5);
+    const auto tailFlashes = video[1]->clipsAtTime(ending->timelineOut() - 1);
+    ASSERT_EQ(tailFlashes.size(), 1u);
+    EXPECT_EQ(tailFlashes.front()->timelineIn(), ending->timelineOut() - kTicksPerSecond / 5);
+    EXPECT_EQ(timeline.duration(), tailFlashes.front()->timelineOut());
+    EXPECT_EQ(video[3]->clipCount(), 0u);
     ASSERT_EQ(timeline.markers().size(), 4u);
     EXPECT_EQ(timeline.markers()[2].label, "MINI-GAME");
     const auto miniStart = timeline.markers()[2].time - 3 * kTicksPerSecond / 2;
