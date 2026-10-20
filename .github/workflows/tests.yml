@@ -34,6 +34,23 @@ jobs:
       - name: Setup Visual Studio
         uses: microsoft/setup-msbuild@v2
 
+      # Qt and the bundled CMake are not in git (third_party/qt/ and
+      # tools/cmake/ are ignored), so install the versions the build expects.
+      # Qt lands in third_party/Qt/6.8.3/msvc2022_64; Windows paths are
+      # case-insensitive, so the third_party/qt/... paths below resolve.
+      - name: Install Qt 6.8.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          dir: '${{ github.workspace }}/third_party'
+          cache: true
+
+      - name: Install CMake 3.31.6
+        uses: lukka/get-cmake@v3.31.6
+
       - name: Check for orphan source files (src/ + tests/)
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/check_orphans.ps1
