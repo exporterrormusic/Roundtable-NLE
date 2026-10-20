@@ -37,7 +37,7 @@ void AudioSync::saveCurrentSession()
 {
     if (m_activeScriptKey.empty() || !session().script) return;
     // Waiting actions and the card build belong to the outgoing session.
-    m_afterAudioSamplesReady.clear();
+    m_sampleLoader->dropWaitingActions();
     cancelCardBuild();
 
     // The open script's data already lives in its session. Only data entered
@@ -67,7 +67,7 @@ void AudioSync::restoreSession(const std::string& sessionKey)
 
 void AudioSync::clearCurrentSession()
 {
-    m_afterAudioSamplesReady.clear();
+    m_sampleLoader->dropWaitingActions();
     cancelCardBuild();
     // Only the scratch session is cleared: a stored session keeps its data
     // (callers save it first or have just removed it).

@@ -198,6 +198,8 @@ add_roundtable_test(test_comfy_workflow LIBS roundtable_ui roundtable_export rou
 add_roundtable_test(test_comfy_runner   LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
 # Transcription run sequencing with a fake transcribe function.
 add_roundtable_test(test_transcription_runner LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
+# AudioSync's background sample decode with a fake decoder.
+add_roundtable_test(test_audio_sample_loader LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
 add_roundtable_test(test_comfy_panel LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_video_frame_grabber LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_manual_match_dialog LIBS roundtable_ui roundtable_core USES_QT GROUP ui)

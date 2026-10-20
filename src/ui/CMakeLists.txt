@@ -116,6 +116,7 @@ add_library(roundtable_ui STATIC
     panels/characters/ShotComposerGroups.cpp
     panels/characters/ShotComposerClipboard.cpp
     panels/characters/ShotComposerEvents.cpp
+    panels/audio/AudioSampleLoader.cpp
     panels/audio/AudioSync.cpp
     panels/audio/AudioSyncUI.cpp
     panels/audio/AudioSyncAlign.cpp

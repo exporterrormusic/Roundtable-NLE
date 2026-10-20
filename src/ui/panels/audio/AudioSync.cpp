@@ -96,7 +96,15 @@ AudioSync::AudioSync(QWidget* parent)
     connect(m_transcriptionRunner.get(), &TranscriptionRunner::finished,
             this, &AudioSync::finishTranscriptionRun);
 
-    m_audioTaskOwner = MediaTaskQueue::instance().createOwner();
+    m_sampleLoader = std::make_unique<AudioSampleLoader>(AudioSampleLoader::Hooks{
+        [this](const std::string& path) {
+            const auto& paths = session().audioPaths;
+            return std::find(paths.begin(), paths.end(), path) != paths.end();
+        },
+        [this](const std::string& path) { return session().audioSamples.count(path) > 0; },
+        [this](const std::string& path, AudioSampleData samples) {
+            installAudioSamples(path, std::move(samples));
+        }});
 
     // MATCH cards past the first screenful build in short slices.
     m_cardBuildTimer = new QTimer(this);
@@ -828,7 +836,7 @@ bool AudioSync::importAudio(const std::string& audioPath)
         spdlog::info("AudioSync: Audio already imported: {}", audioPath);
         return true;
     }
-    m_audioDecodeFailedPaths.erase(audioPath);   // re-imported: try decoding again
+    m_sampleLoader->forgetFailure(audioPath);   // re-imported: try decoding again
 
     // Repair any legacy size mismatch before appending the new parallel slot.
     session().allTranscriptionResults.resize(session().audioPaths.size());

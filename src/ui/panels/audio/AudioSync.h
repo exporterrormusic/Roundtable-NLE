@@ -50,6 +50,7 @@
 #include "audiosync/SyncClip.h"
 #include "ai/Transcriber.h"    // For TranscriptionResult
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
+#include "panels/audio/AudioSampleLoader.h"
 #include "panels/audio/TranscriptionRunner.h"
 
 #include <atomic>
@@ -490,9 +491,7 @@ private:
     /// False, with a notice, while `path`'s samples (empty path: any file's)
     /// are still decoding. Per-card actions use this instead of waiting.
     bool audioReadyOrNotify(const std::string& path, const QString& action);
-    void pumpAudioSampleDecode();
     void installAudioSamples(const std::string& path, AudioSampleData decoded);
-    void finishAudioSampleDecodes();
     /// Stop queued/running decodes and drop actions waiting on them.
     void cancelAudioSampleDecodes();
     void refreshAudioFileListItem(const std::string& path);
@@ -592,18 +591,9 @@ private:
 
 
 
-    // Background waveform decode: one file at a time (the old synchronous
-    // loop's peak memory), results installed on the UI thread.
-    uint64_t                m_audioTaskOwner{0};
-    std::deque<std::string> m_audioDecodeQueue;
-    std::string             m_audioDecodeInFlight;
-    std::vector<std::pair<QString, std::function<void()>>> m_afterAudioSamplesReady;
-    std::unordered_set<std::string> m_audioDecodeFailedPaths;  ///< not retried until re-imported
-    uint64_t                m_audioDecodeNotice{0};   ///< NotificationCenter task
-    int                     m_audioDecodeTotal{0};
-    int                     m_audioDecodeDone{0};
-    int                     m_audioDecodeFailed{0};
-    uint64_t                m_audioDecodeGeneration{0};  ///< bumped by cancel
+    // Background sample decode of the open script's files, installed with
+    // installAudioSamples().
+    std::unique_ptr<AudioSampleLoader> m_sampleLoader;
 
     // Take preview (playTakeAudio): its own buffer, full take audio from `from`.
     std::vector<float> m_takeAudioBuffer;
