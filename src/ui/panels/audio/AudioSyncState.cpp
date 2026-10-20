@@ -40,9 +40,9 @@ void AudioSync::onClipSelectionChanged()
     // The hidden m_clipList may still be updated for compat, but we read
     // from m_selectedClipIdx which is set by card button clicks.
     if (m_selectedClipIdx < 0 ||
-        static_cast<size_t>(m_selectedClipIdx) >= m_clips.size()) return;
+        static_cast<size_t>(m_selectedClipIdx) >= session().clips.size()) return;
 
-    const auto& clip = m_clips[static_cast<size_t>(m_selectedClipIdx)];
+    const auto& clip = session().clips[static_cast<size_t>(m_selectedClipIdx)];
 
     // Highlight matching script line in the left list
     if (clip.scriptLineNumber > 0 && m_leftScriptList) {
@@ -65,43 +65,43 @@ void AudioSync::updateWorkflowState()
     // Update smart bar and button states
     updateSmartBar();
 
-    // Export needs CONFIRMED matches, not the m_syncDone workflow flag.
+    // Export needs CONFIRMED matches, not the session().syncDone workflow flag.
     // Re-syncing a URL script with GDrive remaps existing matches (they
-    // survive) but resets m_syncDone=false — which used to grey out Export
+    // survive) but resets session().syncDone=false — which used to grey out Export
     // even though confirmed clips were ready to export. So enable Export (and
     // the confirm/clear actions that operate on matches) whenever there is at
-    // least one confirmed clip, regardless of m_syncDone.
+    // least one confirmed clip, regardless of session().syncDone.
     bool hasConfirmedMatch = false;
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         if (clip.scriptLineNumber >= 0 && clip.matchState == 2) {
             hasConfirmedMatch = true;
             break;
         }
     }
-    const bool canExport = m_syncDone || hasConfirmedMatch;
+    const bool canExport = session().syncDone || hasConfirmedMatch;
 
     // Enable/disable setup-panel group boxes (hidden old groups still used
     // by restoreProjectState, so keep them in sync)
-    if (m_audioGroup)      m_audioGroup->setEnabled(m_scriptLoaded);
-    if (m_transcribeGroup) m_transcribeGroup->setEnabled(m_audioImported);
-    if (m_syncGroup)       m_syncGroup->setEnabled(m_transcriptionDone && m_scriptLoaded);
-    if (m_reviewGroup)     m_reviewGroup->setEnabled(m_syncDone || m_transcriptionDone);
+    if (m_audioGroup)      m_audioGroup->setEnabled(session().scriptLoaded);
+    if (m_transcribeGroup) m_transcribeGroup->setEnabled(session().audioImported);
+    if (m_syncGroup)       m_syncGroup->setEnabled(session().transcriptionDone && session().scriptLoaded);
+    if (m_reviewGroup)     m_reviewGroup->setEnabled(session().syncDone || session().transcriptionDone);
     if (m_exportBtn)       m_exportBtn->setEnabled(canExport);
-    if (m_confirmBtn)      m_confirmBtn->setEnabled(m_syncDone);
-    if (m_confirmAllBtn)   m_confirmAllBtn->setEnabled(m_syncDone);
+    if (m_confirmBtn)      m_confirmBtn->setEnabled(session().syncDone);
+    if (m_confirmAllBtn)   m_confirmAllBtn->setEnabled(session().syncDone);
 
     // Enable/disable the new action bar buttons
-    if (m_syncActionBtn)       m_syncActionBtn->setEnabled(m_transcriptionDone && m_scriptLoaded);
-    if (m_confirmAllActionBtn) m_confirmAllActionBtn->setEnabled(m_syncDone);
+    if (m_syncActionBtn)       m_syncActionBtn->setEnabled(session().transcriptionDone && session().scriptLoaded);
+    if (m_confirmAllActionBtn) m_confirmAllActionBtn->setEnabled(session().syncDone);
     if (m_clearActionBtn)      m_clearActionBtn->setEnabled(canExport);
     if (m_exportActionBtn)     m_exportActionBtn->setEnabled(canExport);
 
     // Update the status label in the action bar
     int confirmed = 0, total = 0;
-    if (m_script) {
-        total = static_cast<int>(m_script->lines.size());
+    if (session().script) {
+        total = static_cast<int>(session().script->lines.size());
         std::unordered_set<int> confirmedLines;
-        for (const auto& clip : m_clips) {
+        for (const auto& clip : session().clips) {
             if (clip.scriptLineNumber > 0 && clip.matchState == 2)
                 confirmedLines.insert(clip.scriptLineNumber);
         }
@@ -125,29 +125,33 @@ void AudioSync::updateWorkflowState()
 
     // Enable export when all script lines have a confirmed clip, even if
     // the user matched manually (without ever running auto-sync).
-    if (total > 0 && confirmed >= total && !m_syncDone) {
-        m_syncDone = true;
+    if (total > 0 && confirmed >= total && !session().syncDone) {
+        session().syncDone = true;
     }
     // Re-run enable/disable for buttons that weren't covered above.
-    // The export button stays enabled based on m_syncDone (set above) — the
+    // The export button stays enabled based on session().syncDone (set above) — the
     // missing-default-shots warning is handled by the export handler dialog
     // and the status label, so we don't gate the button here.
-    if (m_syncDone) {
+    if (session().syncDone) {
         if (m_confirmBtn)      m_confirmBtn->setEnabled(true);
         if (m_confirmAllBtn)   m_confirmAllBtn->setEnabled(true);
         if (m_confirmAllActionBtn) m_confirmAllActionBtn->setEnabled(true);
         if (m_clearActionBtn)      m_clearActionBtn->setEnabled(true);
         if (m_reviewGroup)     m_reviewGroup->setEnabled(true);
     }
+
+    // The script list shows each script's clip count and progress; keep the
+    // open script's row in step with what just changed.
+    populateScriptSessionList();
 }
 
 QStringList AudioSync::missingDefaultShots() const
 {
     QStringList missing;
-    if (!m_shotPresetManager || !m_script) return missing;
-    if (m_script->isShotScript()) return missing;  // announcer is video, no sprite shot
+    if (!m_shotPresetManager || !session().script) return missing;
+    if (session().script->isShotScript()) return missing;  // announcer is video, no sprite shot
 
-    for (const auto& character : m_script->characters) {
+    for (const auto& character : session().script->characters) {
         if (character.empty()) continue;
         auto preset = m_shotPresetManager->resolveDefaultShot(character, m_currentShow);
         if (!preset)
@@ -347,10 +351,10 @@ void AudioSync::updateSmartBar()
 
     // Determine current state and update label
     int confirmed = 0, tentative = 0, total = 0;
-    if (m_script) {
-        total = static_cast<int>(m_script->lines.size());
+    if (session().script) {
+        total = static_cast<int>(session().script->lines.size());
         std::unordered_set<int> confirmedLines, tentativeLines;
-        for (const auto& clip : m_clips) {
+        for (const auto& clip : session().clips) {
             if (clip.scriptLineNumber > 0) {
                 if (clip.matchState == 2) confirmedLines.insert(clip.scriptLineNumber);
                 else if (clip.matchState == 1) tentativeLines.insert(clip.scriptLineNumber);
@@ -360,19 +364,19 @@ void AudioSync::updateSmartBar()
         tentative = static_cast<int>(tentativeLines.size());
     }
 
-    if (!m_scriptLoaded) {
+    if (!session().scriptLoaded) {
         m_smartBarLabel->setText("Load a script to begin");
         m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().textDisabled)).arg(Theme::typography().sizeSmall));
-    } else if (!m_audioImported) {
+    } else if (!session().audioImported) {
         m_smartBarLabel->setText(QString("Script: %1 lines \u2014 Import audio next").arg(total));
         m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().accent)).arg(Theme::typography().sizeSmall));
-    } else if (!m_transcriptionDone) {
+    } else if (!session().transcriptionDone) {
         m_smartBarLabel->setText(QString("Script: %1 lines | %2 audio file(s) \u2014 Ready to transcribe")
-            .arg(total).arg(m_audioPaths.size()));
+            .arg(total).arg(session().audioPaths.size()));
         m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().warning)).arg(Theme::typography().sizeSmall));
     } else if (confirmed + tentative == 0) {
         m_smartBarLabel->setText(QString("%1 clips | %2 lines \u2014 Run Auto-Sync")
-            .arg(m_clips.size()).arg(total));
+            .arg(session().clips.size()).arg(total));
         m_smartBarIcon->setStyleSheet(QString("QLabel { color: %1; font-size: %2px; border: none; }").arg(Theme::hex(Theme::colors().warning)).arg(Theme::typography().sizeSmall));
     } else if (confirmed == total) {
         m_smartBarLabel->setText(QString("\u2713 All %1 lines confirmed \u2014 Ready to export")
@@ -385,14 +389,14 @@ void AudioSync::updateSmartBar()
     }
 
     // Update smart bar button visibility
-    if (m_smartAutoSyncBtn) m_smartAutoSyncBtn->setVisible(m_transcriptionDone && m_scriptLoaded);
+    if (m_smartAutoSyncBtn) m_smartAutoSyncBtn->setVisible(session().transcriptionDone && session().scriptLoaded);
     if (m_smartConfirmAllBtn) m_smartConfirmAllBtn->setVisible(tentative > 0);
-    if (m_smartImportBtn) m_smartImportBtn->setVisible(m_scriptLoaded);
+    if (m_smartImportBtn) m_smartImportBtn->setVisible(session().scriptLoaded);
 }
 
 void AudioSync::populateCharacterTabs()
 {
-    if (!m_script) return;
+    if (!session().script) return;
 
     // Populate the MATCH side panel character filter list
     if (m_charFilterList) {
@@ -404,7 +408,7 @@ void AudioSync::populateCharacterTabs()
         m_charFilterList->blockSignals(true);
         m_charFilterList->clear();
         m_charFilterList->addItem("ALL");
-        for (const auto& character : m_script->characters) {
+        for (const auto& character : session().script->characters) {
             m_charFilterList->addItem(QString::fromStdString(character));
         }
 
@@ -445,7 +449,7 @@ void AudioSync::populateCharacterTabs()
     if (m_charTabBar) {
         while (m_charTabBar->count() > 1)
             m_charTabBar->removeTab(1);
-        for (const auto& character : m_script->characters)
+        for (const auto& character : session().script->characters)
             m_charTabBar->addTab(QString::fromStdString(character));
         m_charTabBar->setCurrentIndex(0);
     }
@@ -476,9 +480,9 @@ void AudioSync::styleConfirmButton(QPushButton* button, int ms)
 
 void AudioSync::updateCardMatchStyle(size_t clipIdx)
 {
-    if (clipIdx >= m_clips.size()) return;
+    if (clipIdx >= session().clips.size()) return;
     const auto& _tc = Theme::colors();
-    const int matchState = m_clips[clipIdx].matchState;
+    const int matchState = session().clips[clipIdx].matchState;
     const auto _radM = QString::number(Theme::metrics().radiusMd);
 
     // Resolve colors from matchState
@@ -566,8 +570,8 @@ void AudioSync::updateCardMatchStyle(size_t clipIdx)
                 styleConfirmButton(button, matchState);
             for (auto* chip : m_cardWidgets[i]->findChildren<QPushButton*>("takeChip")) {
                 const int ci = chip->property("takeClipIndex").toInt();
-                if (ci >= 0 && static_cast<size_t>(ci) < m_clips.size())
-                    styleTakeChip(chip, m_clips[ci].matchState == 2,
+                if (ci >= 0 && static_cast<size_t>(ci) < session().clips.size())
+                    styleTakeChip(chip, session().clips[ci].matchState == 2,
                                   chip->property("shownTake").toBool());
             }
 

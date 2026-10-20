@@ -59,7 +59,7 @@ void AudioSync::addGenerateVoiceAction(QLabel* label, int lineNumber,
 
 QVector<VoiceReferenceCandidate> AudioSync::voiceReferenceCandidates() const
 {
-    return approvedVoiceReferenceCandidates(m_clips);
+    return approvedVoiceReferenceCandidates(session().clips);
 }
 
 QVector<VoiceReferenceCandidate> AudioSync::approvedVoiceReferenceCandidates(
@@ -96,18 +96,18 @@ QVector<VoiceReferenceCandidate> AudioSync::approvedVoiceReferenceCandidates(
 QVector<VoiceImportedAudioTrack> AudioSync::voiceImportedAudioTracks() const
 {
     QVector<VoiceImportedAudioTrack> result;
-    result.reserve(static_cast<qsizetype>(m_audioPaths.size()));
-    for (const auto& source : m_audioPaths) {
+    result.reserve(static_cast<qsizetype>(session().audioPaths.size()));
+    for (const auto& source : session().audioPaths) {
         VoiceImportedAudioTrack track;
         track.sourceFile = QString::fromUtf8(source);
         track.displayName = QFileInfo(track.sourceFile).fileName();
-        if (const auto samples = m_audioSamples.find(source);
-            samples != m_audioSamples.end() && samples->second.sampleRate > 0) {
+        if (const auto samples = session().audioSamples.find(source);
+            samples != session().audioSamples.end() && samples->second.sampleRate > 0) {
             track.duration = static_cast<double>(samples->second.samples.size())
                            / static_cast<double>(samples->second.sampleRate);
         }
         track.approvedClipCount = static_cast<int>(std::count_if(
-            m_clips.begin(), m_clips.end(), [&source](const SyncClip& clip) {
+            session().clips.begin(), session().clips.end(), [&source](const SyncClip& clip) {
                 return clip.sourceFile == source && clip.matchState == 2
                     && clip.scriptLineNumber >= 0 && clip.end > clip.start;
             }));
@@ -118,8 +118,8 @@ QVector<VoiceImportedAudioTrack> AudioSync::voiceImportedAudioTracks() const
 
 const AudioSampleData* AudioSync::voiceAudioSamples(const QString& path) const
 {
-    const auto found = m_audioSamples.find(path.toUtf8().toStdString());
-    return found == m_audioSamples.end() ? nullptr : &found->second;
+    const auto found = session().audioSamples.find(path.toUtf8().toStdString());
+    return found == session().audioSamples.end() ? nullptr : &found->second;
 }
 
 QString AudioSync::voiceTranscriptForRange(const QString& path,
@@ -132,7 +132,7 @@ QString AudioSync::voiceTranscriptForRange(const QString& path,
     };
     std::vector<Match> matches;
     const std::string source = path.toUtf8().toStdString();
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         if (clip.sourceFile != source || clip.end <= start || clip.start >= end)
             continue;
         const double overlap = std::min(end, clip.end) - std::max(start, clip.start);
@@ -155,7 +155,7 @@ bool AudioSync::saveApprovedVoiceReference(const QString& character,
                                            QString* savedPath,
                                            QString* error) const
 {
-    return saveApprovedVoiceReferenceClips(m_clips, character, savedPath, error);
+    return saveApprovedVoiceReferenceClips(session().clips, character, savedPath, error);
 }
 
 bool AudioSync::saveApprovedVoiceReferenceClips(const std::vector<SyncClip>& clips,
@@ -270,12 +270,12 @@ void AudioSync::attachGeneratedAudio(const QString& path,
 {
     if (path.isEmpty() || !QFileInfo::exists(path)) return;
     const std::string source = path.toUtf8().toStdString();
-    const auto duplicate = std::find_if(m_clips.begin(), m_clips.end(),
+    const auto duplicate = std::find_if(session().clips.begin(), session().clips.end(),
         [&source](const SyncClip& clip) { return clip.sourceFile == source; });
-    if (duplicate != m_clips.end()) return;
+    if (duplicate != session().clips.end()) return;
 
     int nextId = 1;
-    for (const auto& clip : m_clips) nextId = std::max(nextId, clip.id + 1);
+    for (const auto& clip : session().clips) nextId = std::max(nextId, clip.id + 1);
 
     SyncClip clip;
     clip.id = nextId;
@@ -289,17 +289,17 @@ void AudioSync::attachGeneratedAudio(const QString& path,
     clip.confidence = scriptLineNumber >= 0 ? 1.0f : 0.0f;
     clip.scriptLineNumber = scriptLineNumber;
     clip.scriptSegment = segment.toStdString();
-    m_clips.push_back(std::move(clip));
+    session().clips.push_back(std::move(clip));
 
-    if (std::find(m_audioPaths.begin(), m_audioPaths.end(), source) == m_audioPaths.end()) {
-        m_audioPaths.push_back(source);
+    if (std::find(session().audioPaths.begin(), session().audioPaths.end(), source) == session().audioPaths.end()) {
+        session().audioPaths.push_back(source);
         addAudioFileListItem(path);
     }
-    if (m_audioPath.empty()) m_audioPath = source;
-    if (scriptLineNumber >= 0) m_lineAudioFile[scriptLineNumber] = source;
+    if (session().audioPath.empty()) session().audioPath = source;
+    if (scriptLineNumber >= 0) session().lineAudioFile[scriptLineNumber] = source;
 
-    m_audioImported = true;
-    if (scriptLineNumber >= 0) m_syncDone = true;
+    session().audioImported = true;
+    if (scriptLineNumber >= 0) session().syncDone = true;
     loadAudioSamples();
     populateClipList();
     populateLeftList();
@@ -316,10 +316,10 @@ bool AudioSync::syncGeneratedAudio(const QString& path,
                                    double durationSeconds)
 {
     const ScriptLine* matchedLine = nullptr;
-    if (m_script) {
+    if (session().script) {
         // A line explicitly selected in the TTS panel is authoritative only
         // when it belongs to the chosen character.
-        for (const auto& line : m_script->lines) {
+        for (const auto& line : session().script->lines) {
             if (line.lineNumber == preferredScriptLine
                 && QString::fromStdString(line.character).compare(
                        character, Qt::CaseInsensitive) == 0) {
@@ -332,7 +332,7 @@ bool AudioSync::syncGeneratedAudio(const QString& path,
         // sync, but restrict its candidate script to the selected character.
         if (!matchedLine) {
             Script characterScript;
-            for (const auto& line : m_script->lines) {
+            for (const auto& line : session().script->lines) {
                 if (QString::fromStdString(line.character).compare(
                         character, Qt::CaseInsensitive) == 0) {
                     characterScript.lines.push_back(line);
@@ -343,7 +343,7 @@ bool AudioSync::syncGeneratedAudio(const QString& path,
                 const auto [line, confidence] = matcher.matchSegment(
                     dialogue.toStdString());
                 if (line && confidence >= matcher.threshold()) {
-                    for (const auto& original : m_script->lines) {
+                    for (const auto& original : session().script->lines) {
                         if (original.lineNumber == line->lineNumber) {
                             matchedLine = &original;
                             break;

@@ -165,7 +165,7 @@ static void refineSpeechBounds(const SampleBuffer& samples, int sr,
 
 bool AudioSync::alignClipsToScript()
 {
-    if (!m_script || m_script->lines.empty()) return false;
+    if (!session().script || session().script->lines.empty()) return false;
 
     const double frontPaddingSec = std::max(0.0, m_syncFrontPaddingSec);
     const double endPaddingSec   = std::max(0.0, m_syncEndPaddingSec);
@@ -173,7 +173,7 @@ bool AudioSync::alignClipsToScript()
     // Require word timestamps on at least one file (else nothing to align with).
     size_t totalWords = 0, validTimed = 0, emptyText = 0;
     std::string sample;
-    for (const auto& res : m_allTranscriptionResults)
+    for (const auto& res : session().allTranscriptionResults)
         for (const auto& seg : res.segments)
             for (const auto& wd : seg.words) {
                 ++totalWords;
@@ -184,13 +184,13 @@ bool AudioSync::alignClipsToScript()
                            + "," + std::to_string(wd.end) + "]";
             }
     spdlog::warn("[ALIGN] {} result(s), {} words (validTimed={}, emptyText={}), sample={}, {} clips, {} paths",
-                 m_allTranscriptionResults.size(), totalWords, validTimed, emptyText,
-                 sample, m_clips.size(), m_audioPaths.size());
+                 session().allTranscriptionResults.size(), totalWords, validTimed, emptyText,
+                 sample, session().clips.size(), session().audioPaths.size());
     if (validTimed == 0) {
         spdlog::warn("[ALIGN] no VALID word timestamps → cannot align, falling back");
         return false;
     }
-    if (m_script->isShotScript())
+    if (session().script->isShotScript())
         return alignShotTakes();
 
     auto norm = [](const std::string& s) { return ScriptMatcher::normalize(s); };
@@ -213,7 +213,7 @@ bool AudioSync::alignClipsToScript()
     // Preserve confirmed clips; their lines are off-limits to re-alignment.
     std::vector<SyncClip> result;
     std::unordered_set<int> confirmedLines;
-    for (const auto& c : m_clips) {
+    for (const auto& c : session().clips) {
         if (c.matchState == 2) {
             result.push_back(c);
             if (c.scriptLineNumber >= 0) confirmedLines.insert(c.scriptLineNumber);
@@ -226,7 +226,7 @@ bool AudioSync::alignClipsToScript()
     std::unordered_map<std::string, std::vector<SWord>> scriptByChar;
     std::unordered_map<int, const ScriptLine*> lineByNum;
     std::unordered_map<int, int> lineWordCount;   // line → #script words (for coverage)
-    for (const auto& line : m_script->lines) {
+    for (const auto& line : session().script->lines) {
         lineByNum[line.lineNumber] = &line;
         auto& vec = scriptByChar[normChar(line.character)];
         auto toks = tokenize(norm(line.dialogue));
@@ -243,14 +243,14 @@ bool AudioSync::alignClipsToScript()
 
     std::unordered_set<std::string> alignedFiles;
 
-    for (size_t fi = 0; fi < m_audioPaths.size(); ++fi) {
-        if (fi >= m_allTranscriptionResults.size()) continue;
-        const std::string& file = m_audioPaths[fi];
+    for (size_t fi = 0; fi < session().audioPaths.size(); ++fi) {
+        if (fi >= session().allTranscriptionResults.size()) continue;
+        const std::string& file = session().audioPaths[fi];
 
         // Flatten this file's timestamped words (normalized).
         struct AWord { std::string w; double start, end; };
         std::vector<AWord> W;
-        for (const auto& seg : m_allTranscriptionResults[fi].segments)
+        for (const auto& seg : session().allTranscriptionResults[fi].segments)
             for (const auto& wd : seg.words) {
                 std::string nw = norm(wd.word);
                 if (!nw.empty() && wd.end > wd.start)
@@ -397,8 +397,8 @@ bool AudioSync::alignClipsToScript()
             // never into it.
             const double padLo = gi > 0 ? W[groups[gi - 1].la].end : 0.0;
             bool refined = false;
-            auto as = m_audioSamples.find(file);
-            if (as != m_audioSamples.end())
+            auto as = session().audioSamples.find(file);
+            if (as != session().audioSamples.end())
                 refineSpeechBounds(as->second.samples,
                                    static_cast<int>(as->second.sampleRate),
                                    clip.start, clip.end, wSpanS, wSpanE,
@@ -417,7 +417,7 @@ bool AudioSync::alignClipsToScript()
                         0.5 * (W[g.la].end + nextStart));
                     clip.end = std::min(clip.end, lim);
                 }
-                if (as != m_audioSamples.end() && as->second.sampleRate > 0) {
+                if (as != session().audioSamples.end() && as->second.sampleRate > 0) {
                     const double duration = static_cast<double>(as->second.samples.size())
                                           / as->second.sampleRate;
                     clip.end = std::min(clip.end, duration);
@@ -480,7 +480,7 @@ bool AudioSync::alignClipsToScript()
 
     // Safety: keep ORIGINAL (non-confirmed) clips for any file we couldn't align
     // (e.g. its character isn't in the script) so no audio silently vanishes.
-    for (const auto& c : m_clips) {
+    for (const auto& c : session().clips) {
         if (c.matchState == 2) continue;                 // confirmed already kept
         if (!alignedFiles.count(c.sourceFile)) result.push_back(c);
     }
@@ -490,10 +490,10 @@ bool AudioSync::alignClipsToScript()
         return false;   // aligned nothing → use the heuristic path
     }
 
-    m_clips = std::move(result);
-    for (size_t k = 0; k < m_clips.size(); ++k) m_clips[k].id = static_cast<int>(k);
+    session().clips = std::move(result);
+    for (size_t k = 0; k < session().clips.size(); ++k) session().clips[k].id = static_cast<int>(k);
     spdlog::warn("[ALIGN] USED — word-aligned across {} file(s) → {} clips",
-                 alignedFiles.size(), m_clips.size());
+                 alignedFiles.size(), session().clips.size());
     return true;
 }
 
@@ -503,27 +503,27 @@ bool AudioSync::alignShotTakes()
     const double endPaddingSec   = std::max(0.0, m_syncEndPaddingSec);
 
     std::unordered_map<int, const ScriptLine*> lineByNum;
-    for (const auto& line : m_script->lines) lineByNum[line.lineNumber] = &line;
+    for (const auto& line : session().script->lines) lineByNum[line.lineNumber] = &line;
 
     // Confirmed (picked) takes survive re-sync untouched.
     std::vector<SyncClip> result;
-    for (const auto& c : m_clips)
+    for (const auto& c : session().clips)
         if (c.matchState == 2) result.push_back(c);
     const size_t confirmedCount = result.size();
 
     std::unordered_set<std::string> alignedFiles;
-    for (size_t fi = 0; fi < m_audioPaths.size() && fi < m_allTranscriptionResults.size(); ++fi) {
-        const std::string& file = m_audioPaths[fi];
+    for (size_t fi = 0; fi < session().audioPaths.size() && fi < session().allTranscriptionResults.size(); ++fi) {
+        const std::string& file = session().audioPaths[fi];
         std::vector<TimedWord> words;
-        for (const auto& seg : m_allTranscriptionResults[fi].segments)
+        for (const auto& seg : session().allTranscriptionResults[fi].segments)
             for (const auto& wd : seg.words)
                 if (!wd.word.empty() && wd.end > wd.start)
                     words.push_back({ wd.word, wd.start, wd.end });
         if (words.empty()) continue;
         alignedFiles.insert(file);
 
-        const auto takes = findLineTakes(words, m_script->lines);
-        const auto as = m_audioSamples.find(file);
+        const auto takes = findLineTakes(words, session().script->lines);
+        const auto as = session().audioSamples.find(file);
         for (size_t k = 0; k < takes.size(); ++k) {
             const LineTake& take = takes[k];
             // Already picked: this read IS the confirmed clip.
@@ -555,7 +555,7 @@ bool AudioSync::alignShotTakes()
             const double wSpanS = std::max(take.start, clip.start);
             const double wSpanE = std::max(wSpanS, std::min(take.end, clip.end));
             bool refined = false;
-            if (as != m_audioSamples.end())
+            if (as != session().audioSamples.end())
                 refineSpeechBounds(as->second.samples, static_cast<int>(as->second.sampleRate),
                                    clip.start, clip.end, wSpanS, wSpanE,
                                    frontPaddingSec, endPaddingSec, padLo, refined);
@@ -586,12 +586,12 @@ bool AudioSync::alignShotTakes()
     if (alignedFiles.empty()) return false;
 
     // Keep unconfirmed clips of files that had no words (nothing silently vanishes).
-    for (const auto& c : m_clips)
+    for (const auto& c : session().clips)
         if (c.matchState != 2 && !alignedFiles.count(c.sourceFile)) result.push_back(c);
 
     // Stable order: by file, then time — "Take 1, 2, 3" follow recording order.
     std::unordered_map<std::string, size_t> fileOrder;
-    for (size_t fi = 0; fi < m_audioPaths.size(); ++fi) fileOrder.emplace(m_audioPaths[fi], fi);
+    for (size_t fi = 0; fi < session().audioPaths.size(); ++fi) fileOrder.emplace(session().audioPaths[fi], fi);
     std::stable_sort(result.begin(), result.end(), [&fileOrder](const SyncClip& a, const SyncClip& b) {
         const size_t fa = fileOrder.count(a.sourceFile) ? fileOrder[a.sourceFile] : SIZE_MAX;
         const size_t fb = fileOrder.count(b.sourceFile) ? fileOrder[b.sourceFile] : SIZE_MAX;
@@ -599,11 +599,11 @@ bool AudioSync::alignShotTakes()
         return a.start < b.start;
     });
 
-    m_clips = std::move(result);
-    for (size_t k = 0; k < m_clips.size(); ++k) m_clips[k].id = static_cast<int>(k);
+    session().clips = std::move(result);
+    for (size_t k = 0; k < session().clips.size(); ++k) session().clips[k].id = static_cast<int>(k);
     m_displayedTakeId.clear();   // ids were reassigned
     spdlog::info("[ALIGN-TAKES] {} file(s) → {} clips ({} confirmed kept)",
-                 alignedFiles.size(), m_clips.size(), confirmedCount);
+                 alignedFiles.size(), session().clips.size(), confirmedCount);
     return true;
 }
 

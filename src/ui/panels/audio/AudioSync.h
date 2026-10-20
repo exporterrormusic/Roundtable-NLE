@@ -182,8 +182,8 @@ struct ScriptSession
     size_t                                  transcriptionRunTotal{0};
     size_t                                  transcriptionRunCompleted{0};
     std::vector<size_t>                     pendingTranscriptionIndices;
-    std::unordered_map<std::string, std::string> shotOverrides; ///< see AudioSync::m_shotOverrides
-    ShowPipelineState                       pipeline;      ///< see AudioSync::m_pipeline
+    std::unordered_map<std::string, std::string> shotOverrides; ///< see AudioSync::session().shotOverrides
+    ShowPipelineState                       pipeline;      ///< see AudioSync::session().pipeline
 };
 
 /// One script line of a shot-table script as the COMFYUI page sees it.
@@ -246,7 +246,7 @@ public:
     void runAutoSync();
 
     /// Word-level forced alignment of transcript words to the script (see
-    /// AudioSyncAlign.cpp).  Rebuilds m_clips so each clip spans exactly one
+    /// AudioSyncAlign.cpp).  Rebuilds session().clips so each clip spans exactly one
     /// script line's words.  Returns true when it handled the segmentation
     /// (word timestamps present + at least one file aligned), false to fall
     /// back to the heuristic merge/resegment/match path in runAutoSync().
@@ -272,21 +272,21 @@ public:
 
     // ── Accessors (for testing) ─────────────────────────────────────────
 
-    [[nodiscard]] int clipCount() const { return static_cast<int>(m_clips.size()); }
-    [[nodiscard]] const SyncClip& clip(int index) const { return m_clips.at(static_cast<size_t>(index)); }
-    [[nodiscard]] const std::vector<std::string>& audioPaths() const { return m_audioPaths; }
+    [[nodiscard]] int clipCount() const { return static_cast<int>(session().clips.size()); }
+    [[nodiscard]] const SyncClip& clip(int index) const { return session().clips.at(static_cast<size_t>(index)); }
+    [[nodiscard]] const std::vector<std::string>& audioPaths() const { return session().audioPaths; }
     [[nodiscard]] int scriptLineCount() const;
-    [[nodiscard]] bool isScriptLoaded() const noexcept { return m_scriptLoaded; }
-    [[nodiscard]] bool isAudioImported() const noexcept { return m_audioImported; }
-    [[nodiscard]] bool isTranscriptionComplete() const noexcept { return m_transcriptionDone; }
-    [[nodiscard]] bool isSyncComplete() const noexcept { return m_syncDone; }
+    [[nodiscard]] bool isScriptLoaded() const noexcept { return session().scriptLoaded; }
+    [[nodiscard]] bool isAudioImported() const noexcept { return session().audioImported; }
+    [[nodiscard]] bool isTranscriptionComplete() const noexcept { return session().transcriptionDone; }
+    [[nodiscard]] bool isSyncComplete() const noexcept { return session().syncDone; }
 
     /// Waveform samples decode in the background (MediaTaskQueue). True while
     /// any imported file is still queued or decoding.
     [[nodiscard]] bool audioSamplesPending() const noexcept;
     [[nodiscard]] bool hasAudioSamples(const std::string& path) const
     {
-        return m_audioSamples.count(path) != 0;
+        return session().audioSamples.count(path) != 0;
     }
 
     /// MATCH cards build a viewport's worth at once, then the rest in short
@@ -403,8 +403,8 @@ public:
     bool setTakeInOut(int clipId, double start, double end);
     /// Framing / per-shot settings of the active script session. Saved with
     /// the project (AudioSync blob v8); edits need no extra notification.
-    [[nodiscard]] ShowPipelineState& pipeline() noexcept { return m_pipeline; }
-    [[nodiscard]] const ShowPipelineState& pipeline() const noexcept { return m_pipeline; }
+    [[nodiscard]] ShowPipelineState& pipeline() noexcept { return session().pipeline; }
+    [[nodiscard]] const ShowPipelineState& pipeline() const noexcept { return session().pipeline; }
 
     /// Return the subset of script characters that have no default shot configured.
     /// Always empty for shot-table scripts (their announcer is video, not a sprite).
@@ -512,7 +512,8 @@ private:
     /// Update an existing session's script with new content while preserving
     /// existing clips/matches by remapping scriptLineNumber via dialogue similarity.
     void updateExistingSessionScript(const std::string& sessionKey,
-                                     std::unique_ptr<Script> newScript);
+                                     std::unique_ptr<Script> newScript,
+                                     const std::string& rawContent);
     void closeInterClipGaps();
     void downloadWhisperModel(const std::string& modelName, std::function<void(bool)> onComplete);
     void toggleSetupPanel();           // disclosure expand/collapse (legacy)
@@ -525,7 +526,7 @@ private:
     static void styleConfirmButton(QPushButton* button, int matchState);
     void syncLeftListFromScroll();     // sync right→left
 
-    /// Snapshot-then-mutate helper for bulk operations.  Captures m_clips
+    /// Snapshot-then-mutate helper for bulk operations.  Captures session().clips
     /// before running `mutate`, runs it, then pushes a LambdaCommand whose
     /// undo restores the snapshot and whose redo replays the new state.
     /// `rebuild` is called immediately after the mutation and again on each
@@ -623,7 +624,7 @@ private:
     /// Rebuild the transcribe-page file list with per-file status indicators.
     void refreshTranscribeFileList();
 
-    /// Play/stop a raw audio file by index into m_audioPaths.
+    /// Play/stop a raw audio file by index into session().audioPaths.
     void playAudioFile(size_t fileIndex);
     void stopFilePlayback();
 
@@ -647,13 +648,8 @@ private:
     std::string        m_currentShow;  ///< Show of the open project (per-show defaults)
 
     std::unique_ptr<Transcriber> m_transcriber;
-    std::unique_ptr<Script>      m_script;
 
-    std::vector<SyncClip> m_clips;
-    std::string           m_audioPath;       // Currently-transcribing audio path
-    std::vector<std::string> m_audioPaths;   // All imported audio paths
 
-    std::unordered_map<std::string, AudioSampleData> m_audioSamples;
 
     // Background waveform decode: one file at a time (the old synchronous
     // loop's peak memory), results installed on the UI thread.
@@ -690,12 +686,12 @@ private:
     // Each entry is {bufferFrameOffset, originalTimeSeconds} marking the start of a contiguous segment
     std::vector<std::pair<int64_t, double>> m_playbackTimeMap;
 
-    // Unapproved TTS draft audition (never added to m_audioPaths/m_clips).
+    // Unapproved TTS draft audition (never added to session().audioPaths/session().clips).
     std::vector<float> m_voiceDraftSamples;
     bool m_voiceDraftAuditionActive{false};
 
     // File preview playback (Import / Transcribe lists)
-    int     m_previewFileIdx{-1};   // index into m_audioPaths, -1 = none
+    int     m_previewFileIdx{-1};   // index into session().audioPaths, -1 = none
     QTimer* m_previewTimer{nullptr};
     std::unordered_map<size_t, MiniWaveformWidget*> m_fileWaveforms;       // file index -> waveform (IMPORT list)
     std::unordered_map<size_t, MiniWaveformWidget*> m_transcribeWaveforms; // file index -> waveform (TRANSCRIBE list)
@@ -707,30 +703,21 @@ private:
     void updateFileTimeLabel(size_t fileIndex, double timeSec);
 
     // Character color cache (assigned deterministically)
-    mutable std::unordered_map<std::string, QColor> m_characterColors;
 
-    bool m_scriptLoaded{false};
-    bool m_audioImported{false};
-    bool m_transcriptionDone{false};
-    bool m_syncDone{false};
     bool m_restoring{false};        // true during restoreProjectState to skip redundant rebuilds
     bool m_cardsDirty{false};       // populateScriptList/populateClipList deferred until widget is shown
     bool m_manualMatchOpen{false};  // suppress event filter while ManualMatchDialog is open
     bool m_forwardingKey{false};      // re-entrancy guard for JKL sendEvent
     QProgressDialog* m_syncProgress{nullptr}; // shown during auto-sync
     QString m_lastScriptSource;   // For project persistence
-    std::string m_scriptRawContent; // Raw text content loaded for this script (for offline restore)
     QString m_lastImportDir;      // Remembers last file dialog directory
 
     // Per-line audio file assignment: lineNumber → audio file path.
     // Set by the user via the audio file combo on unmatched cards.
     // Used as the pre-selected file when MANUAL match is opened.
-    std::unordered_map<int, std::string> m_lineAudioFile;
 
     // Shot picked in-app for shot-table lines whose SHOT cell is blank:
     // ScriptMatcher::normalize(dialogue) → "WIDE" / "CLOSE-UP".
-    std::unordered_map<std::string, std::string> m_shotOverrides;
-    ShowPipelineState m_pipeline;   ///< active session's COMFYUI page state
 
     // ── Video takes (video sources only; audio cards are unchanged) ─────
     std::unique_ptr<VideoFrameGrabber> m_frameGrabber;   ///< lazily created
@@ -755,11 +742,6 @@ private:
     [[nodiscard]] QWidget* createShotTag(const ScriptLine& line, int width);
 
     // Multi-file transcription state
-    size_t m_currentTranscriptionIndex{0};
-    size_t m_transcriptionRunTotal{0};
-    size_t m_transcriptionRunCompleted{0};
-    std::vector<TranscriptionResult> m_allTranscriptionResults;
-    std::vector<size_t> m_pendingTranscriptionIndices;  ///< File indices still needing transcription
 
     // Transcription worker
     enum class TranscriptionState { Idle, Running, Cancelling };
@@ -819,9 +801,16 @@ private:
     // Setup Panel (collapsible, below smart bar)
     QWidget*      m_setupPanel{nullptr};
 
-    // Script session management
+    // Script session management. Every loaded script's data lives in its
+    // session; the open one is m_scriptSessions[m_activeScriptKey].
     std::unordered_map<std::string, ScriptSession> m_scriptSessions;
     std::string m_activeScriptKey;   // key into m_scriptSessions, empty = none
+    /// Holds what is entered while no session exists for the open key
+    /// (audio imported before any script); moves into the first session.
+    ScriptSession m_scratchSession;
+    /// The open script's data: its session, else the scratch session.
+    [[nodiscard]] ScriptSession& session() noexcept;
+    [[nodiscard]] const ScriptSession& session() const noexcept;
     std::string m_pendingSessionName; // name to apply on next interactive load, empty = auto-generate
 
     // Setup Panel — Script column
@@ -905,7 +894,7 @@ private:
     // the left list); a row's widget/waveform stays null until it is built.
     struct PendingCardBuild {
         bool active{false};
-        std::vector<size_t> lineIndices;  ///< m_script->lines index per row
+        std::vector<size_t> lineIndices;  ///< session().script->lines index per row
         size_t next{0};                   ///< next row to build
         const Script* script{nullptr};    ///< script the indices refer to
         int pendingScrollLine{-1};        ///< scrollToCard() target not built yet
@@ -918,7 +907,7 @@ private:
     /// Left script list: every row's item exists; widgets stream in.
     struct PendingLeftBuild {
         bool active{false};
-        std::vector<size_t> lineIndices;  ///< m_script->lines index per row
+        std::vector<size_t> lineIndices;  ///< session().script->lines index per row
         size_t next{0};                   ///< next row whose widget to build
         const Script* script{nullptr};
     };

@@ -36,10 +36,10 @@ namespace rt {
 /// Private steps the workflow tests drive (friend of AudioSync).
 struct AudioSyncTestAccess
 {
-    static std::vector<SyncClip>& clips(AudioSync& a) { return a.m_clips; }
+    static std::vector<SyncClip>& clips(AudioSync& a) { return a.session().clips; }
     static const std::vector<TranscriptionResult>& transcriptions(AudioSync& a)
     {
-        return a.m_allTranscriptionResults;
+        return a.session().allTranscriptionResults;
     }
     static void confirmAll(AudioSync& a) { a.m_confirmAllActionBtn->click(); }
     static void closeGaps(AudioSync& a) { a.closeInterClipGaps(); }
@@ -466,10 +466,9 @@ TEST_F(AudioSyncWorkflowTest, ReloadingAScriptInTheBackgroundSwitchesToIt)
         "paths=2 transcriptions=2 synced=0\n");
 }
 
-// A script that fails to load (no lines) must leave the open script as it
-// was. It used to be emptied (its data had already been moved out) and its
-// saved text replaced with the failed text.
-TEST_F(AudioSyncWorkflowTest, DISABLED_AFailedScriptLoadKeepsTheOpenScript)
+// A script that fails to load (no lines) leaves the open script as it was.
+// (It used to empty it and replace its saved text with the failed text.)
+TEST_F(AudioSyncWorkflowTest, AFailedScriptLoadKeepsTheOpenScript)
 {
     rt::AudioSync audioSync;
     prepare(audioSync, true, "memory://doc");
@@ -483,10 +482,9 @@ TEST_F(AudioSyncWorkflowTest, DISABLED_AFailedScriptLoadKeepsTheOpenScript)
     EXPECT_EQ(audioSync.serializeToBlob(), blobBefore);
 }
 
-// The script list's row for the open script must show that script's clips
-// and progress. It used to read the session entry after the open script's
-// data had been moved out of it ("0 clips", stale status dot).
-TEST_F(AudioSyncWorkflowTest, DISABLED_ActiveScriptRowShowsItsClipsAndState)
+// The script list's row for the open script shows its clips and progress.
+// (It used to show "0 clips" and the progress from when it was opened.)
+TEST_F(AudioSyncWorkflowTest, ActiveScriptRowShowsItsClipsAndState)
 {
     rt::AudioSync audioSync;
     prepare(audioSync, true, "memory://first");

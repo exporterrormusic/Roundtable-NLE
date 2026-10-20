@@ -278,8 +278,8 @@ struct DecodedAudioSamples {
 
 void AudioSync::loadAudioSamples()
 {
-    for (const auto& path : m_audioPaths) {
-        if (m_audioSamples.count(path) || m_audioDecodeFailedPaths.count(path) ||
+    for (const auto& path : session().audioPaths) {
+        if (session().audioSamples.count(path) || m_audioDecodeFailedPaths.count(path) ||
             path == m_audioDecodeInFlight ||
             std::find(m_audioDecodeQueue.begin(), m_audioDecodeQueue.end(), path)
                 != m_audioDecodeQueue.end())
@@ -305,8 +305,8 @@ void AudioSync::pumpAudioSampleDecode()
         m_audioDecodeQueue.pop_front();
         // Loaded meanwhile (loadAudioSamplesNow), or no longer imported
         // (removed, or another script session is active now).
-        if (m_audioSamples.count(path) ||
-            std::find(m_audioPaths.begin(), m_audioPaths.end(), path) == m_audioPaths.end()) {
+        if (session().audioSamples.count(path) ||
+            std::find(session().audioPaths.begin(), session().audioPaths.end(), path) == session().audioPaths.end()) {
             ++m_audioDecodeDone;
             continue;
         }
@@ -361,8 +361,8 @@ void AudioSync::pumpAudioSampleDecode()
                         }
                     }
                     if (result.succeeded() &&
-                        std::find(self->m_audioPaths.begin(), self->m_audioPaths.end(), path)
-                            != self->m_audioPaths.end())
+                        std::find(self->session().audioPaths.begin(), self->session().audioPaths.end(), path)
+                            != self->session().audioPaths.end())
                         self->installAudioSamples(path, std::move(result.value->data));
                     if (current) self->pumpAudioSampleDecode();
                 }, Qt::QueuedConnection);
@@ -421,15 +421,15 @@ void AudioSync::cancelAudioSampleDecodes()
 
 void AudioSync::installAudioSamples(const std::string& path, AudioSampleData decoded)
 {
-    if (decoded.samples.empty() || m_audioSamples.count(path)) return;
-    const AudioSampleData& stored = m_audioSamples[path] = std::move(decoded);
+    if (decoded.samples.empty() || session().audioSamples.count(path)) return;
+    const AudioSampleData& stored = session().audioSamples[path] = std::move(decoded);
 
     // Cards built before the samples arrived show an empty waveform.
     for (size_t i = 0; i < m_cardWaveforms.size() && i < m_cardClipIndices.size(); ++i) {
         const int ci = m_cardClipIndices[i];
         MiniWaveformWidget* wf = m_cardWaveforms[i];
-        if (!wf || ci < 0 || static_cast<size_t>(ci) >= m_clips.size()) continue;
-        const SyncClip& clip = m_clips[static_cast<size_t>(ci)];
+        if (!wf || ci < 0 || static_cast<size_t>(ci) >= session().clips.size()) continue;
+        const SyncClip& clip = session().clips[static_cast<size_t>(ci)];
         if (clip.sourceFile != path) continue;
         wf->setAudioShared(stored.samples, stored.sampleRate, clip.start, clip.end);
         if (!clip.deletedRegions.empty())
@@ -442,8 +442,8 @@ void AudioSync::installAudioSamples(const std::string& path, AudioSampleData dec
 
 void AudioSync::loadAudioSamplesNow()
 {
-    for (const auto& path : m_audioPaths) {
-        if (m_audioSamples.count(path) || m_audioDecodeFailedPaths.count(path)) continue;
+    for (const auto& path : session().audioPaths) {
+        if (session().audioSamples.count(path) || m_audioDecodeFailedPaths.count(path)) continue;
         // A background decode of the same file may still finish; its result
         // is dropped because the entry exists by then.
         if (auto decoded = decodeMonoSamples(path, std::stop_token{}))
@@ -488,16 +488,16 @@ bool AudioSync::audioReadyOrNotify(const std::string& path, const QString& actio
 
 void AudioSync::playClip(size_t clipIdx)
 {
-    if (!m_audioEngine || clipIdx >= m_clips.size())
+    if (!m_audioEngine || clipIdx >= session().clips.size())
         return;
 
-    spdlog::info("AudioSync::playClip: clip={} clips.size={}", clipIdx, m_clips.size());
+    spdlog::info("AudioSync::playClip: clip={} clips.size={}", clipIdx, session().clips.size());
 
     stopPlayback();
 
-    const auto& clip = m_clips[clipIdx];
-    auto it = m_audioSamples.find(clip.sourceFile);
-    if (it == m_audioSamples.end()) {
+    const auto& clip = session().clips[clipIdx];
+    auto it = session().audioSamples.find(clip.sourceFile);
+    if (it == session().audioSamples.end()) {
         spdlog::warn("AudioSync: No audio samples for clip {}", clipIdx);
         return;
     }
@@ -659,9 +659,9 @@ void AudioSync::playClip(size_t clipIdx)
         m_playheadTimer = new QTimer(this);
         m_playheadTimer->setInterval(30);
         connect(m_playheadTimer, &QTimer::timeout, this, [this]() {
-            if (m_playingClipIdx < 0 || static_cast<size_t>(m_playingClipIdx) >= m_clips.size()) {
+            if (m_playingClipIdx < 0 || static_cast<size_t>(m_playingClipIdx) >= session().clips.size()) {
                 spdlog::info("AudioSync timer: invalid playingClipIdx={} clips.size={}",
-                             m_playingClipIdx, m_clips.size());
+                             m_playingClipIdx, session().clips.size());
                 stopPlayback();
                 return;
             }
@@ -671,7 +671,7 @@ void AudioSync::playClip(size_t clipIdx)
                 return;
             }
             auto frame = m_audioEngine->currentFrame();
-            const auto& pClip = m_clips[static_cast<size_t>(m_playingClipIdx)];
+            const auto& pClip = session().clips[static_cast<size_t>(m_playingClipIdx)];
 
             // Use the effective playback rate (engine rate after resampling)
             double sr = m_playbackSourceRate;
@@ -716,10 +716,10 @@ void AudioSync::playClip(size_t clipIdx)
 bool AudioSync::loadPreviewAudioForTake(int clipId, double rangeStart, double rangeEnd)
 {
     const SyncClip* clip = nullptr;
-    for (const auto& c : m_clips) if (c.id == clipId) { clip = &c; break; }
+    for (const auto& c : session().clips) if (c.id == clipId) { clip = &c; break; }
     if (!clip) return false;
-    auto it = m_audioSamples.find(clip->sourceFile);
-    if (it == m_audioSamples.end() || it->second.samples.empty()) return false;
+    auto it = session().audioSamples.find(clip->sourceFile);
+    if (it == session().audioSamples.end() || it->second.samples.empty()) return false;
     char key[64];
     std::snprintf(key, sizeof(key), "|%.4f|%.4f", rangeStart, rangeEnd);
     return loadPreviewAudio(clip->sourceFile + key, it->second, rangeStart, rangeEnd);
@@ -918,10 +918,10 @@ void AudioSync::pausePlayback()
 
 void AudioSync::seekPlayingClip(double timeSec)
 {
-    if (m_playingClipIdx < 0 || static_cast<size_t>(m_playingClipIdx) >= m_clips.size())
+    if (m_playingClipIdx < 0 || static_cast<size_t>(m_playingClipIdx) >= session().clips.size())
         return;
 
-    const auto& clip = m_clips[static_cast<size_t>(m_playingClipIdx)];
+    const auto& clip = session().clips[static_cast<size_t>(m_playingClipIdx)];
 
     // Use the effective playback rate (engine rate after resampling)
     double sr = m_playbackSourceRate;
@@ -969,14 +969,14 @@ void AudioSync::seekPlayingClip(double timeSec)
 
 void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
 {
-    if (!m_audioEngine || clipIdx >= m_clips.size())
+    if (!m_audioEngine || clipIdx >= session().clips.size())
         return;
 
     requestTakePreviewFrame(clipIdx, timeSec);
 
-    const auto& clip = m_clips[clipIdx];
-    auto it = m_audioSamples.find(clip.sourceFile);
-    if (it == m_audioSamples.end())
+    const auto& clip = session().clips[clipIdx];
+    auto it = session().audioSamples.find(clip.sourceFile);
+    if (it == session().audioSamples.end())
         return;
 
     const auto& audioData = it->second;
@@ -1015,12 +1015,12 @@ void AudioSync::scrubClipAt(size_t clipIdx, double timeSec)
 
 void AudioSync::autoTrimClip(size_t clipIdx)
 {
-    if (clipIdx >= m_clips.size()) return;
-    if (!audioReadyOrNotify(m_clips[clipIdx].sourceFile, QStringLiteral("Auto-trim"))) return;
+    if (clipIdx >= session().clips.size()) return;
+    if (!audioReadyOrNotify(session().clips[clipIdx].sourceFile, QStringLiteral("Auto-trim"))) return;
 
-    auto& clip = m_clips[clipIdx];
-    auto it = m_audioSamples.find(clip.sourceFile);
-    if (it == m_audioSamples.end()) return;
+    auto& clip = session().clips[clipIdx];
+    auto it = session().audioSamples.find(clip.sourceFile);
+    if (it == session().audioSamples.end()) return;
 
     const auto& audioData = it->second;
     const int windowSize  = static_cast<int>(0.020 * audioData.sampleRate); // 20ms
@@ -1109,9 +1109,9 @@ void AudioSync::autoTrimClip(size_t clipIdx)
         runClipsMutationWithUndo(
             "Auto-trim audio clip",
             [this, clipIdx, newStart, newEnd]() {
-                if (clipIdx >= m_clips.size()) return;
-                m_clips[clipIdx].start = newStart;
-                m_clips[clipIdx].end   = newEnd;
+                if (clipIdx >= session().clips.size()) return;
+                session().clips[clipIdx].start = newStart;
+                session().clips[clipIdx].end   = newEnd;
             },
             [this]() { populateClipList(); });
         spdlog::info("AudioSync: Auto-trimmed clip {} to {:.3f}-{:.3f}", clipIdx, newStart, newEnd);
@@ -1124,7 +1124,7 @@ void AudioSync::autoTrimClip(size_t clipIdx)
 
 void AudioSync::playAudioFile(size_t fileIndex)
 {
-    if (!m_audioEngine || fileIndex >= m_audioPaths.size()) return;
+    if (!m_audioEngine || fileIndex >= session().audioPaths.size()) return;
 
     // If already playing this file, toggle off
     if (m_previewFileIdx == static_cast<int>(fileIndex)) {
@@ -1136,9 +1136,9 @@ void AudioSync::playAudioFile(size_t fileIndex)
     stopPlayback();
     stopFilePlayback();
 
-    const auto& path = m_audioPaths[fileIndex];
-    auto it = m_audioSamples.find(path);
-    if (it == m_audioSamples.end()) return;
+    const auto& path = session().audioPaths[fileIndex];
+    auto it = session().audioSamples.find(path);
+    if (it == session().audioSamples.end()) return;
 
     const auto& audioData = it->second;
     if (audioData.samples.empty()) return;
@@ -1193,10 +1193,10 @@ void AudioSync::playAudioFile(size_t fileIndex)
                 return;
             }
             auto fidx = static_cast<size_t>(m_previewFileIdx);
-            if (fidx >= m_audioPaths.size()) { stopFilePlayback(); return; }
+            if (fidx >= session().audioPaths.size()) { stopFilePlayback(); return; }
 
-            auto sampIt = m_audioSamples.find(m_audioPaths[fidx]);
-            if (sampIt == m_audioSamples.end()) { stopFilePlayback(); return; }
+            auto sampIt = session().audioSamples.find(session().audioPaths[fidx]);
+            if (sampIt == session().audioSamples.end()) { stopFilePlayback(); return; }
 
             double sr = sampIt->second.sampleRate;
             int64_t frame = m_audioEngine->currentFrame();

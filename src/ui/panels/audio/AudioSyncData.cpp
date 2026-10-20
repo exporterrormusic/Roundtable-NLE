@@ -59,7 +59,7 @@ void AudioSync::runAutoSync()
 
 void AudioSync::runAutoSyncImpl()
 {
-    if (!m_script || m_clips.empty()) return;
+    if (!session().script || session().clips.empty()) return;
 
     // Optional character scope: when a specific character is selected in the
     // MATCH-side filter list (not "All", not "UNMATCHED"), restrict the entire
@@ -81,14 +81,14 @@ void AudioSync::runAutoSyncImpl()
     // below.  Skipped for a scoped (single-character) sync, which stays
     // surgical and uses the heuristic path.  Returns false → fall through.
     spdlog::warn("[ALIGN] runAutoSync entered (hasCharFilter={}, clips={})",
-                 hasCharFilter, m_clips.size());
+                 hasCharFilter, session().clips.size());
     if (!hasCharFilter && alignClipsToScript()) {
-        m_syncDone = true;
+        session().syncDone = true;
         populateClipList();
         updateWorkflowState();
         if (m_syncStatus)
             m_syncStatus->setText(
-                QString("Aligned %1 clips to script lines").arg(m_clips.size()));
+                QString("Aligned %1 clips to script lines").arg(session().clips.size()));
         return;
     }
     spdlog::warn("[ALIGN] falling through to HEURISTIC path (alignment not used)");
@@ -99,8 +99,8 @@ void AudioSync::runAutoSyncImpl()
     // just taking the first word.  This way "OVERSPEC AD - ANIS.wav" matches
     // a script character named "Anis".
     std::vector<std::string> scriptChars;
-    scriptChars.reserve(m_script->characters.size());
-    for (const auto& ch : m_script->characters) {
+    scriptChars.reserve(session().script->characters.size());
+    for (const auto& ch : session().script->characters) {
         std::string lower;
         lower.reserve(ch.size());
         for (char c : ch)
@@ -109,7 +109,7 @@ void AudioSync::runAutoSyncImpl()
     }
 
     int recoveredCharacterCount = 0;
-    for (auto& clip : m_clips) {
+    for (auto& clip : session().clips) {
         std::string oldChar = clip.character;
 
         // Try matching against script character names embedded in the filename.
@@ -136,7 +136,7 @@ void AudioSync::runAutoSyncImpl()
                     !std::isalnum(static_cast<unsigned char>(stemLower[pos + sc.size()]));
                 if (leftOk && rightOk) {
                     // Match — use the original-cased character name from the script
-                    clip.character = m_script->characters[&sc - scriptChars.data()];
+                    clip.character = session().script->characters[&sc - scriptChars.data()];
                     if (clip.character != oldChar)
                         ++recoveredCharacterCount;
                     found = true;
@@ -232,7 +232,7 @@ void AudioSync::runAutoSyncImpl()
     // --- Step 1: Collect confirmed matches to preserve ---
     std::unordered_set<int> confirmedClipIds;
     std::unordered_set<int> confirmedLineNumbers;
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         if (clip.matchState == 2) {
             confirmedClipIds.insert(clip.id);
             if (clip.scriptLineNumber >= 0)
@@ -242,17 +242,17 @@ void AudioSync::runAutoSyncImpl()
 
     // --- Step 2: Group by character (exclude confirmed; honour filter) ---
     std::unordered_map<std::string, std::vector<size_t>> clipsByChar;
-    for (size_t i = 0; i < m_clips.size(); ++i) {
-        if (confirmedClipIds.count(m_clips[i].id)) continue;
-        std::string ck = normalizeChar(m_clips[i].character);
+    for (size_t i = 0; i < session().clips.size(); ++i) {
+        if (confirmedClipIds.count(session().clips[i].id)) continue;
+        std::string ck = normalizeChar(session().clips[i].character);
         if (hasCharFilter && ck != filterCharNorm) continue;
         clipsByChar[ck].push_back(i);
     }
 
     std::unordered_map<std::string, std::vector<size_t>> linesByChar;
-    for (size_t i = 0; i < m_script->lines.size(); ++i) {
-        if (confirmedLineNumbers.count(m_script->lines[i].lineNumber)) continue;
-        std::string ck = normalizeChar(m_script->lines[i].character);
+    for (size_t i = 0; i < session().script->lines.size(); ++i) {
+        if (confirmedLineNumbers.count(session().script->lines[i].lineNumber)) continue;
+        std::string ck = normalizeChar(session().script->lines[i].character);
         if (hasCharFilter && ck != filterCharNorm) continue;
         linesByChar[ck].push_back(i);
     }
@@ -269,7 +269,7 @@ void AudioSync::runAutoSyncImpl()
     updateSyncProgress(30, "Matching clips to script lines...");
 
     // --- Step 3: Clear non-confirmed matches (only those in scope) ---
-    for (auto& clip : m_clips) {
+    for (auto& clip : session().clips) {
         if (confirmedClipIds.count(clip.id)) continue;
         if (!clipInScope(clip)) continue;  // keep other characters' matches
         clip.scriptLineNumber = -1;
@@ -292,7 +292,7 @@ void AudioSync::runAutoSyncImpl()
 
         // Sort clips by start time
         std::sort(clipIndices.begin(), clipIndices.end(),
-                  [&](size_t a, size_t b) { return m_clips[a].start < m_clips[b].start; });
+                  [&](size_t a, size_t b) { return session().clips[a].start < session().clips[b].start; });
 
         // Are this character's clips spread across MULTIPLE source files?  Each
         // recording starts at 0:00, so a start-time sort of clips from a base
@@ -305,7 +305,7 @@ void AudioSync::runAutoSyncImpl()
         {
             const std::string* firstFile = nullptr;
             for (size_t idx : clipIndices) {
-                const std::string& f = m_clips[idx].sourceFile;
+                const std::string& f = session().clips[idx].sourceFile;
                 if (!firstFile) firstFile = &f;
                 else if (f != *firstFile) { multiFile = true; break; }
             }
@@ -317,11 +317,11 @@ void AudioSync::runAutoSyncImpl()
         // Pre-normalize all texts
         std::vector<std::string> clipTexts(N), lineTexts(M);
         for (size_t i = 0; i < N; ++i) {
-            const auto& c = m_clips[clipIndices[i]];
+            const auto& c = session().clips[clipIndices[i]];
             clipTexts[i] = norm(c.editedText.empty() ? c.transcript : c.editedText);
         }
         for (size_t j = 0; j < M; ++j)
-            lineTexts[j] = norm(m_script->lines[lineIndices[j]].dialogue);
+            lineTexts[j] = norm(session().script->lines[lineIndices[j]].dialogue);
 
         // Build NxM score matrix
         struct ScoreEntry {
@@ -424,9 +424,9 @@ void AudioSync::runAutoSyncImpl()
 
             size_t clipGlobalIdx = clipIndices[entry.clipIdx];
             size_t lineGlobalIdx = lineIndices[entry.lineIdx];
-            const auto& line = m_script->lines[lineGlobalIdx];
+            const auto& line = session().script->lines[lineGlobalIdx];
 
-            auto& clip = m_clips[clipGlobalIdx];
+            auto& clip = session().clips[clipGlobalIdx];
             clip.confidence       = entry.textScore;
             clip.scriptLineNumber = line.lineNumber;
             clip.matchState       = 1; // tentative
@@ -460,12 +460,12 @@ void AudioSync::runAutoSyncImpl()
     // Clips with no word data (a re-sync after reload, before re-transcription)
     // just scan the full clip range, exactly as the original did.
     std::unordered_map<std::string, std::vector<const WordSegment*>> fileWords;
-    for (size_t fi = 0; fi < m_allTranscriptionResults.size(); ++fi) {
-        const std::string sf = (fi < m_audioPaths.size()) ? m_audioPaths[fi]
+    for (size_t fi = 0; fi < session().allTranscriptionResults.size(); ++fi) {
+        const std::string sf = (fi < session().audioPaths.size()) ? session().audioPaths[fi]
                                                           : std::string();
         if (sf.empty()) continue;
         auto& vec = fileWords[sf];
-        for (const auto& seg : m_allTranscriptionResults[fi].segments)
+        for (const auto& seg : session().allTranscriptionResults[fi].segments)
             for (const auto& w : seg.words)
                 if (w.end > w.start) vec.push_back(&w);
         std::sort(vec.begin(), vec.end(),
@@ -496,13 +496,13 @@ void AudioSync::runAutoSyncImpl()
     constexpr double kWordPadSec = 0.20;   // word-span overlap slack
 
     int trimCount = 0;
-    for (size_t i = 0; i < m_clips.size(); ++i) {
-        auto& clip = m_clips[i];
+    for (size_t i = 0; i < session().clips.size(); ++i) {
+        auto& clip = session().clips[i];
         if (clip.matchState == 2) continue; // preserve confirmed boundaries
         if (!clipInScope(clip)) continue;   // don't touch other characters
 
-        auto it = m_audioSamples.find(clip.sourceFile);
-        if (it == m_audioSamples.end()) continue;
+        auto it = session().audioSamples.find(clip.sourceFile);
+        if (it == session().audioSamples.end()) continue;
         const auto& audioData = it->second;
         const int sr = static_cast<int>(audioData.sampleRate);
         const int N  = static_cast<int>(audioData.samples.size());
@@ -682,20 +682,20 @@ void AudioSync::runAutoSyncImpl()
     // When two adjacent clips come from the same audio file, snap the
     // boundary so there's no dead gap between them.  The midpoint of
     // the gap is used as the shared boundary.
-    // Use a sorted index list so m_clips retains its original order
+    // Use a sorted index list so session().clips retains its original order
     // (not scrambled by source-file sorting).
-    std::vector<size_t> sortedIdx(m_clips.size());
+    std::vector<size_t> sortedIdx(session().clips.size());
     std::iota(sortedIdx.begin(), sortedIdx.end(), size_t{0});
     std::sort(sortedIdx.begin(), sortedIdx.end(),
               [&](size_t x, size_t y) {
-                  if (m_clips[x].sourceFile != m_clips[y].sourceFile)
-                      return m_clips[x].sourceFile < m_clips[y].sourceFile;
-                  return m_clips[x].start < m_clips[y].start;
+                  if (session().clips[x].sourceFile != session().clips[y].sourceFile)
+                      return session().clips[x].sourceFile < session().clips[y].sourceFile;
+                  return session().clips[x].start < session().clips[y].start;
               });
     int gapsClosed = 0;
     for (size_t si = 0; si + 1 < sortedIdx.size(); ++si) {
-        auto& a = m_clips[sortedIdx[si]];
-        auto& b = m_clips[sortedIdx[si + 1]];
+        auto& a = session().clips[sortedIdx[si]];
+        auto& b = session().clips[sortedIdx[si + 1]];
         if (a.sourceFile != b.sourceFile) continue;
         if (a.matchState == 2 || b.matchState == 2) continue; // preserve confirmed boundaries
         if (!clipInScope(a) || !clipInScope(b)) continue;     // scope to filter
@@ -703,8 +703,8 @@ void AudioSync::runAutoSyncImpl()
         if (gap > 0.001 && gap < 0.050) { // only close tiny seam gaps (<50ms)
             // Find the quietest point in the gap to place the boundary
             double boundary = (a.end + b.start) / 2.0;
-            auto sampIt = m_audioSamples.find(a.sourceFile);
-            if (sampIt != m_audioSamples.end()) {
+            auto sampIt = session().audioSamples.find(a.sourceFile);
+            if (sampIt != session().audioSamples.end()) {
                 const auto& ad = sampIt->second;
                 int sr = static_cast<int>(ad.sampleRate);
                 int winSz = static_cast<int>(0.010 * sr);
@@ -739,16 +739,16 @@ void AudioSync::runAutoSyncImpl()
     // excluded above and remain confirmed.
     updateSyncProgress(90, "Finalizing tentative matches...");
 
-    m_syncDone = true;
+    session().syncDone = true;
     populateClipList();
     updateWorkflowState();
 
     // When filtering, report against the number of in-scope clips so the
     // ratio isn't diluted by every other character's clips.
-    int scopeTotal = static_cast<int>(m_clips.size());
+    int scopeTotal = static_cast<int>(session().clips.size());
     if (hasCharFilter) {
         scopeTotal = 0;
-        for (const auto& clip : m_clips)
+        for (const auto& clip : session().clips)
             if (clipInScope(clip)) ++scopeTotal;
     }
     m_syncStatus->setText(
@@ -806,12 +806,12 @@ void AudioSync::createClipsFromTranscription()
 
 void AudioSync::createClipsFromAllTranscriptions()
 {
-    m_clips.clear();
+    session().clips.clear();
 
     int globalId = 0;
-    for (size_t fileIdx = 0; fileIdx < m_allTranscriptionResults.size(); ++fileIdx) {
-        const auto& result = m_allTranscriptionResults[fileIdx];
-        std::string sourceFile = (fileIdx < m_audioPaths.size()) ? m_audioPaths[fileIdx] : "";
+    for (size_t fileIdx = 0; fileIdx < session().allTranscriptionResults.size(); ++fileIdx) {
+        const auto& result = session().allTranscriptionResults[fileIdx];
+        std::string sourceFile = (fileIdx < session().audioPaths.size()) ? session().audioPaths[fileIdx] : "";
 
         // Derive character name from audio filename (like Python's _extract_character_name)
         std::string charName;
@@ -829,12 +829,12 @@ void AudioSync::createClipsFromAllTranscriptions()
             clip.editedText = seg.text;
             // Use segment character if set, otherwise derive from filename
             clip.character  = seg.character.empty() ? charName : seg.character;
-            m_clips.push_back(std::move(clip));
+            session().clips.push_back(std::move(clip));
         }
     }
 
     spdlog::info("AudioSync: Created {} clips from {} file(s)",
-                 m_clips.size(), m_allTranscriptionResults.size());
+                 session().clips.size(), session().allTranscriptionResults.size());
 }
 
 void AudioSync::appendClipsFromNewTranscriptions()
@@ -843,15 +843,15 @@ void AudioSync::appendClipsFromNewTranscriptions()
     // duplicate them.  This preserves existing clips with their
     // matchState, scriptLineNumber, character, confidence, etc.
     std::unordered_set<std::string> existingSourceFiles;
-    for (const auto& c : m_clips)
+    for (const auto& c : session().clips)
         existingSourceFiles.insert(c.sourceFile);
 
-    int nextId = m_clips.empty() ? 0 : m_clips.back().id + 1;
+    int nextId = session().clips.empty() ? 0 : session().clips.back().id + 1;
 
     size_t added = 0;
-    for (size_t fileIdx = 0; fileIdx < m_allTranscriptionResults.size(); ++fileIdx) {
-        const auto& result = m_allTranscriptionResults[fileIdx];
-        std::string sourceFile = (fileIdx < m_audioPaths.size()) ? m_audioPaths[fileIdx] : "";
+    for (size_t fileIdx = 0; fileIdx < session().allTranscriptionResults.size(); ++fileIdx) {
+        const auto& result = session().allTranscriptionResults[fileIdx];
+        std::string sourceFile = (fileIdx < session().audioPaths.size()) ? session().audioPaths[fileIdx] : "";
 
         // Skip files that already have clips (already transcribed + synced)
         if (existingSourceFiles.count(sourceFile))
@@ -870,7 +870,7 @@ void AudioSync::appendClipsFromNewTranscriptions()
             clip.transcript = seg.text;
             clip.editedText = seg.text;
             clip.character  = seg.character.empty() ? charName : seg.character;
-            m_clips.push_back(std::move(clip));
+            session().clips.push_back(std::move(clip));
             ++added;
         }
     }

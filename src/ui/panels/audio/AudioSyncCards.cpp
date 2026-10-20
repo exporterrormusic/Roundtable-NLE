@@ -81,7 +81,7 @@ void AudioSync::populateLeftList()
 {
     if (!m_leftScriptList) return;
     m_leftBuild = PendingLeftBuild{};   // a rebuild replaces one still streaming
-    if (!m_script) {
+    if (!session().script) {
         m_leftScriptList->blockSignals(true);
         m_leftScriptList->clear();
         m_cardScriptLineNums.clear();
@@ -104,7 +104,7 @@ void AudioSync::populateLeftList()
 
     // Build match state map: lineNumber → best match state
     std::unordered_map<int, int> lineMatchState;
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         if (clip.scriptLineNumber > 0) {
             int existing = lineMatchState.count(clip.scriptLineNumber)
                 ? lineMatchState[clip.scriptLineNumber] : 0;
@@ -116,8 +116,8 @@ void AudioSync::populateLeftList()
     m_leftScriptList->clear();
     m_cardScriptLineNums.clear();
 
-    for (size_t lineIndex = 0; lineIndex < m_script->lines.size(); ++lineIndex) {
-        const auto& line = m_script->lines[lineIndex];
+    for (size_t lineIndex = 0; lineIndex < session().script->lines.size(); ++lineIndex) {
+        const auto& line = session().script->lines[lineIndex];
         // Apply character filter
         if (!filterChar.isEmpty()) {
             if (QString::fromStdString(line.character) != filterChar)
@@ -139,7 +139,7 @@ void AudioSync::populateLeftList()
         m_leftBuild.lineIndices.push_back(lineIndex);
     }
 
-    m_leftBuild.script = m_script.get();
+    m_leftBuild.script = session().script.get();
     m_leftBuild.active = !m_leftBuild.lineIndices.empty();
     // The first screen of rows now (it is what shows), the rest in slices.
     const int wanted = 2 * std::max(m_leftScriptList->viewport()->height(), 600);
@@ -168,7 +168,7 @@ void AudioSync::buildLeftRow(size_t row, const std::unordered_map<int, int>& lin
 {
     QListWidgetItem* item = m_leftScriptList->item(static_cast<int>(row));
     if (!item || row >= m_leftBuild.lineIndices.size()) return;
-    const auto& line = m_script->lines[m_leftBuild.lineIndices[row]];
+    const auto& line = session().script->lines[m_leftBuild.lineIndices[row]];
     const int displayIdx = static_cast<int>(row) + 1;
 
     int matchState = 0;
@@ -242,7 +242,7 @@ void AudioSync::buildLeftRow(size_t row, const std::unordered_map<int, int>& lin
     rowLayout->addWidget(numLabel);
 
     // Character name tag — neutral bg, colored text
-    if (m_script->isShotScript()) {
+    if (session().script->isShotScript()) {
         // One announcer, so the tag shows the shot instead.
         rowLayout->addWidget(createShotTag(line, 80));
     } else {
@@ -278,13 +278,13 @@ void AudioSync::buildLeftRow(size_t row, const std::unordered_map<int, int>& lin
 void AudioSync::buildPendingLeftRows(int budgetMs)
 {
     if (!m_leftBuild.active || m_destroying.load(std::memory_order_acquire)) return;
-    if (!m_leftScriptList || !m_script || m_script.get() != m_leftBuild.script ||
+    if (!m_leftScriptList || !session().script || session().script.get() != m_leftBuild.script ||
         m_leftScriptList->count() != static_cast<int>(m_leftBuild.lineIndices.size())) {
         m_leftBuild = PendingLeftBuild{};   // stale: the list was rebuilt or cleared
         return;
     }
     std::unordered_map<int, int> lineMatchState;   // fresh: states change between slices
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         if (clip.scriptLineNumber > 0) {
             int& st = lineMatchState[clip.scriptLineNumber];
             st = std::max(st, clip.matchState);
@@ -300,7 +300,7 @@ void AudioSync::buildPendingLeftRows(int budgetMs)
 
 void AudioSync::refreshLeftListStates()
 {
-    if (!m_leftScriptList || !m_script) { populateLeftList(); return; }
+    if (!m_leftScriptList || !session().script) { populateLeftList(); return; }
 
     // Filters change which rows exist when a state changes — full rebuild.
     if (m_charFilterList && m_charFilterList->currentRow() > 0) {
@@ -308,14 +308,14 @@ void AudioSync::refreshLeftListStates()
         return;
     }
     std::unordered_map<int, int> lineMatchState;
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         if (clip.scriptLineNumber > 0) {
             int& st = lineMatchState[clip.scriptLineNumber];
             st = std::max(st, clip.matchState);
         }
     }
     const int rows = m_leftScriptList->count();
-    if (rows != static_cast<int>(m_script->lines.size()) ||
+    if (rows != static_cast<int>(session().script->lines.size()) ||
         m_cardScriptLineNums.size() != static_cast<size_t>(rows)) {
         populateLeftList();
         return;
@@ -327,7 +327,7 @@ void AudioSync::refreshLeftListStates()
         auto* item = m_leftScriptList->item(r);
         auto* frame = qobject_cast<QFrame*>(m_leftScriptList->itemWidget(item));
         const int lineNumber = item ? item->data(Qt::UserRole).toInt() : -1;
-        if (lineNumber != m_script->lines[static_cast<size_t>(r)].lineNumber) {
+        if (lineNumber != session().script->lines[static_cast<size_t>(r)].lineNumber) {
             populateLeftList();
             return;
         }
@@ -369,9 +369,9 @@ VideoFrameGrabber* AudioSync::frameGrabber()
 void AudioSync::requestTakePreviewFrame(size_t clipIdx, double timeSec)
 {
     auto it = m_takePreviewLabels.find(clipIdx);
-    if (it == m_takePreviewLabels.end() || !it->second || clipIdx >= m_clips.size()) return;
+    if (it == m_takePreviewLabels.end() || !it->second || clipIdx >= session().clips.size()) return;
     QPointer<VideoFrameView> view = it->second;
-    frameGrabber()->requestLive(view, m_clips[clipIdx].sourceFile, timeSec, view->requestSize(),
+    frameGrabber()->requestLive(view, session().clips[clipIdx].sourceFile, timeSec, view->requestSize(),
                                 [view](const QImage& image) {
                                     if (view) view->setFrame(image);
                                 }, VideoFrameGrabber::Playback);
@@ -448,8 +448,8 @@ QWidget* AudioSync::createTakeStrip(int lineNumber, const std::vector<size_t>& c
     const QSize thumbSize(64, 36);
     int takeNumber = 0;
     for (size_t ci : clipIndices) {
-        if (ci >= m_clips.size()) continue;
-        const SyncClip& clip = m_clips[ci];
+        if (ci >= session().clips.size()) continue;
+        const SyncClip& clip = session().clips[ci];
         ++takeNumber;
         const bool chosen = (clip.matchState == 2);
         const bool shown  = (ci == shownClipIdx);
@@ -493,7 +493,7 @@ QWidget* AudioSync::createTakeStrip(int lineNumber, const std::vector<size_t>& c
 
 bool AudioSync::isShotScript() const
 {
-    return m_script && m_script->isShotScript();
+    return session().script && session().script->isShotScript();
 }
 
 QString AudioSync::activeScriptName() const
@@ -506,8 +506,8 @@ std::vector<ShowShot> AudioSync::showShots() const
 {
     std::vector<ShowShot> out;
     if (!isShotScript()) return out;
-    out.reserve(m_script->lines.size());
-    for (const auto& line : m_script->lines) {
+    out.reserve(session().script->lines.size());
+    for (const auto& line : session().script->lines) {
         ShowShot s;
         s.lineNumber = line.lineNumber;
         s.dialogue   = line.dialogue;
@@ -515,7 +515,7 @@ std::vector<ShowShot> AudioSync::showShots() const
         s.segment    = line.segment;
         s.shot       = effectiveShot(line);
         s.key        = ScriptMatcher::normalize(line.dialogue);
-        for (const auto& clip : m_clips) {
+        for (const auto& clip : session().clips) {
             if (clip.scriptLineNumber == line.lineNumber && clip.matchState == 2) {
                 s.hasTake = true;
                 s.take = clip;
@@ -530,15 +530,15 @@ std::vector<ShowShot> AudioSync::showShots() const
 std::string AudioSync::effectiveShot(const ScriptLine& line) const
 {
     if (!line.shot.empty()) return line.shot;
-    auto it = m_shotOverrides.find(ScriptMatcher::normalize(line.dialogue));
-    return it != m_shotOverrides.end() ? it->second : std::string{};
+    auto it = session().shotOverrides.find(ScriptMatcher::normalize(line.dialogue));
+    return it != session().shotOverrides.end() ? it->second : std::string{};
 }
 
 void AudioSync::setShotOverride(const ScriptLine& line, const std::string& shot)
 {
     const std::string key = ScriptMatcher::normalize(line.dialogue);
-    auto it = m_shotOverrides.find(key);
-    const std::string before = (it != m_shotOverrides.end()) ? it->second : std::string{};
+    auto it = session().shotOverrides.find(key);
+    const std::string before = (it != session().shotOverrides.end()) ? it->second : std::string{};
     if (before == shot) return;
 
     const std::string sessionKey = m_activeScriptKey;
@@ -547,7 +547,7 @@ void AudioSync::setShotOverride(const ScriptLine& line, const std::string& shot)
         const bool active = (sessionKey == m_activeScriptKey);
         auto sit = m_scriptSessions.find(sessionKey);
         if (!active && sit == m_scriptSessions.end()) return;
-        auto& overrides = active ? m_shotOverrides : sit->second.shotOverrides;
+        auto& overrides = active ? session().shotOverrides : sit->second.shotOverrides;
         if (value.empty()) overrides.erase(key);
         else               overrides[key] = value;
         if (active) populateScriptList();

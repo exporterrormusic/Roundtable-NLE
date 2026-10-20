@@ -994,7 +994,7 @@ void AudioSync::setupUi()
     connect(m_confirmAllActionBtn, &QPushButton::clicked, this, [this, bulkRebuild]() {
         runClipsMutationWithUndo("Confirm all audio matches",
             [this]() {
-                for (auto& clip : m_clips) {
+                for (auto& clip : session().clips) {
                     if (clip.matchState == 1)
                         clip.matchState = 2;
                 }
@@ -1008,7 +1008,7 @@ void AudioSync::setupUi()
     connect(m_unconfirmAllActionBtn, &QPushButton::clicked, this, [this, bulkRebuild]() {
         runClipsMutationWithUndo("Unconfirm all audio matches",
             [this]() {
-                for (auto& clip : m_clips) {
+                for (auto& clip : session().clips) {
                     if (clip.matchState == 2)
                         clip.matchState = 1;
                 }
@@ -1022,7 +1022,7 @@ void AudioSync::setupUi()
     connect(m_clearActionBtn, &QPushButton::clicked, this, [this, bulkRebuild]() {
         runClipsMutationWithUndo("Clear all audio matches",
             [this]() {
-                for (auto& clip : m_clips) {
+                for (auto& clip : session().clips) {
                     clip.matchState = 0;
                     clip.confidence = 0.0f;
                     clip.scriptLineNumber = -1;

@@ -15,37 +15,41 @@ namespace rt {
 //  Session save / restore / clear
 // ═══════════════════════════════════════════════════════════════════════════
 
+ScriptSession& AudioSync::session() noexcept
+{
+    if (!m_activeScriptKey.empty()) {
+        auto it = m_scriptSessions.find(m_activeScriptKey);
+        if (it != m_scriptSessions.end()) return it->second;
+    }
+    return m_scratchSession;
+}
+
+const ScriptSession& AudioSync::session() const noexcept
+{
+    if (!m_activeScriptKey.empty()) {
+        auto it = m_scriptSessions.find(m_activeScriptKey);
+        if (it != m_scriptSessions.end()) return it->second;
+    }
+    return m_scratchSession;
+}
+
 void AudioSync::saveCurrentSession()
 {
-    if (m_activeScriptKey.empty() || !m_script) return;
+    if (m_activeScriptKey.empty() || !session().script) return;
     // Waiting actions and the card build belong to the outgoing session.
-    // Its queued decodes are skipped once its paths leave m_audioPaths.
     m_afterAudioSamplesReady.clear();
     cancelCardBuild();
 
-    auto& session = m_scriptSessions[m_activeScriptKey];
-    session.script = std::move(m_script);
-    session.clips = std::move(m_clips);
-    session.audioPath = std::move(m_audioPath);
-    session.audioPaths = std::move(m_audioPaths);
-    session.audioSamples = std::move(m_audioSamples);
-    session.scriptLoaded = m_scriptLoaded;
-    session.audioImported = m_audioImported;
-    session.transcriptionDone = m_transcriptionDone;
-    session.syncDone = m_syncDone;
-    session.lineAudioFile = std::move(m_lineAudioFile);
-    session.shotOverrides = std::move(m_shotOverrides);
-    session.pipeline = std::move(m_pipeline);
-    session.characterColors = std::move(m_characterColors);
-    session.allTranscriptionResults = std::move(m_allTranscriptionResults);
-    session.currentTranscriptionIndex = m_currentTranscriptionIndex;
-    session.transcriptionRunTotal = m_transcriptionRunTotal;
-    session.transcriptionRunCompleted = m_transcriptionRunCompleted;
-    session.pendingTranscriptionIndices = std::move(m_pendingTranscriptionIndices);
-    session.rawContent = m_scriptRawContent;
+    // The open script's data already lives in its session. Only data entered
+    // before that session existed (the scratch session) still has to move in.
+    if (!m_scriptSessions.count(m_activeScriptKey)) {
+        m_scriptSessions[m_activeScriptKey] = std::move(m_scratchSession);
+        m_scratchSession = ScriptSession{};
+    }
 
+    const auto& saved = m_scriptSessions[m_activeScriptKey];
     spdlog::info("AudioSync: Saved session '{}' ({} clips, {} audio files)",
-                 session.displayName, session.clips.size(), session.audioPaths.size());
+                 saved.displayName, saved.clips.size(), saved.audioPaths.size());
 }
 
 void AudioSync::restoreSession(const std::string& sessionKey)
@@ -53,40 +57,21 @@ void AudioSync::restoreSession(const std::string& sessionKey)
     auto it = m_scriptSessions.find(sessionKey);
     if (it == m_scriptSessions.end()) return;
 
-    auto& session = it->second;
-    m_script = std::move(session.script);
-    m_clips = std::move(session.clips);
-    m_audioPath = std::move(session.audioPath);
-    m_audioPaths = std::move(session.audioPaths);
-    m_audioSamples = std::move(session.audioSamples);
-    m_scriptLoaded = session.scriptLoaded;
-    m_audioImported = session.audioImported;
-    m_transcriptionDone = session.transcriptionDone;
-    m_syncDone = session.syncDone;
-    m_lineAudioFile = std::move(session.lineAudioFile);
-    m_shotOverrides = std::move(session.shotOverrides);
-    m_pipeline = std::move(session.pipeline);
-    m_characterColors = std::move(session.characterColors);
-    m_allTranscriptionResults = std::move(session.allTranscriptionResults);
-    m_currentTranscriptionIndex = session.currentTranscriptionIndex;
-    m_transcriptionRunTotal = session.transcriptionRunTotal;
-    m_transcriptionRunCompleted = session.transcriptionRunCompleted;
-    m_pendingTranscriptionIndices = std::move(session.pendingTranscriptionIndices);
-    m_scriptRawContent = session.rawContent;
+    // Data entered outside any session is dropped, as before (opening a
+    // session used to overwrite the live copy it was in).
+    m_scratchSession = ScriptSession{};
     m_activeScriptKey = sessionKey;
 
-    spdlog::info("AudioSync: Restored session '{}'", session.displayName);
+    spdlog::info("AudioSync: Restored session '{}'", it->second.displayName);
 }
 
 void AudioSync::clearCurrentSession()
 {
     m_afterAudioSamplesReady.clear();
     cancelCardBuild();
-    m_script.reset();
-    m_clips.clear();
-    m_audioPath.clear();
-    m_audioPaths.clear();
-    m_audioSamples.clear();
+    // Only the scratch session is cleared: a stored session keeps its data
+    // (callers save it first or have just removed it).
+    m_scratchSession = ScriptSession{};
     // Also clear the audio file list widget so old entries don't linger
     if (m_audioFileList) {
         m_audioFileList->blockSignals(true);
@@ -95,20 +80,7 @@ void AudioSync::clearCurrentSession()
     }
     if (m_audioStatus)
         m_audioStatus->setText("No files imported");
-    m_scriptLoaded = false;
-    m_audioImported = false;
-    m_transcriptionDone = false;
-    m_syncDone = false;
-    m_lineAudioFile.clear();
-    m_shotOverrides.clear();
-    m_pipeline = ShowPipelineState{};
     m_displayedTakeId.clear();
-    m_characterColors.clear();
-    m_allTranscriptionResults.clear();
-    m_currentTranscriptionIndex = 0;
-    m_transcriptionRunTotal = 0;
-    m_transcriptionRunCompleted = 0;
-    m_pendingTranscriptionIndices.clear();
     m_cardWaveforms.clear();
     m_cardWidgets.clear();
     m_cardScriptLineNums.clear();
@@ -138,31 +110,31 @@ void AudioSync::switchToScript(const std::string& sessionKey)
     }
 
     // Load audio samples FIRST so waveforms appear in the list items
-    if (!m_audioPaths.empty())
+    if (!session().audioPaths.empty())
         loadAudioSamples();
 
     // Repopulate audio file list from restored paths
     if (m_audioFileList) {
         m_audioFileList->blockSignals(true);
         m_audioFileList->clear();
-        for (const auto& ap : m_audioPaths)
+        for (const auto& ap : session().audioPaths)
             addAudioFileListItem(QString::fromStdString(ap));
         m_audioFileList->blockSignals(false);
     }
     if (m_audioStatus)
-        m_audioStatus->setText(m_audioPaths.empty() ? "No files imported"
-            : QString("%1 file(s)").arg(m_audioPaths.size()));
+        m_audioStatus->setText(session().audioPaths.empty() ? "No files imported"
+            : QString("%1 file(s)").arg(session().audioPaths.size()));
 
     // Rebuild UI
-    if (m_script) {
+    if (session().script) {
         populateScriptFilter();
         populateScriptList();
-        if (!m_clips.empty())
+        if (!session().clips.empty())
             populateClipList();
         updateWorkflowState();
         m_scriptStatus->setText(QString("%1 lines, %2 characters")
-            .arg(m_script->lineCount())
-            .arg(m_script->characters.size()));
+            .arg(session().script->lineCount())
+            .arg(session().script->characters.size()));
     }
     populateScriptSessionList();
     emit voiceContextChanged();
@@ -218,10 +190,7 @@ void AudioSync::populateScriptSessionList()
 
         // Build meta info string
         QString meta;
-        // If this session is the active one, m_script holds the data (moved out of session.script)
         const Script* scriptPtr = session.script.get();
-        if (!scriptPtr && key == m_activeScriptKey)
-            scriptPtr = m_script.get();
         if (scriptPtr) {
             meta = QString("%1 lines \u00B7 %2 clips")
                 .arg(scriptPtr->lineCount())
@@ -257,7 +226,8 @@ void AudioSync::populateScriptSessionList()
 namespace rt {
 
 void AudioSync::updateExistingSessionScript(const std::string& sessionKey,
-                                            std::unique_ptr<Script> newScript)
+                                            std::unique_ptr<Script> newScript,
+                                            const std::string& rawContent)
 {
     if (!newScript || newScript->isEmpty()) {
         spdlog::warn("AudioSync: updateExistingSessionScript called with empty script");
@@ -269,11 +239,7 @@ void AudioSync::updateExistingSessionScript(const std::string& sessionKey,
 
     auto& session = it->second;
 
-    // If this session is currently active, m_script holds the data
-    // (moved out of session.script by saveCurrentSession/restoreSession)
     Script* oldScript = session.script.get();
-    if (!oldScript && sessionKey == m_activeScriptKey)
-        oldScript = m_script.get();
 
     // ── Step 1: Remap existing clips to new script lines ───────────────
     // For each matched clip, locate the line it is currently matched to in
@@ -393,12 +359,7 @@ void AudioSync::updateExistingSessionScript(const std::string& sessionKey,
         }
     };
 
-    // Remap clips stored in the session
     remapClips(session.clips);
-
-    // If this session is the active one, also remap the live m_clips
-    if (sessionKey == m_activeScriptKey)
-        remapClips(m_clips);
 
     // ── Step 2: Update the session with the new script ─────────────────
     // Retain display name and source URL from the old session
@@ -409,20 +370,12 @@ void AudioSync::updateExistingSessionScript(const std::string& sessionKey,
     session.scriptLoaded = true;
     session.displayName = oldDisplayName;
     session.sourceUrl = oldSourceUrl;
-    // Refresh rawContent so the session stores the latest text for persistence.
-    // m_scriptRawContent was already set by loadScript() before calling us.
-    session.rawContent = m_scriptRawContent;
+    // The latest text, so the session restores it offline.
+    session.rawContent = rawContent;
 
     // Reset sync state since line numbers may have shifted;
     // transcription results are still valid but need re-syncing
     session.syncDone = false;
-
-    // If this is the active session, also update m_script
-    if (sessionKey == m_activeScriptKey) {
-        m_script = std::make_unique<Script>(*session.script);
-        m_scriptLoaded = true;
-        m_syncDone = false;
-    }
 
     spdlog::info("AudioSync: Updated session '{}' — new script has {} lines, {} clips remapped",
                  session.displayName,

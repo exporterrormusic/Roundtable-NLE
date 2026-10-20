@@ -86,14 +86,14 @@ struct AudioSync::CardBuildContext {
 AudioSync::CardBuildContext AudioSync::makeCardBuildContext() const
 {
     CardBuildContext ctx;
-    for (size_t i = 0; i < m_clips.size(); ++i) {
-        if (m_clips[i].scriptLineNumber > 0)
-            ctx.lineToClips[m_clips[i].scriptLineNumber].push_back(i);
+    for (size_t i = 0; i < session().clips.size(); ++i) {
+        if (session().clips[i].scriptLineNumber > 0)
+            ctx.lineToClips[session().clips[i].scriptLineNumber].push_back(i);
     }
     ctx.displayLines = std::make_shared<std::vector<CardBuildContext::ScriptLineDisplay>>();
-    if (m_script) {
+    if (session().script) {
         int idx = 0;
-        for (const auto& line : m_script->lines) {
+        for (const auto& line : session().script->lines) {
             ++idx;
             ctx.displayLines->push_back({idx, line.lineNumber, line.character, line.dialogue});
         }
@@ -154,7 +154,7 @@ void AudioSync::populateCards()
     if (m_rightScrollContent)
         m_rightScrollContent->setUpdatesEnabled(false);
 
-    if (!m_script) {
+    if (!session().script) {
         // No script loaded — show placeholder
         if (m_rightLayout) {
             auto* placeholder = new QLabel("Load a script and import audio to begin.");
@@ -188,9 +188,9 @@ void AudioSync::populateCards()
 
     // Rows: the same filtered lines, in the same order, as the left list
     // (populateLeftList), so row i is left-list row i.
-    m_cardBuild.script = m_script.get();
-    for (size_t li = 0; li < m_script->lines.size(); ++li) {
-        const auto& line = m_script->lines[li];
+    m_cardBuild.script = session().script.get();
+    for (size_t li = 0; li < session().script->lines.size(); ++li) {
+        const auto& line = session().script->lines[li];
         // Apply character filter
         if (!filterChar.isEmpty() &&
             QString::fromStdString(line.character) != filterChar)
@@ -276,7 +276,7 @@ void AudioSync::populateCards()
 
 void AudioSync::buildCardRow(size_t row, const CardBuildContext& ctx)
 {
-    const ScriptLine& line = m_script->lines[m_cardBuild.lineIndices[row]];
+    const ScriptLine& line = session().script->lines[m_cardBuild.lineIndices[row]];
     auto* card = m_cardPool.acquire();
     if (!card) {
         // Parented (hidden) up front, so its content is built and polished
@@ -315,7 +315,7 @@ void AudioSync::buildPendingCardRows(int budgetMs)
     if (!m_cardBuild.active || m_destroying.load(std::memory_order_acquire)) return;
     // The script the rows index into was replaced or stashed (session
     // switch): this build is stale.
-    if (!m_script || m_script.get() != m_cardBuild.script || !m_rightLayout) {
+    if (!session().script || session().script.get() != m_cardBuild.script || !m_rightLayout) {
         cancelCardBuild();
         return;
     }
@@ -331,7 +331,7 @@ void AudioSync::buildPendingCardRows(int budgetMs)
     const int spacing = std::max(0, m_rightLayout->spacing());
     do {
         const size_t row = m_cardBuild.next++;
-        if (m_cardBuild.lineIndices[row] >= m_script->lines.size()) continue;
+        if (m_cardBuild.lineIndices[row] >= session().script->lines.size()) continue;
         buildCardRow(row, ctx);
         if (const QWidget* card = m_cardWidgets[row]) {
             m_cardBuild.builtHeight += spacing +
@@ -441,7 +441,7 @@ int AudioSync::builtCardCount() const noexcept
 
 void AudioSync::setClipsForTesting(std::vector<SyncClip> clips)
 {
-    m_clips = std::move(clips);
+    session().clips = std::move(clips);
     populateCards();
 }
 
@@ -470,7 +470,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         // so the card visual matches the aggregate counters which count a line as
         // confirmed if ANY clip for that line is confirmed.
         for (size_t ci : clipIt->second) {
-            const auto& c = m_clips[ci];
+            const auto& c = session().clips[ci];
             if (c.matchState > matchState ||
                 (c.matchState == matchState && c.confidence > confidence)) {
                 primaryClipIdx = ci;
@@ -482,7 +482,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         auto shown = m_displayedTakeId.find(line.lineNumber);
         if (shown != m_displayedTakeId.end()) {
             for (size_t ci : clipIt->second) {
-                if (m_clips[ci].id == shown->second) { primaryClipIdx = ci; break; }
+                if (session().clips[ci].id == shown->second) { primaryClipIdx = ci; break; }
             }
         }
     }
@@ -571,7 +571,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                     QString::number(Theme::typography().sizeXs)));
     headerRow->addWidget(numLabel);
 
-    if (m_script->isShotScript()) {
+    if (session().script->isShotScript()) {
         // One announcer, so the column shows the shot instead.
         headerRow->addWidget(createShotTag(line, 90));
     } else {
@@ -633,7 +633,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
     MiniWaveformWidget* waveform = nullptr;
 
     if (hasClip) {
-        const auto& clip = m_clips[primaryClipIdx];
+        const auto& clip = session().clips[primaryClipIdx];
 
         // Confidence bar
         if (confidence > 0.001f) {
@@ -656,8 +656,8 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
 
         // Waveform
         waveform = new MiniWaveformWidget;
-        auto sampleIt = m_audioSamples.find(clip.sourceFile);
-        if (sampleIt != m_audioSamples.end()) {
+        auto sampleIt = session().audioSamples.find(clip.sourceFile);
+        if (sampleIt != session().audioSamples.end()) {
             waveform->setAudioShared(sampleIt->second.samples, sampleIt->second.sampleRate,
                                clip.start, clip.end);
         }
@@ -666,18 +666,18 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         size_t clipIdx = primaryClipIdx;
         connect(waveform, &MiniWaveformWidget::trimChanged,
                 this, [this, clipIdx, waveform](double inPt, double outPt) {
-            if (clipIdx < m_clips.size()) {
+            if (clipIdx < session().clips.size()) {
                 // Capture old state on first drag move
                 if (!m_trimDebounceTimer->isActive()) {
-                    m_preTrimStart = m_clips[clipIdx].start;
-                    m_preTrimEnd   = m_clips[clipIdx].end;
-                    m_preTrimMatchState = m_clips[clipIdx].matchState;
+                    m_preTrimStart = session().clips[clipIdx].start;
+                    m_preTrimEnd   = session().clips[clipIdx].end;
+                    m_preTrimMatchState = session().clips[clipIdx].matchState;
                     m_trimDebounceClipIdx = clipIdx;
                 }
-                m_clips[clipIdx].start = inPt;
-                m_clips[clipIdx].end   = outPt;
-                if (m_clips[clipIdx].matchState == 2)
-                    m_clips[clipIdx].matchState = 1;
+                session().clips[clipIdx].start = inPt;
+                session().clips[clipIdx].end   = outPt;
+                if (session().clips[clipIdx].matchState == 2)
+                    session().clips[clipIdx].matchState = 1;
                 if (waveform->isPlayheadVisible()) {
                     double ph = waveform->playhead();
                     if (ph < inPt) waveform->setPlayhead(inPt);
@@ -691,8 +691,8 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         });
         connect(waveform, &MiniWaveformWidget::seekRequested,
                 this, [this, clipIdx, waveform](double t) {
-            if (clipIdx < m_clips.size())
-                t = std::clamp(t, m_clips[clipIdx].start, m_clips[clipIdx].end - 0.001);
+            if (clipIdx < session().clips.size())
+                t = std::clamp(t, session().clips[clipIdx].start, session().clips[clipIdx].end - 0.001);
             waveform->setPlayhead(t);
             waveform->setPlayheadVisible(true);
             m_selectedClipIdx = static_cast<int>(clipIdx);
@@ -708,8 +708,8 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         });
         connect(waveform, &MiniWaveformWidget::shuttleSpeedChanged,
                 this, [this, clipIdx](double speed) {
-            if (clipIdx >= m_clips.size()) {
-                spdlog::warn("AudioSync shuttle: clipIdx {} >= clips.size() {}", clipIdx, m_clips.size());
+            if (clipIdx >= session().clips.size()) {
+                spdlog::warn("AudioSync shuttle: clipIdx {} >= clips.size() {}", clipIdx, session().clips.size());
                 return;
             }
             if (!m_audioEngine) {
@@ -740,7 +740,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         });
         connect(waveform, &MiniWaveformWidget::inPointSet,
                 this, [this, clipIdx, waveform](double t) {
-            if (clipIdx < m_clips.size()) {
+            if (clipIdx < session().clips.size()) {
                 // trimChanged already fired from the same I-key press and
                 // modified start/end/matchState.  Use saved pre-trim state.
                 double oldStart;
@@ -750,33 +750,33 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                     oldStart = m_preTrimStart;
                     oldMS    = m_preTrimMatchState;
                 } else {
-                    oldStart = m_clips[clipIdx].start;
-                    oldMS    = m_clips[clipIdx].matchState;
-                    m_clips[clipIdx].start = t;
-                    if (m_clips[clipIdx].matchState == 2)
-                        m_clips[clipIdx].matchState = 1;
+                    oldStart = session().clips[clipIdx].start;
+                    oldMS    = session().clips[clipIdx].matchState;
+                    session().clips[clipIdx].start = t;
+                    if (session().clips[clipIdx].matchState == 2)
+                        session().clips[clipIdx].matchState = 1;
                 }
-                int newMS = m_clips[clipIdx].matchState;
+                int newMS = session().clips[clipIdx].matchState;
                 if (m_commandStack) {
                     m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
                         "Set in point",
                         [this, clipIdx, t, newMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].start = t;
-                                m_clips[clipIdx].matchState = newMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].start = t;
+                                session().clips[clipIdx].matchState = newMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
-                                    wf->setTrimRange(t, m_clips[clipIdx].end);
+                                    wf->setTrimRange(t, session().clips[clipIdx].end);
                                 refreshLeftListStates();
                                 updateCardMatchStyle(clipIdx);
                                 updateSmartBar();
                             }
                         },
                         [this, clipIdx, oldStart, oldMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].start = oldStart;
-                                m_clips[clipIdx].matchState = oldMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].start = oldStart;
+                                session().clips[clipIdx].matchState = oldMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
-                                    wf->setTrimRange(oldStart, m_clips[clipIdx].end);
+                                    wf->setTrimRange(oldStart, session().clips[clipIdx].end);
                                 refreshLeftListStates();
                                 updateCardMatchStyle(clipIdx);
                                 updateSmartBar();
@@ -797,7 +797,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         });
         connect(waveform, &MiniWaveformWidget::outPointSet,
                 this, [this, clipIdx, waveform](double t) {
-            if (clipIdx < m_clips.size()) {
+            if (clipIdx < session().clips.size()) {
                 // trimChanged already fired from the same O-key press.
                 double oldEnd;
                 int oldMS;
@@ -806,33 +806,33 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                     oldEnd = m_preTrimEnd;
                     oldMS  = m_preTrimMatchState;
                 } else {
-                    oldEnd = m_clips[clipIdx].end;
-                    oldMS  = m_clips[clipIdx].matchState;
-                    m_clips[clipIdx].end = t;
-                    if (m_clips[clipIdx].matchState == 2)
-                        m_clips[clipIdx].matchState = 1;
+                    oldEnd = session().clips[clipIdx].end;
+                    oldMS  = session().clips[clipIdx].matchState;
+                    session().clips[clipIdx].end = t;
+                    if (session().clips[clipIdx].matchState == 2)
+                        session().clips[clipIdx].matchState = 1;
                 }
-                int newMS = m_clips[clipIdx].matchState;
+                int newMS = session().clips[clipIdx].matchState;
                 if (m_commandStack) {
                     m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
                         "Set out point",
                         [this, clipIdx, t, newMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].end = t;
-                                m_clips[clipIdx].matchState = newMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].end = t;
+                                session().clips[clipIdx].matchState = newMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
-                                    wf->setTrimRange(m_clips[clipIdx].start, t);
+                                    wf->setTrimRange(session().clips[clipIdx].start, t);
                                 refreshLeftListStates();
                                 updateCardMatchStyle(clipIdx);
                                 updateSmartBar();
                             }
                         },
                         [this, clipIdx, oldEnd, oldMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].end = oldEnd;
-                                m_clips[clipIdx].matchState = oldMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].end = oldEnd;
+                                session().clips[clipIdx].matchState = oldMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
-                                    wf->setTrimRange(m_clips[clipIdx].start, oldEnd);
+                                    wf->setTrimRange(session().clips[clipIdx].start, oldEnd);
                                 refreshLeftListStates();
                                 updateCardMatchStyle(clipIdx);
                                 updateSmartBar();
@@ -851,32 +851,32 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         });
         connect(waveform, &MiniWaveformWidget::deleteRegionRequested,
                 this, [this, clipIdx](double s, double e) {
-            if (clipIdx < m_clips.size()) {
-                int oldMS = m_clips[clipIdx].matchState;
-                m_clips[clipIdx].deletedRegions.emplace_back(s, e);
-                if (m_clips[clipIdx].matchState == 2)
-                    m_clips[clipIdx].matchState = 1;
-                int newMS = m_clips[clipIdx].matchState;
+            if (clipIdx < session().clips.size()) {
+                int oldMS = session().clips[clipIdx].matchState;
+                session().clips[clipIdx].deletedRegions.emplace_back(s, e);
+                if (session().clips[clipIdx].matchState == 2)
+                    session().clips[clipIdx].matchState = 1;
+                int newMS = session().clips[clipIdx].matchState;
                 if (m_commandStack) {
                     m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
                         "Delete audio region",
                         [this, clipIdx, s, e, newMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].deletedRegions.emplace_back(s, e);
-                                m_clips[clipIdx].matchState = newMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].deletedRegions.emplace_back(s, e);
+                                session().clips[clipIdx].matchState = newMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
-                                    wf->setDeletedRegions(m_clips[clipIdx].deletedRegions);
+                                    wf->setDeletedRegions(session().clips[clipIdx].deletedRegions);
                                 refreshLeftListStates();
                                 updateCardMatchStyle(clipIdx);
                                 updateSmartBar();
                             }
                         },
                         [this, clipIdx, oldMS]() {
-                            if (clipIdx < m_clips.size() && !m_clips[clipIdx].deletedRegions.empty()) {
-                                m_clips[clipIdx].deletedRegions.pop_back();
-                                m_clips[clipIdx].matchState = oldMS;
+                            if (clipIdx < session().clips.size() && !session().clips[clipIdx].deletedRegions.empty()) {
+                                session().clips[clipIdx].deletedRegions.pop_back();
+                                session().clips[clipIdx].matchState = oldMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
-                                    wf->setDeletedRegions(m_clips[clipIdx].deletedRegions);
+                                    wf->setDeletedRegions(session().clips[clipIdx].deletedRegions);
                                 refreshLeftListStates();
                                 updateCardMatchStyle(clipIdx);
                                 updateSmartBar();
@@ -888,26 +888,26 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         });
         connect(waveform, &MiniWaveformWidget::deletedRegionsChanged,
                 this, [this, clipIdx, waveform]() {
-            if (clipIdx < m_clips.size()) {
-                auto oldRegions = m_clips[clipIdx].deletedRegions;
-                int oldMS = m_clips[clipIdx].matchState;
-                m_clips[clipIdx].deletedRegions = waveform->deletedRegions();
-                if (m_clips[clipIdx].matchState == 2)
-                    m_clips[clipIdx].matchState = 1;
-                int newMS = m_clips[clipIdx].matchState;
+            if (clipIdx < session().clips.size()) {
+                auto oldRegions = session().clips[clipIdx].deletedRegions;
+                int oldMS = session().clips[clipIdx].matchState;
+                session().clips[clipIdx].deletedRegions = waveform->deletedRegions();
+                if (session().clips[clipIdx].matchState == 2)
+                    session().clips[clipIdx].matchState = 1;
+                int newMS = session().clips[clipIdx].matchState;
                 if (m_playingClipIdx == static_cast<int>(clipIdx))
                     playClip(clipIdx);
                 refreshLeftListStates();
                 updateCardMatchStyle(clipIdx);
                 updateSmartBar();
                 if (m_commandStack) {
-                    auto newRegions = m_clips[clipIdx].deletedRegions;
+                    auto newRegions = session().clips[clipIdx].deletedRegions;
                     m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
                         "Edit deleted regions",
                         [this, clipIdx, newRegions, newMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].deletedRegions = newRegions;
-                                m_clips[clipIdx].matchState = newMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].deletedRegions = newRegions;
+                                session().clips[clipIdx].matchState = newMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
                                     wf->setDeletedRegions(newRegions);
                                 refreshLeftListStates();
@@ -916,9 +916,9 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                             }
                         },
                         [this, clipIdx, oldRegions, oldMS]() {
-                            if (clipIdx < m_clips.size()) {
-                                m_clips[clipIdx].deletedRegions = oldRegions;
-                                m_clips[clipIdx].matchState = oldMS;
+                            if (clipIdx < session().clips.size()) {
+                                session().clips[clipIdx].deletedRegions = oldRegions;
+                                session().clips[clipIdx].matchState = oldMS;
                                 if (auto* wf = waveformForClip(static_cast<int>(clipIdx)))
                                     wf->setDeletedRegions(oldRegions);
                                 refreshLeftListStates();
@@ -957,10 +957,10 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             connect(preview, &VideoFrameView::hoverScrubbed, this,
                     [this, clipIdx, previewGuard](double fraction) {
                 // Playback owns the preview while this take plays.
-                if (!previewGuard || clipIdx >= m_clips.size() ||
+                if (!previewGuard || clipIdx >= session().clips.size() ||
                     m_playingClipIdx == static_cast<int>(clipIdx))
                     return;
-                const auto& c = m_clips[clipIdx];
+                const auto& c = session().clips[clipIdx];
                 frameGrabber()->requestLive(
                     previewGuard, c.sourceFile, c.start + fraction * std::max(0.0, c.end - c.start),
                     previewGuard->requestSize(), [previewGuard](const QImage& image) {
@@ -1013,33 +1013,33 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             confirmBtn->setMinimumWidth(confirmBtn->sizeHint().width());
             // The SHOWN clip's own state (for dialogue scripts that is the
             // highest-state clip, i.e. the line's aggregate as before).
-            styleConfirmButton(confirmBtn, m_clips[primaryClipIdx].matchState);
+            styleConfirmButton(confirmBtn, session().clips[primaryClipIdx].matchState);
 
             // Restyle the current card on undo/redo, even if it was rebuilt
             // since this command was created.
             connect(confirmBtn, &QPushButton::clicked, this,
                     [this, clipIdx]() {
-                if (clipIdx >= m_clips.size()) return;
-                const int oldMS = m_clips[clipIdx].matchState;
+                if (clipIdx >= session().clips.size()) return;
+                const int oldMS = session().clips[clipIdx].matchState;
                 const int newMS = (oldMS == 2) ? 1 : 2;
                 if (oldMS == newMS) return;
                 // Shot scripts: one chosen take per line — confirming a
                 // take un-picks the line's other confirmed take(s).
                 std::vector<size_t> demoted;
-                const bool shotScript = m_script && m_script->isShotScript();
+                const bool shotScript = session().script && session().script->isShotScript();
                 if (newMS == 2 && shotScript) {
-                    for (size_t i = 0; i < m_clips.size(); ++i) {
-                        if (i != clipIdx && m_clips[i].matchState == 2 &&
-                            m_clips[i].scriptLineNumber == m_clips[clipIdx].scriptLineNumber)
+                    for (size_t i = 0; i < session().clips.size(); ++i) {
+                        if (i != clipIdx && session().clips[i].matchState == 2 &&
+                            session().clips[i].scriptLineNumber == session().clips[clipIdx].scriptLineNumber)
                             demoted.push_back(i);
                     }
                 }
                 auto apply = [this, clipIdx, demoted](int ms) {
                     if (m_destroying.load(std::memory_order_acquire)) return;
-                    if (clipIdx >= m_clips.size()) return;
-                    m_clips[clipIdx].matchState = ms;
+                    if (clipIdx >= session().clips.size()) return;
+                    session().clips[clipIdx].matchState = ms;
                     for (size_t d : demoted)
-                        if (d < m_clips.size()) m_clips[d].matchState = (ms == 2) ? 1 : 2;
+                        if (d < session().clips.size()) session().clips[d].matchState = (ms == 2) ? 1 : 2;
                     updateCardMatchStyle(clipIdx);
                     refreshLeftListStates();
                     updateWorkflowState();
@@ -1099,7 +1099,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                 Theme::hex(_tc.controlBorder), _rad,
                 QString::number(Theme::typography().sizeXs), Theme::hex(_tc.error)));
         connect(rejectBtn, &QPushButton::clicked, this, [this, clipIdx]() {
-            if (clipIdx >= m_clips.size()) return;
+            if (clipIdx >= session().clips.size()) return;
             struct Snap {
                 int         matchState;
                 int         scriptLineNumber;
@@ -1107,19 +1107,19 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                 float       confidence;
             };
             Snap oldSnap{
-                m_clips[clipIdx].matchState,
-                m_clips[clipIdx].scriptLineNumber,
-                m_clips[clipIdx].scriptSegment,
-                m_clips[clipIdx].confidence};
+                session().clips[clipIdx].matchState,
+                session().clips[clipIdx].scriptLineNumber,
+                session().clips[clipIdx].scriptSegment,
+                session().clips[clipIdx].confidence};
             Snap newSnap{0, -1, std::string{}, 0.0f};
             const int rejectLine = oldSnap.scriptLineNumber;
             auto apply = [this, clipIdx, rejectLine](const Snap& s) {
                 if (m_destroying.load(std::memory_order_acquire)) return;
-                if (clipIdx >= m_clips.size()) return;
-                m_clips[clipIdx].matchState       = s.matchState;
-                m_clips[clipIdx].scriptLineNumber = s.scriptLineNumber;
-                m_clips[clipIdx].scriptSegment    = s.scriptSegment;
-                m_clips[clipIdx].confidence       = s.confidence;
+                if (clipIdx >= session().clips.size()) return;
+                session().clips[clipIdx].matchState       = s.matchState;
+                session().clips[clipIdx].scriptLineNumber = s.scriptLineNumber;
+                session().clips[clipIdx].scriptSegment    = s.scriptSegment;
+                session().clips[clipIdx].confidence       = s.confidence;
                 // Only that line's card changes. Deferred so the clicked
                 // widget isn't deleted during its own signal.
                 scheduleCardRebuild({rejectLine});
@@ -1164,7 +1164,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
         };
         connect(lineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this, clipIdx, displayLines](int comboIdx) {
-            if (clipIdx >= m_clips.size() || comboIdx <= 0) return;
+            if (clipIdx >= session().clips.size() || comboIdx <= 0) return;
             size_t lineIdx = static_cast<size_t>(comboIdx - 1);
             if (lineIdx >= displayLines->size()) return;
             const auto& dl = (*displayLines)[lineIdx];
@@ -1183,9 +1183,9 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                 float       confidence;
             };
             auto capture = [this](size_t idx) -> ClipSnap {
-                return { idx, m_clips[idx].matchState,
-                         m_clips[idx].scriptLineNumber, m_clips[idx].character,
-                         m_clips[idx].scriptSegment, m_clips[idx].confidence };
+                return { idx, session().clips[idx].matchState,
+                         session().clips[idx].scriptLineNumber, session().clips[idx].character,
+                         session().clips[idx].scriptSegment, session().clips[idx].confidence };
             };
             std::vector<ClipSnap> before, after;
             // The reassigned clip → tentative match on the chosen line.
@@ -1195,10 +1195,10 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             // Bump any OTHER clip currently matched to that line back to
             // unmatched (keep its own character — it's still that speaker's
             // audio, just no longer assigned here).
-            for (size_t i = 0; i < m_clips.size(); ++i) {
+            for (size_t i = 0; i < session().clips.size(); ++i) {
                 if (i == clipIdx) continue;
-                if (m_clips[i].scriptLineNumber == dl.lineNumber
-                    && m_clips[i].matchState != 0) {
+                if (session().clips[i].scriptLineNumber == dl.lineNumber
+                    && session().clips[i].matchState != 0) {
                     before.push_back(capture(i));
                     ClipSnap u = capture(i);
                     u.matchState = 0;
@@ -1216,12 +1216,12 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             auto applySnaps = [this, affectedLines](const std::vector<ClipSnap>& snaps) {
                 if (m_destroying.load(std::memory_order_acquire)) return;
                 for (const auto& s : snaps) {
-                    if (s.idx >= m_clips.size()) continue;
-                    m_clips[s.idx].matchState       = s.matchState;
-                    m_clips[s.idx].scriptLineNumber = s.scriptLineNumber;
-                    m_clips[s.idx].character        = s.character;
-                    m_clips[s.idx].scriptSegment    = s.scriptSegment;
-                    m_clips[s.idx].confidence       = s.confidence;
+                    if (s.idx >= session().clips.size()) continue;
+                    session().clips[s.idx].matchState       = s.matchState;
+                    session().clips[s.idx].scriptLineNumber = s.scriptLineNumber;
+                    session().clips[s.idx].character        = s.character;
+                    session().clips[s.idx].scriptSegment    = s.scriptSegment;
+                    session().clips[s.idx].confidence       = s.confidence;
                 }
                 // Deferred so the combo isn't deleted during its own signal
                 scheduleCardRebuild(affectedLines);
@@ -1250,7 +1250,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
 
         // Audio file selector — lets the user pick which imported
         // audio file this line should match against.
-        if (m_audioPaths.size() > 1) {
+        if (session().audioPaths.size() > 1) {
             auto* audioFileCombo = new QComboBox;
             audioFileCombo->setFixedHeight(24);
             audioFileCombo->setStyleSheet(
@@ -1262,8 +1262,8 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             audioFileCombo->addItem("Audio file: auto");
             // Build sorted list of (filename, full path) pairs
             std::vector<std::pair<QString, QString>> sortedAudio;
-            sortedAudio.reserve(m_audioPaths.size());
-            for (const auto& ap : m_audioPaths) {
+            sortedAudio.reserve(session().audioPaths.size());
+            for (const auto& ap : session().audioPaths) {
                 QString fname = QString::fromStdString(
                     pathToUtf8(utf8ToPath(ap).filename()));
                 sortedAudio.emplace_back(fname, QString::fromStdString(ap));
@@ -1275,8 +1275,8 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             for (const auto& [fname, fullPath] : sortedAudio)
                 audioFileCombo->addItem(fname, fullPath);
             // Pre-select if already assigned
-            auto ait = m_lineAudioFile.find(lineNum);
-            if (ait != m_lineAudioFile.end()) {
+            auto ait = session().lineAudioFile.find(lineNum);
+            if (ait != session().lineAudioFile.end()) {
                 for (int ci = 1; ci < audioFileCombo->count(); ++ci) {
                     if (audioFileCombo->itemData(ci).toString().toStdString() == ait->second) {
                         audioFileCombo->setCurrentIndex(ci);
@@ -1287,11 +1287,11 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             connect(audioFileCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                     this, [this, lineNum](int idx) {
                 if (idx <= 0) {
-                    m_lineAudioFile.erase(lineNum);
+                    session().lineAudioFile.erase(lineNum);
                 } else {
                     auto* combo = qobject_cast<QComboBox*>(sender());
                     if (combo) {
-                        m_lineAudioFile[lineNum] = combo->itemData(idx).toString().toStdString();
+                        session().lineAudioFile[lineNum] = combo->itemData(idx).toString().toStdString();
                     }
                 }
             });
@@ -1333,9 +1333,9 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             assignGuard->blockSignals(true);
             while (assignGuard->count() > 1) assignGuard->removeItem(1);
             assignGuard->setCurrentIndex(0);
-            for (size_t i = 0; i < m_clips.size(); ++i) {
-                if (m_clips[i].scriptLineNumber < 0) {
-                    const auto& oc = m_clips[i];
+            for (size_t i = 0; i < session().clips.size(); ++i) {
+                if (session().clips[i].scriptLineNumber < 0) {
+                    const auto& oc = session().clips[i];
                     QString label = QString("Clip #%1 (%2) %3s")
                         .arg(i + 1)
                         .arg(oc.character.empty() ? "?" : QString::fromStdString(oc.character))
@@ -1355,7 +1355,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             int clipIdxRaw = combo->itemData(idx).toInt();
             if (clipIdxRaw < 0) return;
             const size_t clipIdx = static_cast<size_t>(clipIdxRaw);
-            if (clipIdx >= m_clips.size()) return;
+            if (clipIdx >= session().clips.size()) return;
             // Per-clip snapshot — assigning a clip to a line also bumps any
             // clip already matched to that line off it (one clip per line),
             // so two different speakers can't end up on the same line and
@@ -1369,18 +1369,18 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
                 float       confidence;
             };
             auto capture = [this](size_t idx) -> ClipSnap {
-                return { idx, m_clips[idx].matchState,
-                         m_clips[idx].scriptLineNumber, m_clips[idx].character,
-                         m_clips[idx].scriptSegment, m_clips[idx].confidence };
+                return { idx, session().clips[idx].matchState,
+                         session().clips[idx].scriptLineNumber, session().clips[idx].character,
+                         session().clips[idx].scriptSegment, session().clips[idx].confidence };
             };
             std::vector<ClipSnap> before, after;
             before.push_back(capture(clipIdx));
             after.push_back({ clipIdx, 1, lineNum, lineChar,
                               lineChar + ": " + lineDial, 1.0f });
-            for (size_t i = 0; i < m_clips.size(); ++i) {
+            for (size_t i = 0; i < session().clips.size(); ++i) {
                 if (i == clipIdx) continue;
-                if (m_clips[i].scriptLineNumber == lineNum
-                    && m_clips[i].matchState != 0) {
+                if (session().clips[i].scriptLineNumber == lineNum
+                    && session().clips[i].matchState != 0) {
                     before.push_back(capture(i));
                     ClipSnap u = capture(i);
                     u.matchState = 0;
@@ -1398,12 +1398,12 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
             auto applySnaps = [this, affectedLines](const std::vector<ClipSnap>& snaps) {
                 if (m_destroying.load(std::memory_order_acquire)) return;
                 for (const auto& s : snaps) {
-                    if (s.idx >= m_clips.size()) continue;
-                    m_clips[s.idx].matchState       = s.matchState;
-                    m_clips[s.idx].scriptLineNumber = s.scriptLineNumber;
-                    m_clips[s.idx].character        = s.character;
-                    m_clips[s.idx].scriptSegment    = s.scriptSegment;
-                    m_clips[s.idx].confidence       = s.confidence;
+                    if (s.idx >= session().clips.size()) continue;
+                    session().clips[s.idx].matchState       = s.matchState;
+                    session().clips[s.idx].scriptLineNumber = s.scriptLineNumber;
+                    session().clips[s.idx].character        = s.character;
+                    session().clips[s.idx].scriptSegment    = s.scriptSegment;
+                    session().clips[s.idx].confidence       = s.confidence;
                 }
                 // Deferred so the combo isn't deleted during its own signal
                 scheduleCardRebuild(affectedLines);
@@ -1426,7 +1426,7 @@ void AudioSync::fillCard(QFrame* card, const ScriptLine& line, int cardIdx,
 
 void AudioSync::rebuildCardsForLines(const std::vector<int>& lineNumbers)
 {
-    if (m_destroying.load(std::memory_order_acquire) || !m_script) return;
+    if (m_destroying.load(std::memory_order_acquire) || !session().script) return;
     // The UNMATCHED filter adds/removes whole cards when a line's state
     // changes; only a full rebuild handles that.
     if (m_charFilterList && m_charFilterList->currentItem() &&
@@ -1439,7 +1439,7 @@ void AudioSync::rebuildCardsForLines(const std::vector<int>& lineNumbers)
     const CardBuildContext ctx = makeCardBuildContext();
     for (int lineNumber : lineNumbers) {
         const ScriptLine* line = nullptr;
-        for (const auto& sl : m_script->lines)
+        for (const auto& sl : session().script->lines)
             if (sl.lineNumber == lineNumber) { line = &sl; break; }
         if (!line) continue;
 

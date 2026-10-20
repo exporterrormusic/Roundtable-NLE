@@ -473,7 +473,7 @@ void AudioSync::onCancelTranscriptionClicked()
 
     m_transcriptionState = TranscriptionState::Cancelling;
     // Completed files keep their results; no additional files are launched.
-    m_pendingTranscriptionIndices.clear();
+    session().pendingTranscriptionIndices.clear();
     m_transcribeStatus->setText(QStringLiteral("Cancelling transcription..."));
     updateTranscriptionControls();
 
@@ -539,13 +539,13 @@ void AudioSync::onReExportClicked()
 void AudioSync::onTranscriptionProgress(float percent, const QString& status)
 {
     float clampedPercent = std::clamp(percent, 0.0f, 100.0f);
-    size_t runTotal = std::max<size_t>(m_transcriptionRunTotal, 1);
-    double overall = (static_cast<double>(m_transcriptionRunCompleted)
+    size_t runTotal = std::max<size_t>(session().transcriptionRunTotal, 1);
+    double overall = (static_cast<double>(session().transcriptionRunCompleted)
                     + static_cast<double>(clampedPercent) / 100.0)
                     / static_cast<double>(runTotal) * 100.0;
     m_progressBar->setValue(static_cast<int>(std::clamp(overall, 0.0, 99.0)));
 
-    size_t fileNumber = std::min(m_transcriptionRunCompleted + 1, runTotal);
+    size_t fileNumber = std::min(session().transcriptionRunCompleted + 1, runTotal);
     m_transcribeStatus->setText(QString("File %1/%2: %3")
         .arg(fileNumber)
         .arg(runTotal)
@@ -564,8 +564,8 @@ void AudioSync::handleTranscriptionFinished(
     }
 
     if (success) {
-        if (m_currentTranscriptionIndex < m_allTranscriptionResults.size())
-            m_allTranscriptionResults[m_currentTranscriptionIndex] = worker->result();
+        if (session().currentTranscriptionIndex < session().allTranscriptionResults.size())
+            session().allTranscriptionResults[session().currentTranscriptionIndex] = worker->result();
         m_transcriptionRunHadSuccess = true;
         refreshTranscribeFileList();
     } else if (m_transcriptionState != TranscriptionState::Cancelling
@@ -573,14 +573,14 @@ void AudioSync::handleTranscriptionFinished(
         m_transcriptionRunError = QStringLiteral("Transcription failed");
     }
 
-    if (m_transcriptionRunCompleted < m_transcriptionRunTotal)
-        ++m_transcriptionRunCompleted;
+    if (session().transcriptionRunCompleted < session().transcriptionRunTotal)
+        ++session().transcriptionRunCompleted;
 
-    auto it = std::find(m_pendingTranscriptionIndices.begin(),
-                        m_pendingTranscriptionIndices.end(),
-                        m_currentTranscriptionIndex);
-    if (it != m_pendingTranscriptionIndices.end())
-        m_pendingTranscriptionIndices.erase(it);
+    auto it = std::find(session().pendingTranscriptionIndices.begin(),
+                        session().pendingTranscriptionIndices.end(),
+                        session().currentTranscriptionIndex);
+    if (it != session().pendingTranscriptionIndices.end())
+        session().pendingTranscriptionIndices.erase(it);
 }
 
 void AudioSync::handleTranscriptionError(uint64_t runId, const QString& error)
@@ -620,12 +620,12 @@ void AudioSync::handleTranscriptionThreadFinished(
         return;
     }
 
-    if (!m_pendingTranscriptionIndices.empty()) {
-        m_currentTranscriptionIndex = m_pendingTranscriptionIndices.front();
+    if (!session().pendingTranscriptionIndices.empty()) {
+        session().currentTranscriptionIndex = session().pendingTranscriptionIndices.front();
         m_transcribeStatus->setText(QString("Transcribing file %1/%2...")
-            .arg(std::min(m_transcriptionRunCompleted + 1, m_transcriptionRunTotal))
-            .arg(std::max<size_t>(m_transcriptionRunTotal, 1)));
-        startTranscriptionForFile(m_currentTranscriptionIndex, runId);
+            .arg(std::min(session().transcriptionRunCompleted + 1, session().transcriptionRunTotal))
+            .arg(std::max<size_t>(session().transcriptionRunTotal, 1)));
+        startTranscriptionForFile(session().currentTranscriptionIndex, runId);
         return;
     }
 
@@ -637,13 +637,13 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
     if (m_transcriptionState == TranscriptionState::Idle)
         return;
 
-    const size_t completed = m_transcriptionRunCompleted;
-    const size_t total = m_transcriptionRunTotal;
+    const size_t completed = session().transcriptionRunCompleted;
+    const size_t total = session().transcriptionRunTotal;
     const bool hadSuccess = m_transcriptionRunHadSuccess;
     const QString error = m_transcriptionRunError;
 
     m_transcriptionState = TranscriptionState::Idle;
-    m_pendingTranscriptionIndices.clear();
+    session().pendingTranscriptionIndices.clear();
     m_progressBar->setVisible(false);
     updateTranscriptionControls();
 
@@ -665,7 +665,7 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().warning)));
         emit transcriptionFailed(error);
-    } else if (m_clips.empty()) {
+    } else if (session().clips.empty()) {
         m_transcribeStatus->setText(QStringLiteral("Transcription returned no segments"));
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().warning)));
@@ -673,13 +673,13 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
         m_progressBar->setValue(100);
         m_transcribeStatus->setText(
             QString("Transcribed %1 segments from %2 file(s)")
-                .arg(m_clips.size()).arg(m_audioPaths.size()));
+                .arg(session().clips.size()).arg(session().audioPaths.size()));
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().success)));
     }
 
-    m_transcriptionRunCompleted = 0;
-    m_transcriptionRunTotal = 0;
+    session().transcriptionRunCompleted = 0;
+    session().transcriptionRunTotal = 0;
     m_transcriptionRunHadSuccess = false;
     m_transcriptionRunError.clear();
 }
@@ -687,20 +687,20 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
 void AudioSync::applyFinishedTranscriptions()
 {
     appendClipsFromNewTranscriptions();
-    if (m_script && !m_script->lines.empty())
+    if (session().script && !session().script->lines.empty())
         mergeSegmentsToMatchScript();
 
-    if (!m_clips.empty()) {
-        m_transcriptionDone = true;
+    if (!session().clips.empty()) {
+        session().transcriptionDone = true;
         populateClipList();
         updateWorkflowState();
-        emit transcriptionFinished(static_cast<int>(m_clips.size()));
+        emit transcriptionFinished(static_cast<int>(session().clips.size()));
     }
 }
 
 void AudioSync::setTranscriptionsForTesting(std::vector<TranscriptionResult> results)
 {
-    m_allTranscriptionResults = std::move(results);
+    session().allTranscriptionResults = std::move(results);
     applyFinishedTranscriptions();
 }
 
@@ -740,17 +740,17 @@ void AudioSync::updateTranscriptionControls()
 
 void AudioSync::clearTranscriptionForFile(size_t fileIndex)
 {
-    if (fileIndex >= m_allTranscriptionResults.size()) return;
+    if (fileIndex >= session().allTranscriptionResults.size()) return;
 
-    m_allTranscriptionResults[fileIndex] = TranscriptionResult{};
+    session().allTranscriptionResults[fileIndex] = TranscriptionResult{};
 
     // Remove clips that came from this file
-    const std::string& path = m_audioPaths[fileIndex];
-    auto it = std::remove_if(m_clips.begin(), m_clips.end(),
+    const std::string& path = session().audioPaths[fileIndex];
+    auto it = std::remove_if(session().clips.begin(), session().clips.end(),
         [&path](const SyncClip& clip) {
             return clip.sourceFile == path;
         });
-    m_clips.erase(it, m_clips.end());
+    session().clips.erase(it, session().clips.end());
 
     refreshTranscribeFileList();
     populateClipList();
@@ -762,12 +762,12 @@ void AudioSync::clearTranscriptionForFile(size_t fileIndex)
 
 void AudioSync::clearAllTranscriptions()
 {
-    if (m_allTranscriptionResults.empty()) return;
+    if (session().allTranscriptionResults.empty()) return;
 
-    for (auto& r : m_allTranscriptionResults)
+    for (auto& r : session().allTranscriptionResults)
         r = TranscriptionResult{};
 
-    m_clips.clear();
+    session().clips.clear();
 
     refreshTranscribeFileList();
     populateClipList();
@@ -782,15 +782,15 @@ void AudioSync::clearAllTranscriptions()
 
 void AudioSync::closeInterClipGaps()
 {
-    if (m_clips.empty()) return;
+    if (session().clips.empty()) return;
 
     // First pass: auto-trim silence from every clip (skip confirmed)
     int trimCount = 0;
-    for (size_t i = 0; i < m_clips.size(); ++i) {
-        auto& clip = m_clips[i];
+    for (size_t i = 0; i < session().clips.size(); ++i) {
+        auto& clip = session().clips[i];
         if (clip.matchState == 2) continue; // confirmed — don't touch
-        auto it = m_audioSamples.find(clip.sourceFile);
-        if (it == m_audioSamples.end()) continue;
+        auto it = session().audioSamples.find(clip.sourceFile);
+        if (it == session().audioSamples.end()) continue;
 
         const auto& audioData = it->second;
         const int windowSize = static_cast<int>(0.010 * audioData.sampleRate); // 10ms
@@ -867,7 +867,7 @@ void AudioSync::closeInterClipGaps()
         }
     }
 
-    if (m_clips.size() < 2) {
+    if (session().clips.size() < 2) {
         if (m_transcribeStatus)
             m_transcribeStatus->setText(
                 trimCount > 0
@@ -878,24 +878,24 @@ void AudioSync::closeInterClipGaps()
     }
 
     // Second pass: close gaps between adjacent same-file clips
-    std::sort(m_clips.begin(), m_clips.end(),
+    std::sort(session().clips.begin(), session().clips.end(),
               [](const SyncClip& x, const SyncClip& y) {
                   if (x.sourceFile != y.sourceFile) return x.sourceFile < y.sourceFile;
                   return x.start < y.start;
               });
 
     int gapsClosed = 0;
-    for (size_t i = 0; i + 1 < m_clips.size(); ++i) {
-        auto& a = m_clips[i];
-        auto& b = m_clips[i + 1];
+    for (size_t i = 0; i + 1 < session().clips.size(); ++i) {
+        auto& a = session().clips[i];
+        auto& b = session().clips[i + 1];
         if (a.sourceFile != b.sourceFile) continue;
         if (a.matchState == 2 || b.matchState == 2) continue; // skip confirmed
         double gap = b.start - a.end;
         if (gap > 0.001 && gap < 0.050) { // only close tiny seam gaps (<50ms)
             // Find the quietest point in the gap to place the boundary
             double boundary = (a.end + b.start) / 2.0;
-            auto sampIt = m_audioSamples.find(a.sourceFile);
-            if (sampIt != m_audioSamples.end()) {
+            auto sampIt = session().audioSamples.find(a.sourceFile);
+            if (sampIt != session().audioSamples.end()) {
                 const auto& ad = sampIt->second;
                 int sr = static_cast<int>(ad.sampleRate);
                 int winSz = static_cast<int>(0.010 * sr);

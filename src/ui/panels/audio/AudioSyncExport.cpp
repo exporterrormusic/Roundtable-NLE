@@ -155,12 +155,12 @@ int AudioSync::exportToTimeline(Timeline* timeline)
     // used because the MATCH tab doesn't either; manual confirmation
     // already guarantees the right clip is assigned to each line.
 
-    // lineNumber → its position in m_script->lines (script reading order) — for
+    // lineNumber → its position in session().script->lines (script reading order) — for
     // the diagnostic below.
     std::unordered_map<int, int> linePos;
-    if (m_script) {
+    if (session().script) {
         int p = 0;
-        for (const auto& ln : m_script->lines) linePos[ln.lineNumber] = p++;
+        for (const auto& ln : session().script->lines) linePos[ln.lineNumber] = p++;
     }
     auto scriptPosOf = [&](const SyncClip* c) -> int {
         auto it = linePos.find(c->scriptLineNumber);
@@ -169,15 +169,15 @@ int AudioSync::exportToTimeline(Timeline* timeline)
     };
 
     std::vector<const SyncClip*> confirmed;
-    if (m_script) {
-        // Confirmed clips per line, in m_clips order.
+    if (session().script) {
+        // Confirmed clips per line, in session().clips order.
         std::unordered_map<int, std::vector<size_t>> confirmedByLine;
-        for (size_t i = 0; i < m_clips.size(); ++i) {
-            const auto& c = m_clips[i];
+        for (size_t i = 0; i < session().clips.size(); ++i) {
+            const auto& c = session().clips[i];
             if (c.scriptLineNumber >= 0 && c.matchState == 2)
                 confirmedByLine[c.scriptLineNumber].push_back(i);
         }
-        for (const auto& line : m_script->lines) {
+        for (const auto& line : session().script->lines) {
             auto it = confirmedByLine.find(line.lineNumber);
             if (it == confirmedByLine.end()) continue;
             // Primary: pick the clip with the highest confidence, matching
@@ -185,7 +185,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
             const SyncClip* best = nullptr;
             float bestConf = -1.0f;
             for (size_t ci : it->second) {
-                const auto& c = m_clips[ci];
+                const auto& c = session().clips[ci];
                 if (!best || c.confidence > bestConf) {
                     best = &c;
                     bestConf = c.confidence;
@@ -194,8 +194,8 @@ int AudioSync::exportToTimeline(Timeline* timeline)
             if (best) confirmed.push_back(best);   // already in script order
         }
     } else {
-        // No script loaded — fall back to every confirmed clip in m_clips order.
-        for (const auto& c : m_clips)
+        // No script loaded — fall back to every confirmed clip in session().clips order.
+        for (const auto& c : session().clips)
             if (c.scriptLineNumber >= 0 && c.matchState == 2)
                 confirmed.push_back(&c);
     }
@@ -229,8 +229,8 @@ int AudioSync::exportToTimeline(Timeline* timeline)
 
     // ── Build a lookup from lineNumber → ScriptLine character ───────────
     std::unordered_map<int, std::string> lineCharacterMap;
-    if (m_script) {
-        for (const auto& line : m_script->lines)
+    if (session().script) {
+        for (const auto& line : session().script->lines)
             lineCharacterMap[line.lineNumber] = line.character;
     }
 

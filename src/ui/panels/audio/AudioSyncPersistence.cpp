@@ -24,23 +24,23 @@ namespace rt {
 
 void AudioSync::splitClip(size_t clipIdx)
 {
-    if (clipIdx >= m_clips.size()) return;
+    if (clipIdx >= session().clips.size()) return;
     // Default: split at midpoint
-    auto& clip = m_clips[clipIdx];
+    auto& clip = session().clips[clipIdx];
     double mid = (clip.start + clip.end) / 2.0;
     SyncClip newClip = clip;
     newClip.start = mid;
-    newClip.id = static_cast<int>(m_clips.size());
+    newClip.id = static_cast<int>(session().clips.size());
     clip.end = mid;
-    m_clips.insert(m_clips.begin() + static_cast<ptrdiff_t>(clipIdx) + 1, newClip);
+    session().clips.insert(session().clips.begin() + static_cast<ptrdiff_t>(clipIdx) + 1, newClip);
     populateClipList();
 }
 
 void AudioSync::mergeClipWithNext(size_t clipIdx)
 {
-    if (clipIdx + 1 >= m_clips.size()) return;
-    auto& clip = m_clips[clipIdx];
-    const auto& next = m_clips[clipIdx + 1];
+    if (clipIdx + 1 >= session().clips.size()) return;
+    auto& clip = session().clips[clipIdx];
+    const auto& next = session().clips[clipIdx + 1];
     clip.end = next.end;
     if (!next.editedText.empty()) {
         if (!clip.editedText.empty())
@@ -52,7 +52,7 @@ void AudioSync::mergeClipWithNext(size_t clipIdx)
             clip.transcript += " ";
         clip.transcript += next.transcript;
     }
-    m_clips.erase(m_clips.begin() + static_cast<ptrdiff_t>(clipIdx) + 1);
+    session().clips.erase(session().clips.begin() + static_cast<ptrdiff_t>(clipIdx) + 1);
     populateClipList();
 }
 
@@ -131,68 +131,33 @@ void AudioSync::saveProjectState(const QString& projectName)
         settings.setValue(sp + "key",         QString::fromStdString(key));
         settings.setValue(sp + "displayName", QString::fromStdString(session.displayName));
         settings.setValue(sp + "sourceUrl",   QString::fromStdString(session.sourceUrl));
-        // For the active session, use m_scriptRawContent (may have been
-        // updated by sync without session.rawContent being refreshed).
-        const std::string& rawForSave = (key == m_activeScriptKey)
-            ? m_scriptRawContent : session.rawContent;
-        settings.setValue(sp + "rawContent",  QString::fromStdString(rawForSave));
+        settings.setValue(sp + "rawContent",  QString::fromStdString(session.rawContent));
 
-        if (key == m_activeScriptKey) {
-            // Active session — data lives in member variables
-            QStringList audioPaths;
-            for (const auto& p : m_audioPaths)
-                audioPaths.append(QString::fromStdString(p));
-            settings.setValue(sp + "audioPaths", audioPaths);
+        QStringList audioPaths;
+        for (const auto& p : session.audioPaths)
+            audioPaths.append(QString::fromStdString(p));
+        settings.setValue(sp + "audioPaths", audioPaths);
 
-            settings.setValue(sp + "audioPath", QString::fromStdString(m_audioPath));
-            settings.setValue(sp + "scriptLoaded",      m_scriptLoaded);
-            settings.setValue(sp + "audioImported",      m_audioImported);
-            settings.setValue(sp + "transcriptionDone",  m_transcriptionDone);
-            settings.setValue(sp + "syncDone",           m_syncDone);
+        settings.setValue(sp + "audioPath", QString::fromStdString(session.audioPath));
+        settings.setValue(sp + "scriptLoaded",      session.scriptLoaded);
+        settings.setValue(sp + "audioImported",      session.audioImported);
+        settings.setValue(sp + "transcriptionDone",  session.transcriptionDone);
+        settings.setValue(sp + "syncDone",           session.syncDone);
 
-            // Save active session clips
-            settings.setValue(sp + "clipCount", static_cast<int>(m_clips.size()));
-            for (size_t i = 0; i < m_clips.size(); ++i) {
-                saveClipToSettings(settings, sp, i, m_clips[i]);
-            }
+        // Save stored session clips
+        settings.setValue(sp + "clipCount", static_cast<int>(session.clips.size()));
+        for (size_t i = 0; i < session.clips.size(); ++i) {
+            saveClipToSettings(settings, sp, i, session.clips[i]);
+        }
 
-            // lineAudioFile
-            settings.setValue(sp + "lineAudioFileCount", static_cast<int>(m_lineAudioFile.size()));
-            int lafIdx = 0;
-            for (const auto& [lineNum, audioFile] : m_lineAudioFile) {
-                settings.setValue(sp + "laf/" + QString::number(lafIdx) + "/line", lineNum);
-                settings.setValue(sp + "laf/" + QString::number(lafIdx) + "/file",
-                                  QString::fromStdString(audioFile));
-                ++lafIdx;
-            }
-        } else {
-            // Stored session — data lives in the session object
-            QStringList audioPaths;
-            for (const auto& p : session.audioPaths)
-                audioPaths.append(QString::fromStdString(p));
-            settings.setValue(sp + "audioPaths", audioPaths);
-
-            settings.setValue(sp + "audioPath", QString::fromStdString(session.audioPath));
-            settings.setValue(sp + "scriptLoaded",      session.scriptLoaded);
-            settings.setValue(sp + "audioImported",      session.audioImported);
-            settings.setValue(sp + "transcriptionDone",  session.transcriptionDone);
-            settings.setValue(sp + "syncDone",           session.syncDone);
-
-            // Save stored session clips
-            settings.setValue(sp + "clipCount", static_cast<int>(session.clips.size()));
-            for (size_t i = 0; i < session.clips.size(); ++i) {
-                saveClipToSettings(settings, sp, i, session.clips[i]);
-            }
-
-            // lineAudioFile
-            settings.setValue(sp + "lineAudioFileCount", static_cast<int>(session.lineAudioFile.size()));
-            int lafIdx = 0;
-            for (const auto& [lineNum, audioFile] : session.lineAudioFile) {
-                settings.setValue(sp + "laf/" + QString::number(lafIdx) + "/line", lineNum);
-                settings.setValue(sp + "laf/" + QString::number(lafIdx) + "/file",
-                                  QString::fromStdString(audioFile));
-                ++lafIdx;
-            }
+        // lineAudioFile
+        settings.setValue(sp + "lineAudioFileCount", static_cast<int>(session.lineAudioFile.size()));
+        int lafIdx = 0;
+        for (const auto& [lineNum, audioFile] : session.lineAudioFile) {
+            settings.setValue(sp + "laf/" + QString::number(lafIdx) + "/line", lineNum);
+            settings.setValue(sp + "laf/" + QString::number(lafIdx) + "/file",
+                              QString::fromStdString(audioFile));
+            ++lafIdx;
         }
 
         ++sessionIdx;
@@ -295,22 +260,22 @@ void AudioSync::restoreProjectState(const QString& projectName)
             restoreSession(targetKey);
 
             // Load audio samples FIRST so waveforms appear in the list items
-            if (!m_audioPaths.empty())
+            if (!session().audioPaths.empty())
                 loadAudioSamples();
 
             // Build audio file list UI
             if (m_audioFileList) {
                 m_audioFileList->blockSignals(true);
                 m_audioFileList->clear();
-                for (const auto& ap : m_audioPaths) {
+                for (const auto& ap : session().audioPaths) {
                     if (QFile::exists(QString::fromStdString(ap)))
                         addAudioFileListItem(QString::fromStdString(ap));
                 }
                 m_audioFileList->blockSignals(false);
             }
             if (m_audioStatus)
-                m_audioStatus->setText(m_audioPaths.empty() ? "No files imported"
-                    : QString("%1 file(s)").arg(m_audioPaths.size()));
+                m_audioStatus->setText(session().audioPaths.empty() ? "No files imported"
+                    : QString("%1 file(s)").arg(session().audioPaths.size()));
         }
 
         // Rebuild transcription results for each session
@@ -345,7 +310,7 @@ void AudioSync::restoreProjectState(const QString& projectName)
         populateScriptSessionList();
         m_restoring = false;
         updateWorkflowState();
-        if (m_script) {
+        if (session().script) {
             // Rebuild the Match-tab character filter list; restoreSession()
             // does not do this, so without it the Match tab shows no characters.
             populateScriptFilter();
@@ -358,7 +323,7 @@ void AudioSync::restoreProjectState(const QString& projectName)
         } else {
             populateLeftList();
         }
-        if (!m_clips.empty() && m_syncDone)
+        if (!session().clips.empty() && session().syncDone)
             showAudioSidePanel(3);
 
         return;
@@ -380,11 +345,11 @@ void AudioSync::restoreProjectState(const QString& projectName)
 
         // Restore raw script content to avoid auto-fetching from URL on project open.
         QString rawContent = settings.value(prefix + "scriptRawContent").toString();
-        m_scriptRawContent = rawContent.toStdString();
+        session().rawContent = rawContent.toStdString();
 
-        if (!m_scriptRawContent.empty()) {
+        if (!session().rawContent.empty()) {
             // Restore from saved content instead of re-fetching
-            loadScript(m_scriptRawContent, scriptSource.toStdString());
+            loadScript(session().rawContent, scriptSource.toStdString());
         } else if (scriptSource.startsWith("http://") || scriptSource.startsWith("https://")) {
             fetchScriptFromUrl(scriptSource);
         } else {
@@ -393,7 +358,7 @@ void AudioSync::restoreProjectState(const QString& projectName)
     }
 
     // Restore audio paths — batch import
-    m_audioPaths.clear();
+    session().audioPaths.clear();
     if (m_audioFileList) m_audioFileList->clear();
     m_fileWaveforms.clear();
     m_filePlayBtns.clear();
@@ -401,16 +366,16 @@ void AudioSync::restoreProjectState(const QString& projectName)
     QStringList audioPaths = settings.value(prefix + "audioPaths").toStringList();
     for (const auto& path : audioPaths) {
         if (!path.isEmpty() && QFile::exists(path))
-            m_audioPaths.push_back(path.toStdString());
+            session().audioPaths.push_back(path.toStdString());
     }
-    if (!m_audioPaths.empty()) {
-        m_audioImported = true;
-        m_audioPath = m_audioPaths.back();
-        if (m_audioPathEdit) m_audioPathEdit->setText(QString::fromStdString(m_audioPath));
-        m_audioStatus->setText(QString("%1 file(s) imported").arg(m_audioPaths.size()));
+    if (!session().audioPaths.empty()) {
+        session().audioImported = true;
+        session().audioPath = session().audioPaths.back();
+        if (m_audioPathEdit) m_audioPathEdit->setText(QString::fromStdString(session().audioPath));
+        m_audioStatus->setText(QString("%1 file(s) imported").arg(session().audioPaths.size()));
         loadAudioSamples();
         if (m_audioFileList) {
-            for (const auto& p : m_audioPaths)
+            for (const auto& p : session().audioPaths)
                 addAudioFileListItem(QString::fromStdString(p));
         }
     }
@@ -418,40 +383,40 @@ void AudioSync::restoreProjectState(const QString& projectName)
     // Restore clips
     int clipCount = settings.value(prefix + "clipCount", 0).toInt();
     if (clipCount > 0) {
-        m_clips.clear();
-        m_clips.reserve(static_cast<size_t>(clipCount));
+        session().clips.clear();
+        session().clips.reserve(static_cast<size_t>(clipCount));
         for (int i = 0; i < clipCount; ++i)
-            m_clips.push_back(loadClipFromSettings(settings, prefix, i));
-        spdlog::info("AudioSync: Restored {} clips from legacy project state", m_clips.size());
+            session().clips.push_back(loadClipFromSettings(settings, prefix, i));
+        spdlog::info("AudioSync: Restored {} clips from legacy project state", session().clips.size());
     }
 
     // Restore workflow state flags
-    m_scriptLoaded      = settings.value(prefix + "scriptLoaded",     m_scriptLoaded).toBool();
-    m_audioImported     = settings.value(prefix + "audioImported",    m_audioImported).toBool();
-    m_transcriptionDone = settings.value(prefix + "transcriptionDone", m_transcriptionDone).toBool();
-    m_syncDone          = settings.value(prefix + "syncDone",         m_syncDone).toBool();
+    session().scriptLoaded      = settings.value(prefix + "scriptLoaded",     session().scriptLoaded).toBool();
+    session().audioImported     = settings.value(prefix + "audioImported",    session().audioImported).toBool();
+    session().transcriptionDone = settings.value(prefix + "transcriptionDone", session().transcriptionDone).toBool();
+    session().syncDone          = settings.value(prefix + "syncDone",         session().syncDone).toBool();
 
     // Rebuild transcription results from clips
     // Build a sourceFile→transcript map for O(clips + audioFiles) instead of O(clips × audioFiles)
-    if (m_transcriptionDone && !m_audioPaths.empty()) {
+    if (session().transcriptionDone && !session().audioPaths.empty()) {
         std::unordered_map<std::string, std::string> fileToTranscript;
-        fileToTranscript.reserve(m_audioPaths.size());
-        for (const auto& c : m_clips) {
+        fileToTranscript.reserve(session().audioPaths.size());
+        for (const auto& c : session().clips) {
             if (!c.transcript.empty()) {
                 auto& t = fileToTranscript[c.sourceFile];
                 if (!t.empty()) t += ' ';
                 t += c.transcript;
             }
         }
-        m_allTranscriptionResults.resize(m_audioPaths.size());
-        for (size_t i = 0; i < m_audioPaths.size(); ++i) {
-            if (!m_allTranscriptionResults[i].segments.empty())
+        session().allTranscriptionResults.resize(session().audioPaths.size());
+        for (size_t i = 0; i < session().audioPaths.size(); ++i) {
+            if (!session().allTranscriptionResults[i].segments.empty())
                 continue;
-            auto it = fileToTranscript.find(m_audioPaths[i]);
+            auto it = fileToTranscript.find(session().audioPaths[i]);
             if (it != fileToTranscript.end() && !it->second.empty()) {
                 TranscriptionSegment seg;
                 seg.text = it->second;
-                m_allTranscriptionResults[i].segments.push_back(std::move(seg));
+                session().allTranscriptionResults[i].segments.push_back(std::move(seg));
             }
         }
     }
@@ -461,7 +426,7 @@ void AudioSync::restoreProjectState(const QString& projectName)
     m_restoring = false;
 
     updateWorkflowState();
-    if (m_script) {
+    if (session().script) {
         // Rebuild the Match-tab character filter list (see restoreProjectState
         // multi-session path above for why this is required).
         populateScriptFilter();
@@ -474,14 +439,14 @@ void AudioSync::restoreProjectState(const QString& projectName)
     } else {
         populateLeftList();
     }
-    if (!m_clips.empty() && m_syncDone)
+    if (!session().clips.empty() && session().syncDone)
         showAudioSidePanel(3);
     emit voiceContextChanged();
 }
 
 void AudioSync::restoreAudioPaths(const QString& projectName)
 {
-    if (projectName.isEmpty() || !m_audioPaths.empty()) return;
+    if (projectName.isEmpty() || !session().audioPaths.empty()) return;
 
     auto settings = rt::appSettings();
     QString prefix = "Project/" + projectName + "/AudioSync/";
@@ -489,24 +454,24 @@ void AudioSync::restoreAudioPaths(const QString& projectName)
     QStringList audioPaths = settings.value(prefix + "audioPaths").toStringList();
     if (audioPaths.isEmpty()) return;
 
-    m_audioPaths.clear();
+    session().audioPaths.clear();
     if (m_audioFileList) m_audioFileList->clear();
     for (const auto& path : audioPaths) {
         if (!path.isEmpty() && QFile::exists(path))
-            m_audioPaths.push_back(path.toStdString());
+            session().audioPaths.push_back(path.toStdString());
     }
-    if (!m_audioPaths.empty()) {
-        m_audioImported = true;
-        m_audioPath = m_audioPaths.back();
-        if (m_audioPathEdit) m_audioPathEdit->setText(QString::fromStdString(m_audioPath));
-        m_audioStatus->setText(QString("%1 file(s) imported").arg(m_audioPaths.size()));
+    if (!session().audioPaths.empty()) {
+        session().audioImported = true;
+        session().audioPath = session().audioPaths.back();
+        if (m_audioPathEdit) m_audioPathEdit->setText(QString::fromStdString(session().audioPath));
+        m_audioStatus->setText(QString("%1 file(s) imported").arg(session().audioPaths.size()));
         loadAudioSamples();
         if (m_audioFileList) {
-            for (const auto& p : m_audioPaths)
+            for (const auto& p : session().audioPaths)
                 addAudioFileListItem(QString::fromStdString(p));
         }
         spdlog::info("AudioSync::restoreAudioPaths: supplemented {} paths from QSettings",
-                     m_audioPaths.size());
+                     session().audioPaths.size());
         emit voiceContextChanged();
     }
 }
@@ -600,11 +565,7 @@ std::vector<uint8_t> AudioSync::serializeToBlob() const
     w.writeU32(AUDIO_SYNC_BLOB_VERSION);  // v4
 
     //── Write all sessions ──────────────────────────────────────────────
-    // The active session's data is in member variables (m_clips, etc.),
-    // while stored sessions have their data in m_scriptSessions entries.
-    //
-    // We iterate m_scriptSessions: for the active key we use member data,
-    // for other keys we use the session's stored data.
+    // Every session, the open one included, holds its own data.
 
     w.writeU32(static_cast<uint32_t>(m_scriptSessions.size()));
     w.writeString(m_activeScriptKey);
@@ -614,26 +575,15 @@ std::vector<uint8_t> AudioSync::serializeToBlob() const
         w.writeString(key);                // session key (source URL / identifier)
         w.writeString(session.displayName);
         w.writeString(session.sourceUrl);
-        // For the active session, use m_scriptRawContent (may have been
-        // updated by sync without session.rawContent being refreshed).
-        w.writeString(key == m_activeScriptKey ? m_scriptRawContent : session.rawContent);
+        w.writeString(session.rawContent);
 
-        if (key == m_activeScriptKey) {
-            // Active session — data lives in member variables
-            writeSessionData(w, m_clips, m_audioPaths, m_audioPath,
-                             m_scriptLoaded, m_audioImported,
-                             m_transcriptionDone, m_syncDone,
-                             m_lineAudioFile, m_allTranscriptionResults);
-        } else {
-            // Stored session — data lives in the session object
-            writeSessionData(w, session.clips, session.audioPaths, session.audioPath,
-                             session.scriptLoaded, session.audioImported,
-                             session.transcriptionDone, session.syncDone,
-                             session.lineAudioFile, session.allTranscriptionResults);
-        }
+        writeSessionData(w, session.clips, session.audioPaths, session.audioPath,
+                         session.scriptLoaded, session.audioImported,
+                         session.transcriptionDone, session.syncDone,
+                         session.lineAudioFile, session.allTranscriptionResults);
 
         // v7: shots picked in-app for blank SHOT cells (shot-table scripts)
-        const auto& overrides = (key == m_activeScriptKey) ? m_shotOverrides : session.shotOverrides;
+        const auto& overrides = session.shotOverrides;
         w.writeU32(static_cast<uint32_t>(overrides.size()));
         for (const auto& [lineKey, shot] : overrides) {
             w.writeString(lineKey);
@@ -643,7 +593,7 @@ std::vector<uint8_t> AudioSync::serializeToBlob() const
         // v8: COMFYUI page state as a length-prefixed, self-versioned block.
         {
             BinaryWriter block;
-            ((key == m_activeScriptKey) ? m_pipeline : session.pipeline).write(block);
+            session.pipeline.write(block);
             w.writeU32(static_cast<uint32_t>(block.data().size()));
             w.writeBytes(block.data().data(), block.data().size());
         }
@@ -865,24 +815,24 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
             restoreSession(targetKey);
 
             // Load audio samples FIRST so waveforms appear in the list items
-            if (!m_audioPaths.empty()) {
+            if (!session().audioPaths.empty()) {
                 loadAudioSamples();
-                m_audioImported = true;
+                session().audioImported = true;
             }
 
             // Build audio file list UI for restored paths
             if (m_audioFileList) {
                 m_audioFileList->blockSignals(true);
                 m_audioFileList->clear();
-                for (const auto& ap : m_audioPaths) {
+                for (const auto& ap : session().audioPaths) {
                     if (QFile::exists(QString::fromStdString(ap)))
                         addAudioFileListItem(QString::fromStdString(ap));
                 }
                 m_audioFileList->blockSignals(false);
             }
             if (m_audioStatus)
-                m_audioStatus->setText(m_audioPaths.empty() ? "No files imported"
-                    : QString("%1 file(s)").arg(m_audioPaths.size()));
+                m_audioStatus->setText(session().audioPaths.empty() ? "No files imported"
+                    : QString("%1 file(s)").arg(session().audioPaths.size()));
         }
 
         // Rebuild transcription results from clips for each session
@@ -922,7 +872,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
         // Refresh UI — populateCards() calls populateLeftList() internally
         populateScriptSessionList();
         updateWorkflowState();
-        if (m_script) {
+        if (session().script) {
             // Rebuild the Match-tab character filter list; restoreSession()
             // does not, so the Match tab would otherwise show no characters.
             populateScriptFilter();
@@ -931,7 +881,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
             else
                 m_cardsDirty = true;
         }
-        if (!m_clips.empty() && m_syncDone) showAudioSidePanel(3);
+        if (!session().clips.empty() && session().syncDone) showAudioSidePanel(3);
         emit voiceContextChanged();
 
         return;
@@ -957,13 +907,13 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
 
     // Script raw content (v3+)
     if (version >= 3 && r.remaining() > 0) {
-        m_scriptRawContent = r.readString();
+        session().rawContent = r.readString();
     }
 
     if (!scriptSource.empty()) {
         m_lastScriptSource = QString::fromStdString(scriptSource);
-        if (!m_scriptRawContent.empty()) {
-            loadScript(m_scriptRawContent, scriptSource);
+        if (!session().rawContent.empty()) {
+            loadScript(session().rawContent, scriptSource);
         } else if (m_lastScriptSource.startsWith("http://") || m_lastScriptSource.startsWith("https://")) {
             fetchScriptFromUrl(m_lastScriptSource);
         } else {
@@ -975,7 +925,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
     uint32_t pathCount = r.readU32();
     spdlog::info("AudioSync::deserializeFromBlob (v{}): reading {} audio paths",
                  version, pathCount);
-    m_audioPaths.clear();
+    session().audioPaths.clear();
     if (m_audioFileList) m_audioFileList->clear();
     m_fileWaveforms.clear();
     m_filePlayBtns.clear();
@@ -985,32 +935,32 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
         bool exists = QFile::exists(QString::fromStdString(p));
         spdlog::info("  audio[{}]: exists={} path={}", i, exists, p);
         if (!p.empty() && exists)
-            m_audioPaths.push_back(std::move(p));
+            session().audioPaths.push_back(std::move(p));
     }
-    spdlog::info("AudioSync::deserializeFromBlob: kept {} audio paths", m_audioPaths.size());
-    if (!m_audioPaths.empty()) {
-        m_audioImported = true;
-        m_audioPath = m_audioPaths.back();
+    spdlog::info("AudioSync::deserializeFromBlob: kept {} audio paths", session().audioPaths.size());
+    if (!session().audioPaths.empty()) {
+        session().audioImported = true;
+        session().audioPath = session().audioPaths.back();
         if (m_audioPathEdit)
-            m_audioPathEdit->setText(QString::fromStdString(m_audioPath));
-        m_audioStatus->setText(QString("%1 file(s) imported").arg(m_audioPaths.size()));
+            m_audioPathEdit->setText(QString::fromStdString(session().audioPath));
+        m_audioStatus->setText(QString("%1 file(s) imported").arg(session().audioPaths.size()));
         loadAudioSamples();
         if (m_audioFileList) {
-            for (const auto& ap : m_audioPaths)
+            for (const auto& ap : session().audioPaths)
                 addAudioFileListItem(QString::fromStdString(ap));
         }
     }
 
     // Workflow flags
-    m_scriptLoaded      = (r.readU8() != 0);
-    m_audioImported     = (r.readU8() != 0);
-    m_transcriptionDone = (r.readU8() != 0);
-    m_syncDone          = (r.readU8() != 0);
+    session().scriptLoaded      = (r.readU8() != 0);
+    session().audioImported     = (r.readU8() != 0);
+    session().transcriptionDone = (r.readU8() != 0);
+    session().syncDone          = (r.readU8() != 0);
 
     // Clips
     uint32_t clipCount = r.readU32();
-    m_clips.clear();
-    m_clips.reserve(clipCount);
+    session().clips.clear();
+    session().clips.reserve(clipCount);
     for (uint32_t i = 0; i < clipCount; ++i) {
         SyncClip c;
         c.id              = static_cast<int>(r.readU32());
@@ -1032,30 +982,30 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
             double re = r.readF64();
             c.deletedRegions.emplace_back(rs, re);
         }
-        m_clips.push_back(std::move(c));
+        session().clips.push_back(std::move(c));
     }
 
     // Rebuild transcription results from clips
     // Build a sourceFile→transcript map for O(clips + audioFiles) instead of O(clips × audioFiles)
-    if (m_transcriptionDone && !m_audioPaths.empty()) {
+    if (session().transcriptionDone && !session().audioPaths.empty()) {
         std::unordered_map<std::string, std::string> fileToTranscript;
-        fileToTranscript.reserve(m_audioPaths.size());
-        for (const auto& c : m_clips) {
+        fileToTranscript.reserve(session().audioPaths.size());
+        for (const auto& c : session().clips) {
             if (!c.transcript.empty()) {
                 auto& t = fileToTranscript[c.sourceFile];
                 if (!t.empty()) t += ' ';
                 t += c.transcript;
             }
         }
-        m_allTranscriptionResults.resize(m_audioPaths.size());
-        for (size_t fi = 0; fi < m_audioPaths.size(); ++fi) {
-            if (!m_allTranscriptionResults[fi].segments.empty())
+        session().allTranscriptionResults.resize(session().audioPaths.size());
+        for (size_t fi = 0; fi < session().audioPaths.size(); ++fi) {
+            if (!session().allTranscriptionResults[fi].segments.empty())
                 continue;
-            auto it = fileToTranscript.find(m_audioPaths[fi]);
+            auto it = fileToTranscript.find(session().audioPaths[fi]);
             if (it != fileToTranscript.end() && !it->second.empty()) {
                 TranscriptionSegment seg;
                 seg.text = it->second;
-                m_allTranscriptionResults[fi].segments.push_back(std::move(seg));
+                session().allTranscriptionResults[fi].segments.push_back(std::move(seg));
             }
         }
     }
@@ -1067,12 +1017,12 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
     m_restoring = false;
 
     spdlog::info("AudioSync::deserializeFromBlob (v{}): restored {} clips, {} audio paths",
-                 version, m_clips.size(), m_audioPaths.size());
+                 version, session().clips.size(), session().audioPaths.size());
 
     // Refresh session list so restored display names appear
     populateScriptSessionList();
     updateWorkflowState();
-    if (m_script) {
+    if (session().script) {
         // Rebuild the Match-tab character filter list (see v4 path above).
         populateScriptFilter();
         if (isVisible())
@@ -1080,7 +1030,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
         else
             m_cardsDirty = true;
     }
-    if (!m_clips.empty() && m_syncDone) showAudioSidePanel(3);
+    if (!session().clips.empty() && session().syncDone) showAudioSidePanel(3);
     emit voiceContextChanged();
 }
 

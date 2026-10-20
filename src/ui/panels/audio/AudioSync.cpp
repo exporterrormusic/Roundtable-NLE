@@ -173,20 +173,20 @@ AudioSync::AudioSync(QWidget* parent)
     m_trimDebounceTimer->setInterval(400);
     connect(m_trimDebounceTimer, &QTimer::timeout, this, [this]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        if (m_trimDebounceClipIdx < m_clips.size()) {
+        if (m_trimDebounceClipIdx < session().clips.size()) {
             auto ci   = m_trimDebounceClipIdx;
             double oS = m_preTrimStart, oE = m_preTrimEnd;
             int    oM = m_preTrimMatchState;
-            double nS = m_clips[ci].start, nE = m_clips[ci].end;
-            int    nM = m_clips[ci].matchState;
+            double nS = session().clips[ci].start, nE = session().clips[ci].end;
+            int    nM = session().clips[ci].matchState;
             if (m_commandStack) {
                 m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
                     "Trim audio clip",
                     [this, ci, nS, nE, nM]() {
                         if (m_destroying.load(std::memory_order_acquire)) return;
-                        if (ci < m_clips.size()) {
-                            m_clips[ci].start = nS; m_clips[ci].end = nE;
-                            m_clips[ci].matchState = nM;
+                        if (ci < session().clips.size()) {
+                            session().clips[ci].start = nS; session().clips[ci].end = nE;
+                            session().clips[ci].matchState = nM;
                             if (auto* wf = waveformForClip(static_cast<int>(ci)))
                                 wf->setTrimRange(nS, nE);
                             populateLeftList();
@@ -196,9 +196,9 @@ AudioSync::AudioSync(QWidget* parent)
                     },
                     [this, ci, oS, oE, oM]() {
                         if (m_destroying.load(std::memory_order_acquire)) return;
-                        if (ci < m_clips.size()) {
-                            m_clips[ci].start = oS; m_clips[ci].end = oE;
-                            m_clips[ci].matchState = oM;
+                        if (ci < session().clips.size()) {
+                            session().clips[ci].start = oS; session().clips[ci].end = oE;
+                            session().clips[ci].matchState = oM;
                             if (auto* wf = waveformForClip(static_cast<int>(ci)))
                                 wf->setTrimRange(oS, oE);
                             populateLeftList();
@@ -264,20 +264,20 @@ void AudioSync::runClipsMutationWithUndo(const std::string& description,
                                           std::function<void()> mutate,
                                           std::function<void()> rebuild)
 {
-    auto oldClips = m_clips;
-    const bool oldSyncDone = m_syncDone;
+    auto oldClips = session().clips;
+    const bool oldSyncDone = session().syncDone;
     if (mutate) mutate();
-    if (m_clips == oldClips && m_syncDone == oldSyncDone) {
+    if (session().clips == oldClips && session().syncDone == oldSyncDone) {
         // No observable change — refresh UI but don't pollute undo history.
         if (rebuild) rebuild();
         return;
     }
-    auto newClips = m_clips;
-    const bool newSyncDone = m_syncDone;
+    auto newClips = session().clips;
+    const bool newSyncDone = session().syncDone;
     auto apply = [this, rebuild](const std::vector<SyncClip>& clips, bool syncDone) {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        m_clips = clips;
-        m_syncDone = syncDone;
+        session().clips = clips;
+        session().syncDone = syncDone;
         if (rebuild) rebuild();
     };
     if (rebuild) rebuild();
@@ -343,17 +343,17 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
         QListWidgetItem* item = m_transcribeFileList->itemAt(ctxEvent->pos());
         if (!item) return QWidget::eventFilter(watched, event);
         int row = m_transcribeFileList->row(item);
-        if (row < 0 || row >= static_cast<int>(m_audioPaths.size()))
+        if (row < 0 || row >= static_cast<int>(session().audioPaths.size()))
             return QWidget::eventFilter(watched, event);
 
         // "Transcribed" if it has segments OR clips (clips can outlive segments
         // across state restores — match startTranscription's skip rule).
-        const std::string& rowPath = m_audioPaths[static_cast<size_t>(row)];
+        const std::string& rowPath = session().audioPaths[static_cast<size_t>(row)];
         bool transcribed =
-            (row < static_cast<int>(m_allTranscriptionResults.size()) &&
-             !m_allTranscriptionResults[static_cast<size_t>(row)].segments.empty());
+            (row < static_cast<int>(session().allTranscriptionResults.size()) &&
+             !session().allTranscriptionResults[static_cast<size_t>(row)].segments.empty());
         if (!transcribed)
-            for (const auto& c : m_clips)
+            for (const auto& c : session().clips)
                 if (c.sourceFile == rowPath) { transcribed = true; break; }
 
         QMenu menu(m_transcribeFileList);
@@ -510,10 +510,10 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
             QListWidgetItem* item = list->itemAt(mappedPos);
             if (!item) return QWidget::eventFilter(watched, event);
             int row = list->row(item);
-            if (row < 0 || row >= static_cast<int>(m_audioPaths.size()))
+            if (row < 0 || row >= static_cast<int>(session().audioPaths.size()))
                 return QWidget::eventFilter(watched, event);
-            bool hasTx = (row < static_cast<int>(m_allTranscriptionResults.size()) &&
-                          !m_allTranscriptionResults[row].segments.empty());
+            bool hasTx = (row < static_cast<int>(session().allTranscriptionResults.size()) &&
+                          !session().allTranscriptionResults[row].segments.empty());
             QMenu menu(list);
             menu.setStyleSheet(QStringLiteral(
                 "QMenu { background: %1; color: %2; border: 1px solid %3;"
@@ -543,7 +543,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
                 } else if (ch == rmAct) {
                     removeFileFromSync(row);
                 } else if (ch == expAct) {
-                    QString fp = QString::fromStdString(m_audioPaths[static_cast<size_t>(row)]);
+                    QString fp = QString::fromStdString(session().audioPaths[static_cast<size_t>(row)]);
                     if (QFileInfo::exists(fp))
                         QProcess::startDetached("explorer", {"/select,", QDir::toNativeSeparators(fp)});
                 }
@@ -563,7 +563,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
                 } else if (ch == rmAct) {
                     removeFileFromSync(row);
                 } else if (ch == expAct) {
-                    QString fp = QString::fromStdString(m_audioPaths[static_cast<size_t>(row)]);
+                    QString fp = QString::fromStdString(session().audioPaths[static_cast<size_t>(row)]);
                     if (QFileInfo::exists(fp))
                         QProcess::startDetached("explorer", {"/select,", QDir::toNativeSeparators(fp)});
                 }
@@ -632,7 +632,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
         //   3. QListWidget::currentRow()
         auto resolveRow = [&]() -> int {
             if (m_selectedClipIdx >= 0 &&
-                static_cast<size_t>(m_selectedClipIdx) < m_clips.size())
+                static_cast<size_t>(m_selectedClipIdx) < session().clips.size())
                 return m_selectedClipIdx;
             int r = clipRowForWidget(qobject_cast<QWidget*>(watched));
             if (r >= 0) return r;
@@ -646,7 +646,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
         // unreliable.
         if (key == Qt::Key_Space) {
             int row = resolveRow();
-            if (row >= 0 && static_cast<size_t>(row) < m_clips.size()) {
+            if (row >= 0 && static_cast<size_t>(row) < session().clips.size()) {
                 spdlog::debug("AudioSync::eventFilter  Space → clip {}", row);
                 m_selectedClipIdx = row;
                 togglePlayClip(static_cast<size_t>(row));
@@ -663,7 +663,7 @@ bool AudioSync::eventFilter(QObject* watched, QEvent* event)
                 return false;  // inside sendEvent — let it reach the target widget
 
             int row = resolveRow();
-            if (row < 0 || static_cast<size_t>(row) >= m_clips.size())
+            if (row < 0 || static_cast<size_t>(row) >= session().clips.size())
                 return QWidget::eventFilter(watched, event);
 
             auto* wf = waveformForClip(row);
@@ -706,10 +706,10 @@ void AudioSync::keyPressEvent(QKeyEvent* event)
 
     if (event->key() == Qt::Key_Space && event->modifiers() == Qt::NoModifier) {
         int row = (m_selectedClipIdx >= 0 &&
-                   static_cast<size_t>(m_selectedClipIdx) < m_clips.size())
+                   static_cast<size_t>(m_selectedClipIdx) < session().clips.size())
                       ? m_selectedClipIdx
                       : -1;
-        if (row >= 0 && static_cast<size_t>(row) < m_clips.size()) {
+        if (row >= 0 && static_cast<size_t>(row) < session().clips.size()) {
             m_selectedClipIdx = row;
             togglePlayClip(static_cast<size_t>(row));
             event->accept();
@@ -743,13 +743,7 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
                            const std::string& sourceIdentifier)
 {
     try {
-        // Save the current session before loading a new script
-        saveCurrentSession();
-
-        // Preserve the raw text content so we can restore the script
-        // offline without re-fetching from URL on project open.
-        m_scriptRawContent = pathOrContent;
-
+        // Parse first: a script that fails to load leaves the open one as it is.
         auto parsed = Script::load(pathOrContent);
         if (parsed.isEmpty()) {
             spdlog::warn("AudioSync: Script is empty");
@@ -757,6 +751,9 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
             m_pendingSessionName.clear();
             return false;
         }
+
+        // Save the current session before loading a new script
+        saveCurrentSession();
 
         // Determine session key: use sourceIdentifier if provided, else pathOrContent
         std::string sessionKey = sourceIdentifier.empty() ? pathOrContent : sourceIdentifier;
@@ -769,45 +766,39 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
                          sessionKey);
             m_pendingSessionName.clear();
             updateExistingSessionScript(sessionKey,
-                std::make_unique<Script>(std::move(parsed)));
+                std::make_unique<Script>(std::move(parsed)), pathOrContent);
 
             // Update UI — switchToScript returns early if same session,
             // so refresh manually if this is the active session.
             if (sessionKey == m_activeScriptKey) {
-                // saveCurrentSession() (at the top of loadScript) moved the
-                // live working state — m_clips, m_allTranscriptionResults,
-                // m_audioPaths, m_audioSamples, etc. — into the session, and
-                // updateExistingSessionScript() only updated the *session*.
-                // Restore the (remapped) state into the live members or the
-                // clip list, transcribe list and auto-sync all see empty data
-                // and the in-progress sync is silently wiped.
-                restoreSession(sessionKey);
-                m_syncDone = false;
+                // The session was updated in place (clips remapped); the
+                // views below rebuild from it.
+                session().syncDone = false;
 
                 // Rebuild the audio file list widget from the restored paths
                 // (it was never cleared, so it would otherwise drift from
-                // m_audioPaths after the move/restore round-trip).
+                // session().audioPaths after the move/restore round-trip).
                 if (m_audioFileList) {
                     m_audioFileList->blockSignals(true);
                     m_audioFileList->clear();
-                    for (const auto& ap : m_audioPaths)
+                    for (const auto& ap : session().audioPaths)
                         addAudioFileListItem(QString::fromStdString(ap));
                     m_audioFileList->blockSignals(false);
                 }
                 if (m_audioStatus)
-                    m_audioStatus->setText(m_audioPaths.empty()
+                    m_audioStatus->setText(session().audioPaths.empty()
                         ? "No files imported"
-                        : QString("%1 file(s)").arg(m_audioPaths.size()));
+                        : QString("%1 file(s)").arg(session().audioPaths.size()));
 
                 populateScriptFilter();
                 populateScriptList();
-                if (!m_clips.empty())
+                if (!session().clips.empty())
                     populateClipList();
                 refreshTranscribeFileList();
                 updateWorkflowState();
                 m_scriptStatus->setText(QString("%1 lines, %2 characters")
-                    .arg(m_script ? m_script->lineCount() : 0)
-                    .arg(m_script ? m_script->characters.size() : 0));
+                    .arg(session().script ? session().script->lineCount() : 0)
+                    .arg(session().script ? session().script->characters.size() : 0));
                 populateScriptSessionList();
             } else {
                 switchToScript(sessionKey);
@@ -816,38 +807,48 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
         }
 
         // Preserve script source and audio/clip state before clearing
-        // (clearCurrentSession wipes m_audioPaths, m_clips etc., which may
+        // (clearCurrentSession wipes session().audioPaths, session().clips etc., which may
         // have been restored from the project blob before the async script
         // download finished).
+        // A stored session keeps its own data; only what was entered while
+        // no session existed for the open key (the scratch session) moves
+        // into the new script's session.
+        ScriptSession carried;
+        if (!m_scriptSessions.count(m_activeScriptKey))
+            carried = std::move(m_scratchSession);
         QString savedSource = m_lastScriptSource;
-        auto savedAudioPaths = std::move(m_audioPaths);
-        auto savedAudioPath = std::move(m_audioPath);
-        auto savedClips = std::move(m_clips);
-        auto savedAudioSamples = std::move(m_audioSamples);
-        auto savedLineAudioFile = std::move(m_lineAudioFile);
+        auto savedAudioPaths = std::move(carried.audioPaths);
+        auto savedAudioPath = std::move(carried.audioPath);
+        auto savedClips = std::move(carried.clips);
+        auto savedAudioSamples = std::move(carried.audioSamples);
+        auto savedLineAudioFile = std::move(carried.lineAudioFile);
 
         clearCurrentSession();
         m_lastScriptSource = savedSource;
         m_activeScriptKey = sessionKey;
+        m_scriptSessions.try_emplace(sessionKey);   // the new script's session
 
-        m_script = std::make_unique<Script>(std::move(parsed));
-        m_scriptLoaded = true;
+        session().script = std::make_unique<Script>(std::move(parsed));
+        session().scriptLoaded = true;
+        // The raw text restores the script offline, without re-fetching the
+        // URL on project open.
+        session().rawContent = pathOrContent;
 
         // Restore audio/clip state that was saved before clearing
         if (!savedAudioPaths.empty()) {
-            m_audioPaths = std::move(savedAudioPaths);
-            m_audioPath = std::move(savedAudioPath);
-            m_clips = std::move(savedClips);
-            m_audioSamples = std::move(savedAudioSamples);
-            m_lineAudioFile = std::move(savedLineAudioFile);
-            m_audioImported = true;
+            session().audioPaths = std::move(savedAudioPaths);
+            session().audioPath = std::move(savedAudioPath);
+            session().clips = std::move(savedClips);
+            session().audioSamples = std::move(savedAudioSamples);
+            session().lineAudioFile = std::move(savedLineAudioFile);
+            session().audioImported = true;
             if (m_audioStatus)
-                m_audioStatus->setText(QString("%1 file(s)").arg(m_audioPaths.size()));
+                m_audioStatus->setText(QString("%1 file(s)").arg(session().audioPaths.size()));
             // Rebuild audio file list widget (cleared by clearCurrentSession)
             if (m_audioFileList) {
                 m_audioFileList->blockSignals(true);
                 m_audioFileList->clear();
-                for (const auto& ap : m_audioPaths)
+                for (const auto& ap : session().audioPaths)
                     addAudioFileListItem(QString::fromStdString(ap));
                 m_audioFileList->blockSignals(false);
             }
@@ -857,16 +858,16 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
         }
 
         // Determine display name
-        auto& session = m_scriptSessions[sessionKey];
+        auto& entry = session();
         if (!m_pendingSessionName.empty()) {
             // Interactive load — use user-chosen name
-            session.displayName = m_pendingSessionName;
+            entry.displayName = m_pendingSessionName;
             m_pendingSessionName.clear();
         } else {
             // Restore or auto — derive from source
-            session.displayName = displayNameForScriptUrl(QString::fromStdString(sessionKey)).toStdString();
+            entry.displayName = displayNameForScriptUrl(QString::fromStdString(sessionKey)).toStdString();
         }
-        session.sourceUrl = sessionKey;
+        entry.sourceUrl = sessionKey;
 
         populateScriptFilter();
         if (!m_restoring) {
@@ -875,14 +876,14 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
         }
 
         m_scriptStatus->setText(QString("%1 lines, %2 characters")
-            .arg(m_script->lineCount())
-            .arg(m_script->characters.size()));
+            .arg(session().script->lineCount())
+            .arg(session().script->characters.size()));
 
         populateScriptSessionList();
 
         spdlog::info("AudioSync: Loaded script session '{}' with {} lines",
-                     session.displayName, m_script->lineCount());
-        emit scriptLoaded(static_cast<int>(m_script->lineCount()));
+                     entry.displayName, session().script->lineCount());
+        emit scriptLoaded(static_cast<int>(session().script->lineCount()));
         emit voiceContextChanged();
         return true;
     } catch (const std::exception& e) {
@@ -899,22 +900,22 @@ bool AudioSync::importAudio(const std::string& audioPath)
 
     // One imported path owns exactly one transcription-result slot. Avoid a
     // duplicate row if the same file is selected twice.
-    if (std::find(m_audioPaths.begin(), m_audioPaths.end(), audioPath)
-        != m_audioPaths.end()) {
+    if (std::find(session().audioPaths.begin(), session().audioPaths.end(), audioPath)
+        != session().audioPaths.end()) {
         spdlog::info("AudioSync: Audio already imported: {}", audioPath);
         return true;
     }
     m_audioDecodeFailedPaths.erase(audioPath);   // re-imported: try decoding again
 
     // Repair any legacy size mismatch before appending the new parallel slot.
-    m_allTranscriptionResults.resize(m_audioPaths.size());
+    session().allTranscriptionResults.resize(session().audioPaths.size());
 
-    m_audioPath = audioPath;
-    m_audioPaths.push_back(audioPath);
-    m_allTranscriptionResults.emplace_back();
-    m_audioImported = true;
+    session().audioPath = audioPath;
+    session().audioPaths.push_back(audioPath);
+    session().allTranscriptionResults.emplace_back();
+    session().audioImported = true;
     if (m_audioPathEdit) m_audioPathEdit->setText(QString::fromStdString(audioPath));
-    m_audioStatus->setText(QString("%1 file(s)").arg(m_audioPaths.size()));
+    m_audioStatus->setText(QString("%1 file(s)").arg(session().audioPaths.size()));
 
     // Load audio samples FIRST so the list item can display a waveform
     loadAudioSamples();
@@ -946,7 +947,7 @@ void AudioSync::startTranscription()
         return;
     }
 
-    if (m_audioPaths.empty()) {
+    if (session().audioPaths.empty()) {
         m_transcribeStatus->setText("No audio files imported");
         return;
     }
@@ -956,8 +957,8 @@ void AudioSync::startTranscription()
     // download from HuggingFace.
 
     // Preserve existing transcription results — only transcribe new files
-    if (m_allTranscriptionResults.size() < m_audioPaths.size()) {
-        m_allTranscriptionResults.resize(m_audioPaths.size());
+    if (session().allTranscriptionResults.size() < session().audioPaths.size()) {
+        session().allTranscriptionResults.resize(session().audioPaths.size());
     }
 
     // A file counts as already transcribed if it has stored segments OR has
@@ -966,14 +967,14 @@ void AudioSync::startTranscription()
     // clip check those files would be needlessly re-transcribed, which is the
     // "Transcribe All re-does everything" bug.
     std::unordered_set<std::string> filesWithClips;
-    for (const auto& c : m_clips)
+    for (const auto& c : session().clips)
         filesWithClips.insert(c.sourceFile);
 
     // Build list of file indices that still need transcription
     std::vector<size_t> pendingIndices;
-    for (size_t i = 0; i < m_audioPaths.size(); ++i) {
-        const bool hasSegments = !m_allTranscriptionResults[i].segments.empty();
-        const bool hasClips    = filesWithClips.count(m_audioPaths[i]) > 0;
+    for (size_t i = 0; i < session().audioPaths.size(); ++i) {
+        const bool hasSegments = !session().allTranscriptionResults[i].segments.empty();
+        const bool hasClips    = filesWithClips.count(session().audioPaths[i]) > 0;
         if (!hasSegments && !hasClips)
             pendingIndices.push_back(i);
     }
@@ -996,11 +997,11 @@ void AudioSync::startSingleFileTranscription(size_t index)
             m_transcribeStatus->setText(QStringLiteral("A transcription is already in progress"));
         return;
     }
-    if (index >= m_audioPaths.size())
+    if (index >= session().audioPaths.size())
         return;
 
-    if (m_allTranscriptionResults.size() < m_audioPaths.size())
-        m_allTranscriptionResults.resize(m_audioPaths.size());
+    if (session().allTranscriptionResults.size() < session().audioPaths.size())
+        session().allTranscriptionResults.resize(session().audioPaths.size());
     beginTranscriptionRun({index});
 }
 
@@ -1016,39 +1017,39 @@ void AudioSync::beginTranscriptionRun(std::vector<size_t> indices)
     }
 
     indices.erase(std::remove_if(indices.begin(), indices.end(), [this](size_t index) {
-        return index >= m_audioPaths.size();
+        return index >= session().audioPaths.size();
     }), indices.end());
     std::sort(indices.begin(), indices.end());
     indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
     if (indices.empty())
         return;
 
-    m_pendingTranscriptionIndices = std::move(indices);
-    m_transcriptionRunTotal = m_pendingTranscriptionIndices.size();
-    m_transcriptionRunCompleted = 0;
+    session().pendingTranscriptionIndices = std::move(indices);
+    session().transcriptionRunTotal = session().pendingTranscriptionIndices.size();
+    session().transcriptionRunCompleted = 0;
     m_transcriptionRunHadSuccess = false;
     m_transcriptionRunError.clear();
     m_transcriptionState = TranscriptionState::Running;
     const uint64_t runId = ++m_transcriptionRunId;
-    m_currentTranscriptionIndex = m_pendingTranscriptionIndices.front();
+    session().currentTranscriptionIndex = session().pendingTranscriptionIndices.front();
 
     m_transcribeStatus->setText(QString("Transcribing file 1/%1...")
-        .arg(m_transcriptionRunTotal));
+        .arg(session().transcriptionRunTotal));
     m_progressBar->setVisible(true);
     m_progressBar->setValue(0);
     updateTranscriptionControls();
 
     spdlog::info("AudioSync: Starting transcription run {} with {} file(s)",
-                 runId, m_transcriptionRunTotal);
+                 runId, session().transcriptionRunTotal);
     emit transcriptionStarted();
-    startTranscriptionForFile(m_currentTranscriptionIndex, runId);
+    startTranscriptionForFile(session().currentTranscriptionIndex, runId);
 }
 
 void AudioSync::startTranscriptionForFile(size_t index, uint64_t runId)
 {
     if (runId != m_transcriptionRunId
         || m_transcriptionState == TranscriptionState::Idle
-        || index >= m_audioPaths.size()) {
+        || index >= session().audioPaths.size()) {
         return;
     }
 
@@ -1059,13 +1060,13 @@ void AudioSync::startTranscriptionForFile(size_t index, uint64_t runId)
         return;
     }
 
-    m_audioPath = m_audioPaths[index];
+    session().audioPath = session().audioPaths[index];
 
     auto* thread = new QThread;
     auto* worker = new TranscriptionWorker(m_transcriber.get());
     m_workerThread = thread;
     m_worker = worker;
-    worker->setAudioPath(m_audioPath);
+    worker->setAudioPath(session().audioPath);
     {
         const QString modelId = m_modelCombo->currentData().isValid()
             ? m_modelCombo->currentData().toString()
@@ -1108,19 +1109,19 @@ void AudioSync::startTranscriptionForFile(size_t index, uint64_t runId)
 
 int AudioSync::scriptLineCount() const
 {
-    return m_script ? static_cast<int>(m_script->lineCount()) : 0;
+    return session().script ? static_cast<int>(session().script->lineCount()) : 0;
 }
 
 QStringList AudioSync::scriptCharacters() const
 {
     QStringList result;
-    if (m_script) {
-        for (const auto& ch : m_script->characters)
+    if (session().script) {
+        for (const auto& ch : session().script->characters)
             result.append(QString::fromStdString(ch));
     }
     // MATCH can retain valid character-tagged clips in restored/legacy
     // projects even if the parsed Script character cache is incomplete.
-    for (const auto& clip : m_clips) {
+    for (const auto& clip : session().clips) {
         const QString character = QString::fromUtf8(clip.character).trimmed();
         if (!character.isEmpty() && !result.contains(character, Qt::CaseInsensitive))
             result.append(character);
