@@ -954,7 +954,7 @@ void ProgramMonitor::updateDisplay()
         // composite mutex for 50–500ms on cold decodes — the visible
         // "after-edit pause" that didn't feel Premiere-snappy.  Now we
         // keep non-blocking fetch, and the A1 composite settle-window
-        // (CompositeService::kSettleWindowMs) holds the previous full
+        // (CompositeHold::kSettleWindowMs) holds the previous full
         // composite while the prefetch workers warm the cache.  Only
         // active user scrubbing forces scrub-mode.
         const bool useScrub = m_isScrubbing;

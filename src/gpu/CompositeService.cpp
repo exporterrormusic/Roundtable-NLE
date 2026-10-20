@@ -342,19 +342,9 @@ void CompositeService::invalidateCacheDirect()
     if (m_engine) {
         m_engine->clearLru();
     }
-    {
-        std::lock_guard lg(m_lastCompositeMtx);
-        m_lastGoodComposite.reset();
-        m_lastGoodCompositeTick = -1;
-        m_lastGoodCompositeClipIds.clear();
-        m_lastStaticComposite.reset();
-        m_lastStaticCompositeKey = 0;
-        // Re-arm the A1 settle window so a project switch / cache flush
-        // gets the same first-view grace as cold startup, instead of
-        // inheriting the previous project's timestamp.
-        m_lastFullCompositeAt = std::chrono::steady_clock::time_point{};
-        m_lastFullLayerCount  = 0;
-    }
+    // Also re-arms the settle window, so a project switch / cache flush gets
+    // the same first-view grace as cold startup.
+    m_hold.clearAll();
     m_cacheInvalidateRequested.store(false, std::memory_order_release);
 }
 
@@ -395,26 +385,7 @@ void CompositeService::requestCacheInvalidationRange(int64_t fromTick, int64_t t
     }
     if (m_engine)
         m_engine->invalidateLruRange(m_timeline, fromTick, toTick);
-    {
-        std::lock_guard lg(m_lastCompositeMtx);
-        m_lastStaticComposite.reset();
-        m_lastStaticCompositeKey = 0;
-        // If the held last-good frame happens to be in the affected range,
-        // drop it too — otherwise keep it to bridge the next composite.
-        if (m_lastGoodComposite && m_lastGoodCompositeTick >= fromTick &&
-            m_lastGoodCompositeTick <= toTick)
-        {
-            m_lastGoodComposite.reset();
-            m_lastGoodCompositeTick = -1;
-            m_lastGoodCompositeClipIds.clear();
-            // The held composite covered the invalidated range, so
-            // re-arm the A1 settle clock too — otherwise the next
-            // partial composite would inherit the stale timestamp
-            // and skip the first-view hold.
-            m_lastFullCompositeAt = std::chrono::steady_clock::time_point{};
-            m_lastFullLayerCount  = 0;
-        }
-    }
+    m_hold.invalidateRange(fromTick, toTick);
 }
 
 // ── Cache policy ─────────────────────────────────────────────────────────────
@@ -466,7 +437,7 @@ void CompositeService::shutdown()
     //    issued by MediaPool's PrefetchTexturePool — letting these
     //    refs survive into Phase 3 (when MediaPool is already gone)
     //    fires the recycle-into-dead-pool AV.  reset() clears:
-    //    m_lastGoodComposite, m_stickyLastClipFrame,
+    //    the last good composite, m_stickyLastClipFrame,
     //    m_stickyLastCharFrame, m_lastPreRenderedSpineFrame,
     //    m_spineCache (transitively SpineCPUState::cachedFrame),
     //    and the engine's composite LRU.

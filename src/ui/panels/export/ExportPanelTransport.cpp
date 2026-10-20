@@ -183,7 +183,7 @@ void ExportPanel::onPlayPause()
         // scrub=true so the compositor's settle-window hold is BYPASSED
         // during real-time preview playback — otherwise every tick where
         // a Full-tier decode isn't ready (typical at 30+fps in export
-        // preview) returns the prior m_lastGoodComposite and the preview
+        // preview) returns the prior last good composite and the preview
         // appears frozen.  Accepting partial composites for one or two
         // frames during a cold decoder warm-up is far better than the
         // visible freeze the settle window produces here.
@@ -244,7 +244,7 @@ void ExportPanel::onPlaybackTick()
     // Render the preview at full output resolution.  scrub=true bypasses
     // the compositor's settle-window hold so the preview actually advances
     // each tick.  With scrub=false (the prior setting), every tick where a
-    // Full-tier decode wasn't ready re-returned m_lastGoodComposite — at
+    // Full-tier decode wasn't ready re-returned the last good composite — at
     // 30 fps real-time playback that is virtually every tick, so the
     // preview window froze on the first frame while the timeline's audio
     // played on.  forceFullResolution=true is preserved by the preview

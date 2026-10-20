@@ -75,7 +75,7 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
     }
 
     // isNestedRecursion=true so the inner composite
-    // doesn't touch the outer's m_lastGoodComposite /
+    // doesn't touch the outer's last good composite /
     // LRU / invalidate flag.  Without this, the inner
     // overwrites the cached frame the presenter reads,
     // producing the "nested sequence glitches to its
@@ -85,7 +85,7 @@ std::shared_ptr<CachedFrame> CompositeService::buildSequenceClipFrame(
         /*isNestedRecursion=*/true, stillMode, requestTier, nestedContext);
 
     // Snapshot into a clean CPU-only BGRA frame. The
-    // inner composite returns its shared m_lastGoodComposite,
+    // inner composite returns the shared last good composite,
     // which:
     //   • still has gpuReady/gpuImageView set (CPU display
     //     mode only changes presentation, tryCompositeOnGpu

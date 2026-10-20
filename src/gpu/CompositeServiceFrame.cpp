@@ -93,17 +93,6 @@ std::vector<uint64_t> activeVisualClipIds(const Timeline& timeline, int64_t tick
     return ids;
 }
 
-bool sameVisualClipSet(const std::vector<uint64_t>& current,
-                       const std::vector<uint64_t>& previous)
-{
-    auto sortedPrevious = previous;
-    std::sort(sortedPrevious.begin(), sortedPrevious.end());
-    sortedPrevious.erase(
-        std::unique(sortedPrevious.begin(), sortedPrevious.end()),
-        sortedPrevious.end());
-    return current == sortedPrevious;
-}
-
 void staticStateHashBytes(uint64_t& hash, const void* data, size_t size)
 {
     const auto* bytes = static_cast<const uint8_t*>(data);
@@ -117,6 +106,18 @@ template <typename T>
 void staticStateHashValue(uint64_t& hash, const T& value)
 {
     staticStateHashBytes(hash, &value, sizeof(value));
+}
+
+/// Clips that produced a layer stack (adjustment boundaries excluded): the
+/// shot identity the hold compares against.
+std::vector<uint64_t> visualLayerClipIds(const std::vector<LayerInfo>& layers)
+{
+    std::vector<uint64_t> ids;
+    ids.reserve(layers.size());
+    for (const auto& layer : layers)
+        if (layer.clipId != 0 && !layer.isAdjustmentLayer)
+            ids.push_back(layer.clipId);
+    return ids;
 }
 
 std::optional<uint64_t> staticCompositeStateKey(
@@ -422,14 +423,10 @@ RenderResult CompositeService::renderFrame(
         // previous good frame while a new source arrives.  Surface that fact
         // instead of making the scheduler infer it from pointer identity.
         if (request.exactness == RenderExactness::BestEffortAllowed &&
-            !isNestedRecursion) {
-            std::lock_guard lock(m_lastCompositeMtx);
-            if (result.frame == m_lastGoodComposite &&
-                m_lastGoodCompositeTick >= 0 &&
-                m_lastGoodCompositeTick != request.timelineTick) {
-                result.status = RenderResultStatus::HeldPrevious;
-                result.diagnostics.heldFrame = true;
-            }
+            !isNestedRecursion &&
+            m_hold.isHeldFromAnotherTick(result.frame, request.timelineTick)) {
+            result.status = RenderResultStatus::HeldPrevious;
+            result.diagnostics.heldFrame = true;
         }
     }
     // Also for an empty sentinel (Blank) answered while a source decodes.
@@ -488,14 +485,7 @@ try
         // Nested recursion: don't fall back to OUTER's last-good frame
         // for an INNER layer (would render outer content inside itself).
         if (isNestedRecursion || stillMode) return nullptr;
-        std::lock_guard lg(m_lastCompositeMtx);
-        if (m_lastGoodComposite) {
-            m_lastGoodComposite->gpuReady     = false;
-            m_lastGoodComposite->gpuImageView = 0;
-            m_lastGoodComposite->gpuSampler   = 0;
-            m_lastGoodComposite->gpuSemaphore = 0;
-        }
-        return m_lastGoodComposite;
+        return m_hold.lastGoodWithoutGpu();
     }
 
     // Re-entrancy guard — safety net against unexpected recursive calls.
@@ -515,8 +505,7 @@ try
     constexpr int kMaxCompositeDepth = 2;
     if (depth >= kMaxCompositeDepth) {
         if (isNestedRecursion || stillMode) return nullptr;
-        std::lock_guard lg(m_lastCompositeMtx);
-        return m_lastGoodComposite;
+        return m_hold.lastGood();
     }
     ++depth;
     struct DepthGuard {
@@ -527,7 +516,7 @@ try
     // recovery callback. There is no per-frame CPU compositor.
 
     // Blocking lock — FrameProducer is now the sole compositor thread.
-    // The old try_to_lock pattern (which returned stale m_lastGoodComposite
+    // The old try_to_lock pattern (which returned the stale last good composite
     // on contention) is removed.  compositeFrame() now ALWAYS produces the
     // correct frame for the requested tick.  Never returns stale frames.
     // A recursive mutex keeps synchronous child-sequence evaluation inside
@@ -560,7 +549,7 @@ try
     // Skip during nested-sequence recursion: the OUTER frame already
     // consumed the flag at its own entry and reset its own state. If the
     // inner re-consumes the flag (it could read it while still set from a
-    // late UI invalidation), inner would reset the outer's m_lastGoodComposite
+    // late UI invalidation), inner would reset the outer's last good composite
     // and wipe the outer's LRU mid-frame -- producing the "every other frame
     // glitches to a stale frame" symptom on nested sequences.
     bool postInvalidate = false;
@@ -571,15 +560,9 @@ try
                       "consumed — clearLru + reset lastGoodComposite", tick);
         if (m_engine)
             m_engine->clearLru();
-        {
-            std::lock_guard lg(m_lastCompositeMtx);
-            m_lastGoodComposite.reset();
-            m_lastGoodCompositeTick = -1;
-            // Match invalidateCacheDirect(): re-arm the A1 settle window
-            // so post-invalidation views get the same first-view grace.
-            m_lastFullCompositeAt = std::chrono::steady_clock::time_point{};
-            m_lastFullLayerCount  = 0;
-        }
+        // Re-arms the settle window too, so post-invalidation views get the
+        // same first-view grace.
+        m_hold.clearLastGoodAndSettle();
     }
 
     // ── §4.6 2c-read: serve a pre-rendered ("green") segment from cache ──
@@ -625,11 +608,7 @@ try
             if (cached->width == outW && cached->height == outH
                     && !cached->pixels.empty()) {
                 // Keep the last-good fallback coherent with what we present.
-                {
-                    std::lock_guard lg(m_lastCompositeMtx);
-                    m_lastGoodComposite     = cached;
-                    m_lastGoodCompositeTick = tick;
-                }
+                m_hold.adoptLastGood(cached, tick);
                 cached->segmentCacheHit = true;
                 cached->preservesAlpha = (renderFlags & RenderStatePreserveAlpha) != 0;
                 const uint64_t n = ++m_segCacheHits;
@@ -1119,7 +1098,7 @@ try
     // When this call is an inner SequenceClip composite and it cannot
     // fully resolve its own layers this tick, return nullptr instead of
     // falling through to the settle-hold / empty-sentinel paths below.
-    // Those paths return the OUTER's m_lastGoodComposite (outer program
+    // Those paths return the OUTER's last good composite (outer program
     // content) or an empty width=0 sentinel; either one used as the
     // inner-sequence layer paints the program inside itself / blanks the
     // clip, flickering against correctly-composited frames.  Skipping the
@@ -1168,7 +1147,7 @@ try
     // would render with missing layers — the visible "layers build up over
     // several frames" symptom.  Hold the prior complete composite (or, on
     // first view when there's no prior, return an empty sentinel so the
-    // viewport stays clear) for up to kSettleWindowMs ms.  After that
+    // viewport stays clear) for up to CompositeHold::kSettleWindowMs.  After that
     // timeout, accept the partial composite so we don't freeze indefinitely
     // if a clip is permanently unresolvable (e.g. missing media file).
     //
@@ -1186,44 +1165,13 @@ try
     {
         using namespace std::chrono;
         const auto now = steady_clock::now();
-        std::shared_ptr<CachedFrame> hold;
-        bool withinSettle = false;
-        bool firstView = false;
-        {
-            std::lock_guard lg(m_lastCompositeMtx);
-            // First-view init: arm the settle clock on the first observation
-            // of an incomplete composite.  Without this, the very first
-            // composite at startup (or after cache invalidation) finds
-            // m_lastFullCompositeAt at its default (epoch 0), skips the
-            // settle entirely, and the user sees layers pop in one by one
-            // while the cold NVDEC decoders open.
-            if (m_lastFullCompositeAt.time_since_epoch().count() == 0) {
-                m_lastFullCompositeAt = now;
-                firstView = true;
-            }
-            const auto elapsed = duration_cast<milliseconds>(
-                now - m_lastFullCompositeAt).count();
-            if (elapsed < kSettleWindowMs) {
-                // Shot/seek guard: require the complete active visual clip
-                // set to match. "Any overlap" is insufficient because a
-                // long-lived bar/logo above the edit would make every shot
-                // look continuous. Adjustment clips are excluded: they do
-                // not produce pixels of their own.
-                bool sameShot = true;
-                if (m_lastGoodComposite && !m_lastGoodCompositeClipIds.empty()) {
-                    const auto currentIds = activeVisualClipIds(*renderTimeline, tick);
-                    sameShot = sameVisualClipSet(
-                                   currentIds, m_lastGoodCompositeClipIds) &&
-                               m_lastGoodCompositeTick >= 0 &&
-                               isNearbyPlaybackCompositeTick(
-                                   tick, m_lastGoodCompositeTick);
-                }
-                if (sameShot) {
-                    hold = m_lastGoodComposite;   // may be null on first view
-                    withinSettle = true;
-                }
-            }
-        }
+        // Adjustment clips are not in the id set: they produce no pixels.
+        const auto settle = m_hold.settle(now, tick, [&] {
+            return activeVisualClipIds(*renderTimeline, tick);
+        });
+        const std::shared_ptr<CachedFrame>& hold = settle.frame;
+        const bool withinSettle = settle.withinWindow;
+        const bool firstView = settle.firstView;
         if (withinSettle) {
             static int s_settleLog = 0;
             if (++s_settleLog % 30 == 0 || firstView) {
@@ -1236,7 +1184,7 @@ try
             // No prior composite — return an empty sentinel.  The pipeline
             // treats width==0 as "clear viewport" and the next tick will
             // re-composite (poll timer / settle counter forces re-render).
-            // By kSettleWindowMs the prefetch workers should have decoded
+            // By CompositeHold::kSettleWindowMs the prefetch workers should have decoded
             // enough first frames that layers.size() == clipsAtTick.
             return std::make_shared<CachedFrame>();
         }
@@ -1257,46 +1205,33 @@ try
             // clip must not borrow the old source position.
             const auto currentClipIds = activeVisualClipIds(*renderTimeline, tick);
 
-            std::lock_guard lg(m_lastCompositeMtx);
-            if (m_lastGoodComposite && m_lastGoodCompositeTick >= 0) {
-                const bool sameShot = sameVisualClipSet(
-                                          currentClipIds,
-                                          m_lastGoodCompositeClipIds) &&
-                                      isNearbyPlaybackCompositeTick(
-                                          tick, m_lastGoodCompositeTick);
-                if (!sameShot) {
-                    // Different shot — don't reuse prior composite. Drop
-                    // it so subsequent ticks at this position don't keep
-                    // returning the old shot either.
-                    m_lastGoodComposite.reset();
-                    m_lastGoodCompositeTick = -1;
-                    m_lastGoodCompositeClipIds.clear();
-                    return std::make_shared<CachedFrame>();
+            // At most CompositeHold::kMaxStaleTicks (1 frame at 24 fps,
+            // ~2.5 at 60 fps), so the viewport doesn't freeze on the
+            // previous picture while the new shot's first frame decodes.
+            using Stale = CompositeHold::Stale;
+            const auto stale = m_hold.staleFallback(tick, currentClipIds);
+            switch (stale.kind) {
+            case Stale::Kind::DifferentShot:
+                // The prior composite showed another shot; it has been
+                // dropped so later ticks here don't return it either.
+                return std::make_shared<CachedFrame>();
+            case Stale::Kind::Reuse:
+                if (postInvalidate) {
+                    // debug-level: routine stale-fallback during settle,
+                    // not an anomaly (see LIVE-RELOAD FRESH note below).
+                    spdlog::debug("[LIVE-RELOAD] compositeFrame tick={}: "
+                                  "returning STALE last good composite "
+                                  "(lastTick={}, clipsAtTick={}, delta={})",
+                                  tick, stale.lastTick, clipsAtTick, stale.delta);
                 }
-
-                // Allow at most 2 stale frames so the viewport doesn't
-                // freeze on the previous shot for multiple frame durations
-                // while the new shot's first frame decodes.  At 24fps each
-                // frame is 2000 ticks (48000/24); at 60fps it's 800 ticks.
-                // Use 2000 ticks which is 1 frame at 24fps or ~2.5 frames
-                // at 60fps — brief enough to avoid visible freeze.
-                constexpr int64_t kMaxStaleTicks = 48000 / 24;
-                int64_t tickDelta = std::abs(tick - m_lastGoodCompositeTick);
-                if (tickDelta <= kMaxStaleTicks) {
-                    if (postInvalidate) {
-                        // debug-level: routine stale-fallback during settle,
-                        // not an anomaly (see LIVE-RELOAD FRESH note below).
-                        spdlog::debug("[LIVE-RELOAD] compositeFrame tick={}: "
-                                      "returning STALE m_lastGoodComposite "
-                                      "(lastTick={}, clipsAtTick={}, delta={})",
-                                      tick, m_lastGoodCompositeTick,
-                                      clipsAtTick, tickDelta);
-                    }
-                    return m_lastGoodComposite;
-                }
+                return stale.frame;
+            case Stale::Kind::TooOld:
                 spdlog::info("[COMPOSITE] Suppressing stale lastGoodComposite "
                              "(tick={} vs last={}, delta={})",
-                             tick, m_lastGoodCompositeTick, tickDelta);
+                             tick, stale.lastTick, stale.delta);
+                break;
+            case Stale::Kind::None:
+                break;
             }
         }
 
@@ -1318,18 +1253,11 @@ try
                           "no decoded frames available — decode in flight)",
                           tick, clipsAtTick);
         }
-        {
-            auto emptyFrame = std::make_shared<CachedFrame>();
-            std::lock_guard lg(m_lastCompositeMtx);
-            m_lastGoodComposite.reset();
-            m_lastGoodCompositeTick = -1;
-            // Re-arm the A1 settle window: the next composite at this
-            // tick (after prefetches land) gets the first-view grace
-            // instead of accepting another partial right away.
-            m_lastFullCompositeAt = std::chrono::steady_clock::time_point{};
-            m_lastFullLayerCount  = 0;
-            return emptyFrame;
-        }
+        // Re-arm the settle window too: the next composite at this tick
+        // (after prefetches land) gets the first-view grace instead of
+        // accepting another partial right away.
+        m_hold.clearLastGoodAndSettle();
+        return std::make_shared<CachedFrame>();
     }
 
     // Log layer details for packed-alpha diagnostics
@@ -1367,22 +1295,8 @@ try
               policy.nv12Output)
         : std::optional<uint64_t>{};
     if (staticStateKey) {
-        std::shared_ptr<CachedFrame> staticHit;
-        {
-            std::lock_guard lg(m_lastCompositeMtx);
-            if (m_lastStaticComposite
-                && m_lastStaticCompositeKey == *staticStateKey) {
-                staticHit = m_lastStaticComposite;
-                if (!staticHit->hasNv12()) {
-                    m_lastGoodComposite = staticHit;
-                    m_lastGoodCompositeTick = tick;
-                    m_lastGoodCompositeClipIds.clear();
-                    for (const auto& layer : layers)
-                        if (layer.clipId != 0 && !layer.isAdjustmentLayer)
-                            m_lastGoodCompositeClipIds.push_back(layer.clipId);
-                }
-            }
-        }
+        auto staticHit = m_hold.staticHit(*staticStateKey, tick,
+                                          visualLayerClipIds(layers));
         if (staticHit) {
             const uint64_t hits = ++m_staticCompositeHits;
             if (hits == 1 || hits % 300 == 0)
@@ -1392,9 +1306,7 @@ try
             return staticHit;
         }
     } else if (!isNestedRecursion) {
-        std::lock_guard lg(m_lastCompositeMtx);
-        m_lastStaticComposite.reset();
-        m_lastStaticCompositeKey = 0;
+        m_hold.clearStatic();
     }
 
 
@@ -1444,35 +1356,23 @@ try
         if (gpuResult) {
             // Skip the cache write entirely when this call is a recursive
             // descent into a nested SequenceClip's inner timeline. The
-            // inner result must NOT replace the outer composite's
-            // m_lastGoodComposite -- the presenter thread reads that
-            // field concurrently, and a swap mid-frame causes the
-            // visible "every other frame is the nested sequence's first
-            // frame" glitch during playback / scrub.
+            // inner result must NOT replace the outer composite's last
+            // good frame -- the presenter thread reads it concurrently,
+            // and a swap mid-frame causes the visible "every other frame
+            // is the nested sequence's first frame" glitch during
+            // playback / scrub.
             // An NV12 export frame has no BGRA pixels, so it can't stand
             // in as the last good composite for any other consumer; the
             // static-composite reuse below is keyed by format.
             if (!isNestedRecursion && gpuResult->hasNv12()) {
-                std::lock_guard lg(m_lastCompositeMtx);
-                if (staticStateKey) {
-                    m_lastStaticComposite = gpuResult;
-                    m_lastStaticCompositeKey = *staticStateKey;
-                } else {
-                    m_lastStaticComposite.reset();
-                    m_lastStaticCompositeKey = 0;
-                }
+                m_hold.rememberStaticOnly(gpuResult, staticStateKey);
             } else if (!isNestedRecursion) {
-                std::lock_guard lg(m_lastCompositeMtx);
-                const bool wasStale = (m_lastGoodComposite == gpuResult);
-                m_lastGoodComposite     = gpuResult;
-                m_lastGoodCompositeTick = tick;
-                if (staticStateKey) {
-                    m_lastStaticComposite = gpuResult;
-                    m_lastStaticCompositeKey = *staticStateKey;
-                } else {
-                    m_lastStaticComposite.reset();
-                    m_lastStaticCompositeKey = 0;
-                }
+                // The clip ids let the shot-boundary checks skip the stale
+                // fallback when the active clips have entirely changed.
+                // A complete composite re-arms the settle window.
+                const bool wasStale = m_hold.rememberFresh(
+                    gpuResult, tick, visualLayerClipIds(layers), staticStateKey,
+                    clipsAtTick == 0 || resolvedClipsAtTick >= clipsAtTick);
                 // Measured-cost render bar: remember only clock-driven live
                 // playback. Paused exact frames, scrub, export, and pre-render
                 // have different quality/readback contracts and otherwise make
@@ -1481,15 +1381,6 @@ try
                     const double ms = std::chrono::duration<double, std::milli>(
                         std::chrono::high_resolution_clock::now() - perfT0).count();
                     recordFrameCost(tick, static_cast<float>(ms));
-                }
-                // Record which clips produced this composite so the
-                // shot-boundary check below can skip the stale fallback
-                // when active clips have entirely changed.
-                m_lastGoodCompositeClipIds.clear();
-                m_lastGoodCompositeClipIds.reserve(layers.size());
-                for (const auto& L : layers) {
-                    if (L.clipId != 0 && !L.isAdjustmentLayer)
-                        m_lastGoodCompositeClipIds.push_back(L.clipId);
                 }
                 if (postInvalidate) {
                     // debug-level: fires for every composite after any
@@ -1501,11 +1392,6 @@ try
                                   tick, gpuResult ? gpuResult->gpuImageView : 0,
                                   gpuResult ? gpuResult->width : 0,
                                   gpuResult ? gpuResult->height : 0, wasStale);
-                }
-                if (clipsAtTick == 0 || resolvedClipsAtTick >= clipsAtTick)
-                {
-                    m_lastFullCompositeAt = std::chrono::steady_clock::now();
-                    m_lastFullLayerCount  = static_cast<int>(layers.size());
                 }
             }
             return gpuResult;
@@ -1523,40 +1409,29 @@ try
         spdlog::debug("[COMPOSITE] tryCompositeOnGpu returned nullptr — "
                       "returning last-good (counter={})", s_quietLogCounter);
     }
-    // Nested recursion: never fall back to the outer composite's
-    // m_lastGoodComposite -- that frame represents OUTER content. Using
-    // it as the inner-sequence layer paints the outer's last frame
-    // INSIDE itself, which is the visual feedback loop the user sees.
-    // Returning nullptr cleanly skips the inner layer for this frame;
-    // the next composite tick will retry.
+    // Nested recursion: never fall back to the outer composite's last
+    // good frame -- that frame represents OUTER content. Using it as the
+    // inner-sequence layer paints the outer's last frame INSIDE itself,
+    // which is the visual feedback loop the user sees. Returning nullptr
+    // cleanly skips the inner layer for this frame; the next composite
+    // tick will retry.
     if (isNestedRecursion || exactStillMode)
         return nullptr;
-    {
-        std::lock_guard lg(m_lastCompositeMtx);
-        if (m_lastGoodComposite) {
-            m_lastGoodComposite->gpuReady     = false;
-            m_lastGoodComposite->gpuImageView = 0;
-            m_lastGoodComposite->gpuSampler   = 0;
-            m_lastGoodComposite->gpuSemaphore = 0;
-        }
-        return m_lastGoodComposite;
-    }
+    return m_hold.lastGoodWithoutGpu();
 }
 catch (const std::exception& ex)
 {
     spdlog::error("compositeFrame: exception: {}", ex.what());
     if (exceptionStatus) *exceptionStatus = RenderResultStatus::Failed;
     if (isNestedRecursion || stillMode) return nullptr;
-    std::lock_guard lg(m_lastCompositeMtx);
-    return m_lastGoodComposite;
+    return m_hold.lastGood();
 }
 catch (...)
 {
     spdlog::error("compositeFrame: unknown exception");
     if (exceptionStatus) *exceptionStatus = RenderResultStatus::Failed;
     if (isNestedRecursion || stillMode) return nullptr;
-    std::lock_guard lg(m_lastCompositeMtx);
-    return m_lastGoodComposite;
+    return m_hold.lastGood();
 }
 
 
@@ -1569,7 +1444,7 @@ std::shared_ptr<CachedFrame> CompositeService::renderTitleClip(
 
 namespace {
 // Clean CPU-only snapshot of a composite output frame.  compositeFrame returns
-// the SHARED m_lastGoodComposite which the next tick reuses, so the cache must
+// the SHARED last good composite which the next tick reuses, so the cache must
 // own an independent copy (the same aliasing the nested-sequence builder guards
 // against).  GPU handles are deliberately dropped — this is a CPU frame.
 std::shared_ptr<CachedFrame> snapshotForCache(const CachedFrame& frame,

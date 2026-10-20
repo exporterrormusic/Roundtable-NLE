@@ -807,7 +807,7 @@ void MainWindow::buildPanels()
                 request.caller = "MainWindow::exportPreview";
                 // Export preview/render is an exact-frame request.  Passing
                 // stillMode prevents the compositor from satisfying a failed
-                // tick with m_lastGoodComposite; RenderQueue can then retry the
+                // tick with the last good composite; RenderQueue can then retry the
                 // same tick or fail cleanly instead of encoding a stale frame.
                 auto result = m_timelineWorkspace->compositeFrame(request);
                 if (result) result->preservesAlpha = wantAlpha;

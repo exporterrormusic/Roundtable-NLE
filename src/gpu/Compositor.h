@@ -411,7 +411,7 @@ private:
 
     // Output storage image RING.  Each composite() advances to the next
     // slot so a freshly composited frame never overwrites a texture the
-    // presenter (or the LRU / m_lastGoodComposite / a nested inner
+    // presenter (or the LRU / the last good composite / a nested inner
     // readback) may still be referencing via gpuTextureOwner.  Single
     // shared output was the root cause of the nested-sequence flicker:
     // the presenter zero-copy-displayed it while the next frame's inner

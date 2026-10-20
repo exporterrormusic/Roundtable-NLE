@@ -114,6 +114,7 @@ add_library(roundtable_core STATIC
     playback/FramePresenter.cpp
     playback/FrameScheduler.cpp
     playback/SnapshotPublisher.cpp
+    playback/CompositeHold.cpp
     decode/ThumbnailGenerator.cpp
     audio/AudioPlaybackService.cpp
     audio/AudioPlaybackServiceLoad.cpp

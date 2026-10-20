@@ -64,6 +64,7 @@ struct VkDescriptorImageInfo;
 #include "CompositeServiceLayerBuild.h"
 #include "SpineRendererCacheKey.h"
 #include "cache/FrameCache.h"
+#include "playback/CompositeHold.h"
 #include "playback/EngineContracts.h"
 #include "playback/GpuResidentDecode.h"
 #include "playback/MediaSourceService.h"  // ResolutionTier
@@ -222,10 +223,10 @@ public:
     /// @param isNestedRecursion  Internal flag: when true, the call is a
     ///        recursive descent into a nested sequence (SequenceClip ->
     ///        inner timeline). The inner composite skips the cache-side-
-    ///        effects (clearLru, m_lastGoodComposite write, settle-window
+    ///        effects (clearLru, last-good write, settle-window
     ///        bookkeeping) so the recursive frame does not pollute the
     ///        outer composite's cached state. Without this, the presenter
-    ///        can read the inner frame from m_lastGoodComposite -- visible
+    ///        can read the inner frame as the last good composite -- visible
     ///        as the nested sequence "glitching to its original frame
     ///        every other display tick" during playback / scrub.
     std::shared_ptr<CachedFrame> compositeFrame(int64_t tick, uint32_t outW, uint32_t outH,
@@ -305,8 +306,8 @@ public:
 
     // ── Cache management ────────────────────────────────────────────────
     /// Invalidate composite result LRU (thread-safe, lock-free flag).
-    /// Immediately clears m_lastGoodComposite so stale frames are not
-    /// returned during invalidation.  Sets an atomic flag that
+    /// Immediately forgets the held frames (CompositeHold) so stale frames
+    /// are not returned during invalidation.  Sets an atomic flag that
     /// compositeFrame() checks on its next acquisition of
     /// m_compositeMutex (the FrameProducer thread is the sole
     /// compositor, so the flag is always picked up promptly).
@@ -315,19 +316,7 @@ public:
         // retrieve an entry produced before this edit.
         m_liveCacheGeneration.fetch_add(1, std::memory_order_acq_rel);
         m_cacheInvalidateRequested.store(true, std::memory_order_release);
-        {
-            std::lock_guard lg(m_lastCompositeMtx);
-            m_lastGoodComposite.reset();
-            m_lastGoodCompositeTick = -1;
-            m_lastGoodCompositeClipIds.clear();
-            m_lastStaticComposite.reset();
-            m_lastStaticCompositeKey = 0;
-            // Re-arm the settle clock so the next partial composite
-            // after invalidation triggers the first-view hold instead
-            // of inheriting a stale timestamp from before the reset.
-            m_lastFullCompositeAt = {};
-            m_lastFullLayerCount  = 0;
-        }
+        m_hold.clearAll();
     }
 
     /// A3: range-scoped invalidation.  Drops only LRU entries whose
@@ -510,8 +499,7 @@ public:
     // Kept for bounded recursion and exception safety. The normal
     // compositeFrame() path does not return stale frames.
     std::shared_ptr<CachedFrame> lastGoodComposite() const {
-        std::lock_guard lg(m_lastCompositeMtx);
-        return m_lastGoodComposite;
+        return m_hold.lastGood();
     }
 
 #ifdef ROUNDTABLE_HAS_SPINE
@@ -835,13 +823,10 @@ private:
     bool m_isCompositing{false};
 
     std::recursive_mutex m_compositeMutex;
-    mutable std::mutex   m_lastCompositeMtx;
-    std::shared_ptr<CachedFrame> m_lastGoodComposite;
-    // Consecutive-tick final-composite reuse for entirely static layer stacks
-    // (stacked PNGs and cached tier-list states). Guarded by
-    // m_lastCompositeMtx with the normal last-good frame state.
-    std::shared_ptr<CachedFrame> m_lastStaticComposite;
-    uint64_t m_lastStaticCompositeKey{0};
+    // What is held between frames: the last good composite, the static-stack
+    // composite (stacked PNGs, cached tier-list states) and the settle clock.
+    // Thread-safe on its own; see CompositeHold.h.
+    CompositeHold m_hold;
     std::atomic<uint64_t> m_staticCompositeHits{0};
 
     // The tier a cached composite is keyed under: Full when forcing full
@@ -876,27 +861,6 @@ private:
     std::atomic<uint64_t> m_segCacheSizeMiss{0};
     std::atomic<uint64_t> m_segCacheKeyMiss{0};
     std::atomic<uint64_t> m_segCacheWrites{0};
-    int64_t m_lastGoodCompositeTick{-1};
-    /// Clip ids that produced m_lastGoodComposite. Used to detect shot
-    /// boundaries: the complete active visual clip set must match before a
-    /// stale fallback is allowed. Requiring only one overlapping id lets a
-    /// persistent overlay authorize reuse of an unrelated prior shot.
-    std::vector<uint64_t> m_lastGoodCompositeClipIds;
-
-    // A1: settle-window state.  When a composite is incomplete (fewer
-    // resolved layers than active clips at the tick), we hold the prior
-    // complete frame for up to kSettleWindowMs ms instead of showing a
-    // partial composite that "builds up" layer-by-layer over several
-    // frames.  Reset when a fully-resolved composite is produced.
-    int  m_lastFullLayerCount{0};
-    std::chrono::steady_clock::time_point m_lastFullCompositeAt{};
-    // 250ms gives one cold NVDEC decoder open (~150–200ms per the
-    // prewarmUpcomingShots header comment) + headroom for a couple of
-    // peers to decode in parallel under the P5 NVDEC-concurrency cap.
-    // Past this we stop holding and accept the partial composite so a
-    // permanently-unresolvable clip (missing file, codec mismatch)
-    // can't freeze playback indefinitely.
-    static constexpr int kSettleWindowMs = 250;
 
     // Phase B: CachePolicy coordinator (non-owning pointer).  Wired by
     // App::createMainWindow after CompositeService is constructed.  May
