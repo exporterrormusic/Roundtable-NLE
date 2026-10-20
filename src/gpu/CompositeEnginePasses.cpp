@@ -364,82 +364,72 @@ void CompositeEngine::recordUploadPass(FrameRecording& frame, uint32_t passIdx)
         if (layerInfo[li].uploadPassIdx == passIdx) {
             const auto& layer = layers[li];
 
-            if (layer.gpuTextureReady) {
-                // GPU-resident texture — set up CompositorLayer directly
-                uint32_t srcW = layer.frameWidth  ? layer.frameWidth  : outW;
-                uint32_t srcH = layer.frameHeight ? layer.frameHeight : outH;
-                if (layer.isPacked && srcH > 1) srcH /= 2;
-                gpuLayers[li].textureInfo = layer.gpuDescriptor;
-                setLayerTransforms(gpuLayers[li], layer,
-                                   srcW, srcH, outW, outH);
-            } else {
-                // ── Packed-alpha double-buffer (#93) ──────────
-                // Swap upload/composite targets so the compositor
-                // always reads a texture the upload isn't writing
-                // to.  Zero-copy: just exchange unique_ptrs.
+            // Upload passes exist only for layers without a ready GPU
+            // texture (buildCompositeGraph); those were set up in
+            // prepareCompositorLayers.
+            // ── Packed-alpha double-buffer (#93) ──────────
+            // Swap upload/composite targets so the compositor
+            // always reads a texture the upload isn't writing
+            // to.  Zero-copy: just exchange unique_ptrs.
+            if (layer.isPacked &&
+                gpuLayerTexturesAlt[li] &&
+                gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
+                gpuLayerTextures[li].swap(gpuLayerTexturesAlt[li]);
+            }
+
+            // Upload via existing GpuUploadManager
+            auto uploadResult = m_uploadManager->uploadLayer(
+                layer, *gpuLayerTextures[li],
+                gpuLayerTexKeys[li].mediaId,
+                gpuLayerTexKeys[li].frameNumber,
+                gpuLayerTexKeys[li].framePtr,
+                scrubMode);
+
+            if (uploadResult.success) {
+                // Keep the exact freshly-resolved endpoint for
+                // temporal synthesis. Packed-alpha's normal
+                // composite path may intentionally display its
+                // stable alternate buffer, which can be one frame
+                // older and must not be used for interpolation.
+                temporalPrimarySourceInfos[li] =
+                    uploadResult.descriptor;
+                // Point the compositor at the stable (non-uploaded)
+                // double-buffer texture — but ONLY when it matches the
+                // just-uploaded texture's dimensions. The preceding
+                // scrub frames can be GPU-resident (they take the
+                // gpuTextureReady branch and never touch this double-
+                // buffer), or the tier can change on a scrub→settle, so
+                // the Alt buffer may hold STALE / wrong-size content.
+                // Displaying it then shows garbage transformed by the
+                // new frame's geometry — the Wells "settle" red-seam
+                // glitch. When Alt is stale/mismatched, show the freshly
+                // uploaded texture instead (correct size + content). In
+                // steady state the dimensions match every frame, so the
+                // #93 write-race protection is preserved unchanged.
                 if (layer.isPacked &&
                     gpuLayerTexturesAlt[li] &&
-                    gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE) {
-                    gpuLayerTextures[li].swap(gpuLayerTexturesAlt[li]);
-                }
-
-                // Upload via existing GpuUploadManager
-                auto uploadResult = m_uploadManager->uploadLayer(
-                    layer, *gpuLayerTextures[li],
-                    gpuLayerTexKeys[li].mediaId,
-                    gpuLayerTexKeys[li].frameNumber,
-                    gpuLayerTexKeys[li].framePtr,
-                    scrubMode);
-
-                if (uploadResult.success) {
-                    // Keep the exact freshly-resolved endpoint for
-                    // temporal synthesis. Packed-alpha's normal
-                    // composite path may intentionally display its
-                    // stable alternate buffer, which can be one frame
-                    // older and must not be used for interpolation.
-                    temporalPrimarySourceInfos[li] =
-                        uploadResult.descriptor;
-                    // Point the compositor at the stable (non-uploaded)
-                    // double-buffer texture — but ONLY when it matches the
-                    // just-uploaded texture's dimensions. The preceding
-                    // scrub frames can be GPU-resident (they take the
-                    // gpuTextureReady branch and never touch this double-
-                    // buffer), or the tier can change on a scrub→settle, so
-                    // the Alt buffer may hold STALE / wrong-size content.
-                    // Displaying it then shows garbage transformed by the
-                    // new frame's geometry — the Wells "settle" red-seam
-                    // glitch. When Alt is stale/mismatched, show the freshly
-                    // uploaded texture instead (correct size + content). In
-                    // steady state the dimensions match every frame, so the
-                    // #93 write-race protection is preserved unchanged.
-                    if (layer.isPacked &&
-                        gpuLayerTexturesAlt[li] &&
-                        gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE &&
-                        gpuLayerTextures[li] &&
-                        gpuLayerTexturesAlt[li]->width()  == gpuLayerTextures[li]->width() &&
-                        gpuLayerTexturesAlt[li]->height() == gpuLayerTextures[li]->height()) {
-                        gpuLayers[li].textureInfo =
-                            gpuLayerTexturesAlt[li]->descriptorInfo();
-                    } else {
-                        gpuLayers[li].textureInfo = uploadResult.descriptor;
-                    }
-                    setLayerTransforms(gpuLayers[li], layer,
-                                       uploadResult.srcW, uploadResult.srcH,
-                                       outW, outH);
+                    gpuLayerTexturesAlt[li]->image() != VK_NULL_HANDLE &&
+                    gpuLayerTextures[li] &&
+                    gpuLayerTexturesAlt[li]->width()  == gpuLayerTextures[li]->width() &&
+                    gpuLayerTexturesAlt[li]->height() == gpuLayerTextures[li]->height()) {
+                    gpuLayers[li].textureInfo =
+                        gpuLayerTexturesAlt[li]->descriptorInfo();
                 } else {
-                    spdlog::warn("[RENDER_GRAPH] layer {} upload failed", li);
-                    gpuLayers[li].enabled = false;
-                    uploadOk = false;
+                    gpuLayers[li].textureInfo = uploadResult.descriptor;
                 }
+                setLayerTransforms(gpuLayers[li], layer,
+                                   uploadResult.srcW, uploadResult.srcH,
+                                   outW, outH);
+            } else {
+                spdlog::warn("[RENDER_GRAPH] layer {} upload failed", li);
+                gpuLayers[li].enabled = false;
+                uploadOk = false;
             }
             break;
         }
         if (layerInfo[li].temporalUploadPassIdx == passIdx) {
             const auto& layer = layers[li];
-            if (layer.temporalGpuTextureReady) {
-                temporalSourceInfos[li] =
-                    layer.temporalGpuDescriptor;
-            } else if (layer.temporalFrame) {
+            if (layer.temporalFrame) {
                 LayerInfo temporalLayer = layer;
                 temporalLayer.frame = layer.temporalFrame;
                 temporalLayer.gpuTextureReady = false;
@@ -537,27 +527,7 @@ void CompositeEngine::recordEffectPass(FrameRecording& frame, uint32_t passIdx)
                     wasPacked, wasPacked,
                     static_cast<uint32_t>(timingSlot),
                     static_cast<uint32_t>(li))) {
-                VkImageMemoryBarrier temporalBarrier{};
-                temporalBarrier.sType =
-                    VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                temporalBarrier.srcAccessMask =
-                    VK_ACCESS_SHADER_WRITE_BIT;
-                temporalBarrier.dstAccessMask =
-                    VK_ACCESS_SHADER_READ_BIT;
-                temporalBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-                temporalBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-                temporalBarrier.srcQueueFamilyIndex =
-                    VK_QUEUE_FAMILY_IGNORED;
-                temporalBarrier.dstQueueFamilyIndex =
-                    VK_QUEUE_FAMILY_IGNORED;
-                temporalBarrier.image = temporalOut.image();
-                temporalBarrier.subresourceRange = {
-                    VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                vkCmdPipelineBarrier(
-                    cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 0, nullptr, 0, nullptr,
-                    1, &temporalBarrier);
+                makeComputeOutputSampleable(cmd, temporalOut.image());
 
                 gpuLayers[li].textureInfo =
                     temporalOut.descriptorInfo();
@@ -637,20 +607,7 @@ void CompositeEngine::recordEffectPass(FrameRecording& frame, uint32_t passIdx)
             gpuLayers[li].isPMA = false;
 
             // Barrier: compute write → sampler read (#40 fix)
-            if (activeEffectProcessor->outputImage() != VK_NULL_HANDLE) {
-                VkImageMemoryBarrier b{};
-                b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-                b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-                b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-                b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                b.image = activeEffectProcessor->outputImage();
-                b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
-            }
+            makeComputeOutputSampleable(cmd, activeEffectProcessor->outputImage());
 
             // Snapshot EVERY effected layer's output into its own
             // texture.  EffectProcessor has only two ping-pong storage
@@ -663,51 +620,9 @@ void CompositeEngine::recordEffectPass(FrameRecording& frame, uint32_t passIdx)
             // layer's textureInfo independent of the shared storage.
             if (li < layerEffectOutputs.size()) {
                 auto& snap = *layerEffectOutputs[li];
-                if (snap.image() == VK_NULL_HANDLE || snap.width() != effectW || snap.height() != effectH) {
-                    snap.destroy();
-                    TextureConfig cfg;
-                    cfg.width = effectW; cfg.height = effectH;
-                    cfg.format = VK_FORMAT_R8G8B8A8_UNORM;
-                    cfg.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-                    snap.create(ctx.allocator().handle(), ctx.vkDevice(), cfg);
-                }
-                if (snap.image() != VK_NULL_HANDLE) {
-                    VkImage ei = activeEffectProcessor->outputImage();
-                    VkImageMemoryBarrier toSrc{};
-                    toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                    toSrc.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                    toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                    toSrc.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-                    toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                    toSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    toSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    toSrc.image = ei;
-                    toSrc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toSrc);
-                    snap.transitionLayout(cmd, snap.layout(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-                    VkImageCopy r{};
-                    r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                    r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                    r.extent = {effectW, effectH, 1};
-                    vkCmdCopyImage(cmd, ei, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        snap.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
-                    VkImageMemoryBarrier toGen{};
-                    toGen.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                    toGen.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-                    toGen.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                    toGen.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                    toGen.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-                    toGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    toGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    toGen.image = ei;
-                    toGen.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-                    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toGen);
-                    snap.transitionLayout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                if (snapshotEffectOutput(cmd, *activeEffectProcessor, snap,
+                                         ctx, effectW, effectH))
                     gpuLayers[li].textureInfo = snap.descriptorInfo();
-                }
             }
 
             {

@@ -98,6 +98,16 @@ void rt::composite_detail::setLayerTransforms(CompositorLayer& compositorLayer,
     }
 }
 
+// One copy region covering a whole w x h colour image.
+static std::vector<VkBufferImageCopy> fullImageRegion(uint32_t w, uint32_t h)
+{
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {w, h, 1};
+    return {region};
+}
+
 static MaskRasterTransform legacyMaskTransform(const LayerInfo& layer,
                                                uint32_t srcW, uint32_t srcH,
                                                uint32_t outW, uint32_t outH)
@@ -504,16 +514,7 @@ void CompositeEngine::buildCompositeGraph(FrameRecording& frame)
 
         if (!layer.gpuTextureReady) {
             // ── Add Upload pass for this layer ─────────────────────
-            std::vector<VkBufferImageCopy> regions(1);
-            regions[0].bufferOffset = 0;
-            regions[0].bufferRowLength = 0;
-            regions[0].bufferImageHeight = 0;
-            regions[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            regions[0].imageSubresource.mipLevel = 0;
-            regions[0].imageSubresource.baseArrayLayer = 0;
-            regions[0].imageSubresource.layerCount = 1;
-            regions[0].imageOffset = {0, 0, 0};
-            regions[0].imageExtent = {outW, outH, 1};
+            auto regions = fullImageRegion(outW, outH);
 
             layerInfo[li].uploadPassIdx = graph.addUploadPass(
                 "uploadLayer" + std::to_string(li),
@@ -550,13 +551,9 @@ void CompositeEngine::buildCompositeGraph(FrameRecording& frame)
             layerInfo[li].temporalTexId = temporalTexId;
 
             if (!layer.temporalGpuTextureReady) {
-                std::vector<VkBufferImageCopy> temporalRegions(1);
-                temporalRegions[0].imageSubresource.aspectMask =
-                    VK_IMAGE_ASPECT_COLOR_BIT;
-                temporalRegions[0].imageSubresource.layerCount = 1;
-                temporalRegions[0].imageExtent = {
+                auto temporalRegions = fullImageRegion(
                     layer.frameWidth ? layer.frameWidth : outW,
-                    layer.frameHeight ? layer.frameHeight : outH, 1};
+                    layer.frameHeight ? layer.frameHeight : outH);
                 layerInfo[li].temporalUploadPassIdx = graph.addUploadPass(
                     "uploadTemporalSource" + std::to_string(li),
                     temporalTexId, VK_NULL_HANDLE, 0, temporalRegions, true);
@@ -584,16 +581,7 @@ void CompositeEngine::buildCompositeGraph(FrameRecording& frame)
             });
             layerInfo[li].maskTexId = maskTexId;
 
-            std::vector<VkBufferImageCopy> maskRegions(1);
-            maskRegions[0].bufferOffset = 0;
-            maskRegions[0].bufferRowLength = 0;
-            maskRegions[0].bufferImageHeight = 0;
-            maskRegions[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            maskRegions[0].imageSubresource.mipLevel = 0;
-            maskRegions[0].imageSubresource.baseArrayLayer = 0;
-            maskRegions[0].imageSubresource.layerCount = 1;
-            maskRegions[0].imageOffset = {0, 0, 0};
-            maskRegions[0].imageExtent = {maskSize.width, maskSize.height, 1};
+            auto maskRegions = fullImageRegion(maskSize.width, maskSize.height);
 
             (void)graph.addUploadPass(
                 "uploadMask" + std::to_string(li),
@@ -728,16 +716,7 @@ void CompositeEngine::buildCompositeGraph(FrameRecording& frame)
     // ── Add Readback pass (if needed) ──────────────────────────────
     bool needsReadback = !gpuDisplayMode || scrubMode;
     if (needsReadback) {
-        std::vector<VkBufferImageCopy> readbackRegions(1);
-        readbackRegions[0].bufferOffset = 0;
-        readbackRegions[0].bufferRowLength = 0;
-        readbackRegions[0].bufferImageHeight = 0;
-        readbackRegions[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        readbackRegions[0].imageSubresource.mipLevel = 0;
-        readbackRegions[0].imageSubresource.baseArrayLayer = 0;
-        readbackRegions[0].imageSubresource.layerCount = 1;
-        readbackRegions[0].imageOffset = {0, 0, 0};
-        readbackRegions[0].imageExtent = {outW, outH, 1};
+        auto readbackRegions = fullImageRegion(outW, outH);
 
         (void)graph.addReadbackPass(
             "readback", outputTexId,
