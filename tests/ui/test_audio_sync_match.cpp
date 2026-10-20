@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include "AudioSyncFixture.h"
 #include "audio/AudioFile.h"
 #include "AudioMixdown.h"
 #include "command/CommandStack.h"
@@ -26,45 +27,9 @@
 
 namespace {
 
-int g_argc = 1;
-char g_arg0[] = "test_audio_sync_match";
-char* g_argv[] = {g_arg0, nullptr};
-
-class AudioSyncMatchTest : public ::testing::Test
+class AudioSyncMatchTest : public AudioSyncFixture
 {
 protected:
-    static void SetUpTestSuite()
-    {
-        QStandardPaths::setTestModeEnabled(true);
-        if (!QApplication::instance())
-            app = std::make_unique<QApplication>(g_argc, g_argv);
-        settingsDirectory = std::make_unique<QTemporaryDir>();
-        ASSERT_TRUE(settingsDirectory->isValid());
-        QSettings::setDefaultFormat(QSettings::IniFormat);
-        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
-                           settingsDirectory->path());
-    }
-
-    static void TearDownTestSuite() { settingsDirectory.reset(); }
-
-    static QString makeTone(const QString& directory, const QString& name, double seconds)
-    {
-        constexpr uint32_t sampleRate = 44100;
-        rt::MixdownResult result;
-        result.sampleRate = sampleRate;
-        result.channels = 1;
-        result.totalFrames = static_cast<int64_t>(seconds * sampleRate);
-        result.duration = seconds;
-        result.samples.resize(static_cast<size_t>(result.totalFrames));
-        for (int64_t i = 0; i < result.totalFrames; ++i)
-            result.samples[static_cast<size_t>(i)] =
-                0.15f * std::sin(2.0 * 3.141592653589793 * 220.0 * i / sampleRate);
-        const QString path = directory + QStringLiteral("/") + name;
-        EXPECT_TRUE(rt::AudioMixdown::writeWav(
-            result, std::filesystem::path(path.toStdWString())));
-        return path;
-    }
-
     static std::string scriptOf(int lines)
     {
         std::string script;
@@ -95,21 +60,6 @@ protected:
         }
         return clips;
     }
-
-    /// Spin the event loop until `done` or the deadline.
-    static bool waitFor(const std::function<bool()>& done, int timeoutMs = 20000)
-    {
-        QElapsedTimer timer;
-        timer.start();
-        while (!done()) {
-            if (timer.elapsed() > timeoutMs) return false;
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
-        }
-        return true;
-    }
-
-    static inline std::unique_ptr<QApplication> app;
-    static inline std::unique_ptr<QTemporaryDir> settingsDirectory;
 };
 
 TEST_F(AudioSyncMatchTest, CardsStreamInIndexAlignedWithTheLeftList)

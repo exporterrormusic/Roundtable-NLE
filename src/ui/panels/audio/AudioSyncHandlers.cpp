@@ -647,18 +647,8 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
     m_progressBar->setVisible(false);
     updateTranscriptionControls();
 
-    if (hadSuccess) {
-        appendClipsFromNewTranscriptions();
-        if (m_script && !m_script->lines.empty())
-            mergeSegmentsToMatchScript();
-
-        if (!m_clips.empty()) {
-            m_transcriptionDone = true;
-            populateClipList();
-            updateWorkflowState();
-            emit transcriptionFinished(static_cast<int>(m_clips.size()));
-        }
-    }
+    if (hadSuccess)
+        applyFinishedTranscriptions();
 
     if (cancelled) {
         m_transcribeStatus->setText(QString("Transcription cancelled (%1 of %2 file(s) completed)")
@@ -692,6 +682,26 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
     m_transcriptionRunTotal = 0;
     m_transcriptionRunHadSuccess = false;
     m_transcriptionRunError.clear();
+}
+
+void AudioSync::applyFinishedTranscriptions()
+{
+    appendClipsFromNewTranscriptions();
+    if (m_script && !m_script->lines.empty())
+        mergeSegmentsToMatchScript();
+
+    if (!m_clips.empty()) {
+        m_transcriptionDone = true;
+        populateClipList();
+        updateWorkflowState();
+        emit transcriptionFinished(static_cast<int>(m_clips.size()));
+    }
+}
+
+void AudioSync::setTranscriptionsForTesting(std::vector<TranscriptionResult> results)
+{
+    m_allTranscriptionResults = std::move(results);
+    applyFinishedTranscriptions();
 }
 
 void AudioSync::updateTranscriptionControls()

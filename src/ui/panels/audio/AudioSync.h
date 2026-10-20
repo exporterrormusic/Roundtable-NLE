@@ -301,6 +301,9 @@ public:
     void finishCardBuild();
     /// Test seam: replace the active session's clips and rebuild the cards.
     void setClipsForTesting(std::vector<SyncClip> clips);
+    /// Test seam: install per-file transcription results (index-aligned with
+    /// audioPaths()) and build clips exactly as a finished run does.
+    void setTranscriptionsForTesting(std::vector<TranscriptionResult> results);
 
     /// Get character names from the loaded script.
     [[nodiscard]] QStringList scriptCharacters() const;
@@ -484,6 +487,9 @@ private:
     void handleTranscriptionThreadFinished(uint64_t runId,
                                            const QPointer<QThread>& thread);
     void finishTranscriptionRun(bool cancelled);
+    /// Clips from newly transcribed files, merged to the script; what a run
+    /// that transcribed at least one file ends with.
+    void applyFinishedTranscriptions();
     void updateTranscriptionControls();
     [[nodiscard]] bool ensureCrisperWhisperConsent();
     [[nodiscard]] bool isCrisperWhisperSelected() const;
@@ -627,6 +633,9 @@ private:
     /// Get effective time ranges for a SyncClip, excluding deleted regions.
     /// Ported from Python _get_effective_ranges().
     static std::vector<std::pair<double,double>> getEffectiveRanges(const SyncClip& clip);
+
+    /// Workflow tests reach private steps through this (tests/ui).
+    friend struct AudioSyncTestAccess;
 
     // ── State ───────────────────────────────────────────────────────────
     CommandStack*     m_commandStack{nullptr};
