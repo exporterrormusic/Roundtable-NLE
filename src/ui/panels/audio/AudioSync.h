@@ -574,7 +574,6 @@ private:
 
     /// Get effective time ranges for a SyncClip, excluding deleted regions.
     /// Ported from Python _get_effective_ranges().
-    static std::vector<std::pair<double,double>> getEffectiveRanges(const SyncClip& clip);
 
     /// Workflow tests reach private steps through this (tests/ui).
     friend struct AudioSyncTestAccess;

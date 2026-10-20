@@ -1,21 +1,10 @@
 /*
- * AudioSyncExport.cpp - Timeline export logic for AudioSync.
- * Split from AudioSyncData.cpp for maintainability.
- *
- * Two application modes share one deterministic plan (audio clips laid
- * back-to-back from tick 0 on per-speaker tracks + one default-shot visual
- * group per consecutive same-character run):
- *
- *  - FULL: first export into a sequence (no clip carries a syncLine
- *    back-link).  Clears previous export-owned content and rebuilds.
- *  - INCREMENTAL: re-export into a previously exported sequence.  Clips
- *    tagged with a syncLine are diffed against the plan and updated in
- *    place (AudioSync wins on position/range), preserving clip identity —
- *    so user shot swaps, transforms, effects and transitions survive.
- *    Clips without a back-link (user media, captions, music tracks) are
- *    never touched.
+ * AudioSyncExport.cpp - Timeline export for AudioSync: one undoable step
+ * around core audiosync/ExportPlan (what goes where, full export vs
+ * in-place re-export), plus the default-shot layers of each visual group.
  */
 #include "panels/audio/AudioSync.h"
+#include "audiosync/ExportPlan.h"
 #include "PathUtils.h"
 #include "ai/ScriptMatcher.h"
 #include "spine/ShotPreset.h"
@@ -44,63 +33,6 @@
 #include <filesystem>
 
 namespace rt {
-
-// File basename helper — returns just the filename portion of a path-like
-// string. Used to label exported timeline clips with their source filename
-// instead of shot/character names.
-static std::string sourceBasename(const std::string& path)
-{
-    if (path.empty()) return {};
-    try {
-        return pathToUtf8(utf8ToPath(path).filename());
-    } catch (...) {
-        auto p = path.find_last_of("/\\");
-        return p == std::string::npos ? path : path.substr(p + 1);
-    }
-}
-
-namespace {
-
-// One audio clip the plan wants on the timeline.
-struct PlannedAudio {
-    int         line{-1};        // script line (back-link value)
-    std::string character;       // speaker (audio track name)
-    std::string sourceFile;
-    std::string label;
-    int64_t     timelineIn{0};
-    int64_t     duration{0};
-    int64_t     sourceIn{0};
-    int64_t     sourceDuration{0};
-};
-
-// One visual shot group (consecutive same-character run of lines).
-struct PlannedGroup {
-    std::string character;
-    int         firstLine{-1};   // back-link value for the group's visuals
-    int64_t     timelineStart{0};
-    int64_t     totalDuration{0};
-};
-
-using TrackForSpeakerFn  = std::function<Track*(const std::string&)>;
-using MakeAudioClipFn    = std::function<std::unique_ptr<AudioClip>(const PlannedAudio&)>;
-using PlaceGroupVisualsFn = std::function<int(const PlannedGroup&)>;
-
-int applyFull(Timeline* timeline,
-              const std::vector<PlannedAudio>& plannedAudio,
-              const std::vector<PlannedGroup>& groups,
-              bool hasShotMgr,
-              const TrackForSpeakerFn& trackForSpeaker,
-              const MakeAudioClipFn& makeAudioClip,
-              const PlaceGroupVisualsFn& placeGroupVisuals);
-
-int applyIncremental(Timeline* timeline,
-                     const std::vector<PlannedAudio>& plannedAudio,
-                     const std::vector<PlannedGroup>& groups,
-                     const TrackForSpeakerFn& trackForSpeaker,
-                     const MakeAudioClipFn& makeAudioClip,
-                     const PlaceGroupVisualsFn& placeGroupVisuals);
-
-} // namespace
 
 // Creates AudioClips AND visual clips (SpineClip/VideoClip) from default shots
 // for each character, matching the old Python behavior.
@@ -141,69 +73,24 @@ int AudioSync::exportToTimeline(Timeline* timeline)
         return result;
     }
 
-    // ── EXPORT == MATCH tab, exactly ────────────────────────────────────
-    // The MATCH tab shows (and plays) exactly ONE clip per script line: its
-    // "primary" — the best CONFIRMED clip on that line. The export mirrors
-    // that precisely by walking the script lines IN ORDER and placing each
-    // line's primary confirmed clip. This guarantees the timeline matches the
-    // MATCH tab in both order AND content — no duplicates, no cross-character
-    // strays, no reordering — and needs no re-sync.
-    //
-    // Primary selection: same rule as populateCards() — highest confidence
-    // among confirmed clips (all matchState==2 here, so confidence is the
-    // sole differentiator).  Character-name matching is deliberately not
-    // used because the MATCH tab doesn't either; manual confirmation
-    // already guarantees the right clip is assigned to each line.
-
-    // lineNumber → its position in session().script->lines (script reading order) — for
-    // the diagnostic below.
-    std::unordered_map<int, int> linePos;
-    if (session().script) {
-        int p = 0;
-        for (const auto& ln : session().script->lines) linePos[ln.lineNumber] = p++;
-    }
-    auto scriptPosOf = [&](const SyncClip* c) -> int {
-        auto it = linePos.find(c->scriptLineNumber);
-        return (it != linePos.end()) ? it->second
-                                     : std::numeric_limits<int>::max();
-    };
-
-    std::vector<const SyncClip*> confirmed;
-    if (session().script) {
-        // Confirmed clips per line, in session().clips order.
-        std::unordered_map<int, std::vector<size_t>> confirmedByLine;
-        for (size_t i = 0; i < session().clips.size(); ++i) {
-            const auto& c = session().clips[i];
-            if (c.scriptLineNumber >= 0 && c.matchState == 2)
-                confirmedByLine[c.scriptLineNumber].push_back(i);
-        }
-        for (const auto& line : session().script->lines) {
-            auto it = confirmedByLine.find(line.lineNumber);
-            if (it == confirmedByLine.end()) continue;
-            // Primary: pick the clip with the highest confidence, matching
-            // the MATCH tab's populateCards primary-selection rule exactly.
-            const SyncClip* best = nullptr;
-            float bestConf = -1.0f;
-            for (size_t ci : it->second) {
-                const auto& c = session().clips[ci];
-                if (!best || c.confidence > bestConf) {
-                    best = &c;
-                    bestConf = c.confidence;
-                }
-            }
-            if (best) confirmed.push_back(best);   // already in script order
-        }
-    } else {
-        // No script loaded — fall back to every confirmed clip in session().clips order.
-        for (const auto& c : session().clips)
-            if (c.scriptLineNumber >= 0 && c.matchState == 2)
-                confirmed.push_back(&c);
-    }
+    // The MATCH tab's clip for each script line, in script order.
+    const std::vector<const SyncClip*> confirmed =
+        audiosync::exportedClips(session().script.get(), session().clips);
 
     // DIAG-EXPORT-ORDER: dump the resolved export order with each clip's
     // line#, its position in the script (= MATCH order), character and
     // source, so a misplaced (e.g. manually-matched) clip is traceable.
     {
+        std::unordered_map<int, int> linePos;
+        if (session().script) {
+            int p = 0;
+            for (const auto& ln : session().script->lines) linePos[ln.lineNumber] = p++;
+        }
+        auto scriptPosOf = [&](const SyncClip* c) -> int {
+            auto it = linePos.find(c->scriptLineNumber);
+            return (it != linePos.end()) ? it->second
+                                         : std::numeric_limits<int>::max();
+        };
         std::string seq;
         for (const SyncClip* c : confirmed) {
             const int pos = scriptPosOf(c);
@@ -212,7 +99,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
                                          : std::to_string(pos))
                  + " line#=" + std::to_string(c->scriptLineNumber)
                  + " char='" + c->character + "'"
-                 + " src='" + sourceBasename(c->sourceFile) + "'"
+                 + " src='" + audiosync::fileNameOf(c->sourceFile) + "'"
                  + " start=" + std::to_string(c->start);
         }
         spdlog::warn("DIAG-EXPORT-ORDER: {} confirmed clips (export order):{}",
@@ -227,106 +114,9 @@ int AudioSync::exportToTimeline(Timeline* timeline)
     spdlog::info("AudioSync::exportToTimeline — exporting {} confirmed clips",
                  confirmed.size());
 
-    // ── Build a lookup from lineNumber → ScriptLine character ───────────
-    std::unordered_map<int, std::string> lineCharacterMap;
-    if (session().script) {
-        for (const auto& line : session().script->lines)
-            lineCharacterMap[line.lineNumber] = line.character;
-    }
+    const audiosync::ExportPlan plan = audiosync::planExport(session().script.get(), confirmed);
 
-    // ── Build the plan (pure — no timeline mutation) ────────────────────
-    // Audio clips back-to-back from tick 0; consecutive same-character
-    // lines form one visual group spanning their combined range.
-    std::vector<PlannedAudio> plannedAudio;
-    std::vector<PlannedGroup> groups;
-    {
-        int64_t currentPos = 0; // ticks
-        std::string lastCharacter;
-        for (const SyncClip* sc : confirmed) {
-            auto effectiveRanges = getEffectiveRanges(*sc);
-
-            // Determine character
-            std::string character;
-            auto it = lineCharacterMap.find(sc->scriptLineNumber);
-            if (it != lineCharacterMap.end() && !it->second.empty())
-                character = it->second;
-            else
-                character = sc->character;
-
-            // Start a new group if character changes or first clip
-            if (character != lastCharacter || groups.empty()) {
-                PlannedGroup g;
-                g.character     = character;
-                g.firstLine     = sc->scriptLineNumber;
-                g.timelineStart = currentPos;
-                groups.push_back(std::move(g));
-                lastCharacter = character;
-            }
-
-            // Label: use the source audio file's basename so the timeline
-            // shows the actual asset name instead of the character/shot.
-            std::string label = sourceBasename(sc->sourceFile);
-            if (label.empty()) label = character;
-
-            for (const auto& [rangeStart, rangeEnd] : effectiveRanges) {
-                double rangeDuration = rangeEnd - rangeStart;
-                if (rangeDuration <= 0.0) continue;
-
-                PlannedAudio pa;
-                pa.line           = sc->scriptLineNumber;
-                pa.character      = character;
-                pa.sourceFile     = sc->sourceFile;
-                pa.label          = label;
-                pa.timelineIn     = currentPos;
-                pa.duration       = secondsToTicks(rangeDuration);
-                pa.sourceIn       = secondsToTicks(rangeStart);
-                pa.sourceDuration = secondsToTicks(sc->end);
-                plannedAudio.push_back(std::move(pa));
-
-                groups.back().totalDuration += secondsToTicks(rangeDuration);
-                currentPos += secondsToTicks(rangeDuration);
-            }
-        }
-    }
-
-    // ── Shared helpers ──────────────────────────────────────────────────
-
-    // Find-or-create the per-speaker audio track for a character.  The
-    // full path wipes previous speaker tracks first, so "find" only kicks
-    // in for the incremental path (and for repeated speakers either way).
-    std::unordered_map<std::string, Track*> speakerTracks;
-    auto trackForSpeaker = [&](const std::string& character) -> Track* {
-        std::string name = character.empty() ? std::string("VO") : character;
-        auto it = speakerTracks.find(name);
-        if (it != speakerTracks.end()) return it->second;
-        for (size_t i = 0; i < timeline->trackCount(); ++i) {
-            Track* t = timeline->track(i);
-            if (t && t->type() == TrackType::Audio && !t->isDivider()
-                && !t->isLocked() && t->name() == name) {
-                speakerTracks.emplace(name, t);
-                return t;
-            }
-        }
-        Track* t = timeline->addAudioTrack(name);
-        // Set new track to minimum height so audio tracks don't "expand"
-        // to the default 80px after export — they stay compact.
-        t->setHeight(30.0f);
-        speakerTracks.emplace(name, t);
-        spdlog::info("AudioSync: created audio track '{}'", name);
-        return t;
-    };
-
-    // Build a fresh AudioClip from a planned entry (tagged with its line).
-    auto makeAudioClip = [](const PlannedAudio& pa) -> std::unique_ptr<AudioClip> {
-        auto audioClip = std::make_unique<AudioClip>(pa.sourceFile);
-        audioClip->setTimelineIn(pa.timelineIn);
-        audioClip->setDuration(pa.duration);
-        audioClip->setSourceIn(pa.sourceIn);
-        audioClip->setSourceDuration(pa.sourceDuration);
-        audioClip->setLabel(pa.label);
-        audioClip->setSyncLine(pa.line);
-        return audioClip;
-    };
+    // ── Default-shot layers of a visual group ───────────────────────────
 
     // New shot groups must not collide with groupIds already present in
     // the timeline (the incremental path KEEPS existing groups, and the
@@ -348,7 +138,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
     // number of clips placed (0 when the character has no default shot).
     // Layer order: layerOrder[0] is FRONT (top V#), layerOrder[last] is
     // BACK (V1).
-    auto placeGroupVisuals = [&](const PlannedGroup& group) -> int {
+    auto placeGroupVisuals = [&](const audiosync::PlannedGroup& group) -> int {
         if (!m_shotPresetManager) return 0;
         if (group.character.empty() || group.totalDuration <= 0) return 0;
 
@@ -577,338 +367,27 @@ int AudioSync::exportToTimeline(Timeline* timeline)
         return placedCount;
     };
 
-    // ── Mode detection ──────────────────────────────────────────────────
-    // Any clip carrying a syncLine back-link means this sequence was
-    // exported by a v29+ build before → update it in place instead of
-    // wiping.  Legacy timelines (pre-v29 exports) have no back-links and
-    // take the full path once; from then on every clip is tagged.
-    bool incremental = false;
-    for (size_t ti = 0; ti < timeline->trackCount() && !incremental; ++ti) {
-        Track* t = timeline->track(ti);
-        if (!t) continue;
-        for (size_t ci = 0; ci < t->clipCount(); ++ci) {
-            const Clip* c = t->clip(ci);
-            if (c && c->syncLine() >= 0) { incremental = true; break; }
-        }
-    }
+    // A sequence exported to before is updated in place.
+    const bool incremental = audiosync::isReexport(*timeline);
 
-    // Preflight every track the operation owns before making any changes.
-    // AudioSync is a compound timeline edit, so partially updating around a
-    // locked track would create duplicated dialogue or mismatched shots.
-    if (incremental) {
-        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
-            Track* track = timeline->track(ti);
-            if (!track || !track->isLocked()) continue;
-            for (size_t ci = 0; ci < track->clipCount(); ++ci) {
-                const Clip* clip = track->clip(ci);
-                if (clip && clip->syncLine() >= 0) {
-                    spdlog::warn(
-                        "AudioSync: re-export blocked by locked track '{}'",
-                        track->name());
-                    m_lastExportError = tr("Track '%1' is locked; clip '%2' (line %3) cannot be updated.")
-                        .arg(QString::fromStdString(track->name()),
-                             QString::fromStdString(clip->label()))
-                        .arg(clip->syncLine());
-                    return kExportBlockedByLockedTrack;
-                }
-            }
-        }
-    } else {
-        std::unordered_set<std::string> speakerNames;
-        for (const auto& pa : plannedAudio)
-            speakerNames.insert(pa.character.empty() ? std::string("VO")
-                                                      : pa.character);
-        for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
-            Track* track = timeline->track(ti);
-            if (!track || !track->isLocked()) continue;
-            bool wouldMutate =
-                track->type() == TrackType::Audio
-                && !track->isDivider()
-                && speakerNames.count(track->name()) != 0;
-            if (track->type() == TrackType::Video && !track->isCaptionTrack()) {
-                for (size_t ci = 0; ci < track->clipCount() && !wouldMutate; ++ci) {
-                    const Clip* clip = track->clip(ci);
-                    wouldMutate = clip && (clip->syncLine() >= 0
-                        || (clip->groupId() != 0 && !clip->shotName().empty()));
-                }
-            }
-            if (wouldMutate) {
-                spdlog::warn(
-                    "AudioSync: export blocked by locked track '{}'",
-                    track->name());
-                m_lastExportError = tr("Track '%1' is locked and is required by this export.")
-                    .arg(QString::fromStdString(track->name()));
-                return kExportBlockedByLockedTrack;
-            }
-        }
-    }
-
-    if (!incremental) {
-        return applyFull(timeline, plannedAudio, groups,
-                         m_shotPresetManager != nullptr,
-                         trackForSpeaker, makeAudioClip, placeGroupVisuals);
-    }
-    return applyIncremental(timeline, plannedAudio, groups,
-                            trackForSpeaker, makeAudioClip, placeGroupVisuals);
-}
-
-namespace {
-
-// ── FULL export: clear previous export-owned content, rebuild from plan ────
-
-int applyFull(Timeline* timeline,
-              const std::vector<PlannedAudio>& plannedAudio,
-              const std::vector<PlannedGroup>& groups,
-              bool hasShotMgr,
-              const TrackForSpeakerFn& trackForSpeaker,
-              const MakeAudioClipFn& makeAudioClip,
-              const PlaceGroupVisualsFn& placeGroupVisuals)
-{
-    // Remove old speaker audio tracks from previous exports (clean
-    // re-export).  A track is removed when it is empty or when its name
-    // matches a speaker in this export (legacy exports only ever created
-    // speaker-named tracks) — user-added audio tracks with their own
-    // content (music, SFX) survive.
-    {
-        std::unordered_set<std::string> speakerNames;
-        for (const auto& pa : plannedAudio)
-            speakerNames.insert(pa.character.empty() ? std::string("VO")
-                                                     : pa.character);
-        std::vector<size_t> removeIndices;
-        for (size_t i = 0; i < timeline->trackCount(); ++i) {
-            Track* t = timeline->track(i);
-            if (!t || t->type() != TrackType::Audio || t->isDivider()) continue;
-            if (t->isLocked()) continue;
-            if (t->clipCount() == 0 || speakerNames.count(t->name()))
-                removeIndices.push_back(i);
-            else
-                spdlog::info("AudioSync: keeping non-speaker audio track '{}' "
-                             "({} clips)", t->name(), t->clipCount());
-        }
-        // Remove from end to preserve indices
-        for (auto it = removeIndices.rbegin(); it != removeIndices.rend(); ++it)
-            timeline->removeTrack(*it);
-        spdlog::info("AudioSync: cleared {} old audio tracks", removeIndices.size());
-    }
-
-    // Place audio clips
-    int exportCount = 0;
-    for (const auto& pa : plannedAudio) {
-        trackForSpeaker(pa.character)->addClip(makeAudioClip(pa));
-        ++exportCount;
-    }
-
-    spdlog::info("AudioSync::exportToTimeline placed {} audio clips", exportCount);
-
-    // -- DEFAULT SHOT PLACEMENT -- create SpineClip/VideoClip layers ----
-    if (hasShotMgr) {
-        // Clear existing export-owned visual clips (clean re-export).
-        // Guards: the caption track is NEVER touched (a previous version
-        // wiped subtitles here), and standalone user clips (no shot group,
-        // no back-link) survive — only shot-group content is rebuilt.
-        for (size_t i = 0; i < timeline->trackCount(); ++i) {
-            Track* t = timeline->track(i);
-            if (!t || t->type() != TrackType::Video) continue;
-            if (t->isCaptionTrack() || t->isLocked()) continue;
-            for (size_t ci = t->clipCount(); ci > 0; --ci) {
-                const Clip* c = t->clip(ci - 1);
-                if (!c) continue;
-                const bool exportOwned =
-                    c->syncLine() >= 0
-                    || (c->groupId() != 0 && !c->shotName().empty());
-                if (exportOwned)
-                    t->removeClip(ci - 1);
-            }
-        }
-        spdlog::info("AudioSync::exportToTimeline cleared old visual clips from video tracks");
-
-        for (const auto& group : groups)
-            placeGroupVisuals(group);
-    } else {
-        spdlog::warn("AudioSync::exportToTimeline: no ShotPresetManager set, "
-                     "skipping default shot placement");
-    }
-
-    return exportCount;
-}
-
-// ── INCREMENTAL export: diff plan vs back-linked clips, update in place ────
-
-int applyIncremental(Timeline* timeline,
-                     const std::vector<PlannedAudio>& plannedAudio,
-                     const std::vector<PlannedGroup>& groups,
-                     const TrackForSpeakerFn& trackForSpeaker,
-                     const MakeAudioClipFn& makeAudioClip,
-                     const PlaceGroupVisualsFn& placeGroupVisuals)
-{
-    struct ExistingRef {
-        Track* track;
-        Clip*  clip;
-    };
-
-    // ── Index existing export-owned clips by back-link ──────────────────
-    std::map<int, std::vector<ExistingRef>> exAudio;   // line → audio clips
-    std::map<int, std::vector<ExistingRef>> exVisual;  // group firstLine → visuals
-    // Export-time speaker of each line = name of the audio track its clip
-    // sits on.  Captured BEFORE the audio pass so the visual pass can tell
-    // whether a group's character changed (→ rebuild from default shot).
-    std::unordered_map<int, std::string> exLineSpeaker;
-
-    for (size_t ti = 0; ti < timeline->trackCount(); ++ti) {
-        Track* t = timeline->track(ti);
-        if (!t || t->isDivider() || t->isCaptionTrack()) continue;
-        for (size_t ci = 0; ci < t->clipCount(); ++ci) {
-            Clip* c = t->clip(ci);
-            if (!c || c->syncLine() < 0) continue;
-            if (t->type() == TrackType::Audio
-                && c->clipType() == ClipType::Audio) {
-                exAudio[c->syncLine()].push_back({t, c});
-                exLineSpeaker.emplace(c->syncLine(), t->name());
-            } else if (t->type() == TrackType::Video && c->isVisual()
-                       && !c->isCaption()) {
-                exVisual[c->syncLine()].push_back({t, c});
-            }
-        }
-    }
-
-    // Audio tracks that lose sync clips may end up empty → removed at the
-    // end (user tracks never appear here: their clips carry no back-link).
-    std::unordered_set<Track*> touchedAudioTracks;
-
-    auto removeExisting = [&](const ExistingRef& ref) {
-        touchedAudioTracks.insert(ref.track);
-        ref.track->removeClipById(ref.clip->id());  // frees the clip
-    };
-
-    // ── Audio pass ──────────────────────────────────────────────────────
-    std::map<int, std::vector<const PlannedAudio*>> planByLine;
-    for (const auto& pa : plannedAudio)
-        planByLine[pa.line].push_back(&pa);
-
-    int updated = 0, unchanged = 0, created = 0, removed = 0;
-
-    for (const auto& [line, planned] : planByLine) {
-        auto exIt = exAudio.find(line);
-        std::vector<ExistingRef> existing =
-            (exIt != exAudio.end()) ? exIt->second : std::vector<ExistingRef>{};
-        std::sort(existing.begin(), existing.end(),
-                  [](const ExistingRef& a, const ExistingRef& b) {
-                      return a.clip->timelineIn() < b.clip->timelineIn();
-                  });
-
-        if (existing.size() == planned.size()) {
-            // Update each clip in place — identity (id, fades, audio FX,
-            // volume keyframes) survives; AudioSync wins on track, range
-            // and position.
-            for (size_t k = 0; k < planned.size(); ++k) {
-                const PlannedAudio& pa = *planned[k];
-                auto* ac = static_cast<AudioClip*>(existing[k].clip);
-                Track* cur    = existing[k].track;
-                Track* wanted = trackForSpeaker(pa.character);
-
-                const bool fieldsChanged =
-                       ac->mediaPath()      != pa.sourceFile
-                    || ac->sourceIn()       != pa.sourceIn
-                    || ac->duration()       != pa.duration
-                    || ac->sourceDuration() != pa.sourceDuration
-                    || ac->timelineIn()     != pa.timelineIn
-                    || cur != wanted;
-                if (!fieldsChanged) { ++unchanged; continue; }
-
-                ac->setMediaPath(pa.sourceFile);
-                ac->setLabel(pa.label);
-                ac->setSourceIn(pa.sourceIn);
-                ac->setSourceDuration(pa.sourceDuration);
-                ac->setDuration(pa.duration);
-                if (cur != wanted) {
-                    touchedAudioTracks.insert(cur);
-                    auto owned = cur->removeClipById(ac->id());
-                    owned->setTimelineIn(pa.timelineIn);
-                    wanted->addClip(std::move(owned));
-                } else if (ac->timelineIn() != pa.timelineIn) {
-                    cur->moveClip(cur->findClipIndexById(ac->id()),
-                                  pa.timelineIn);
-                }
-                ++updated;
-            }
+    // Nothing changes when a locked track is in the way.
+    if (auto blocked = audiosync::lockedTrackInTheWay(*timeline, plan, incremental)) {
+        if (incremental) {
+            spdlog::warn("AudioSync: re-export blocked by locked track '{}'", blocked->track);
+            m_lastExportError = tr("Track '%1' is locked; clip '%2' (line %3) cannot be updated.")
+                .arg(QString::fromStdString(blocked->track),
+                     QString::fromStdString(blocked->clipLabel))
+                .arg(blocked->line);
         } else {
-            // Range count changed (re-segmented) — recreate this line.
-            for (const auto& ref : existing) { removeExisting(ref); ++removed; }
-            for (const PlannedAudio* pa : planned) {
-                trackForSpeaker(pa->character)->addClip(makeAudioClip(*pa));
-                ++created;
-            }
+            spdlog::warn("AudioSync: export blocked by locked track '{}'", blocked->track);
+            m_lastExportError = tr("Track '%1' is locked and is required by this export.")
+                .arg(QString::fromStdString(blocked->track));
         }
+        return kExportBlockedByLockedTrack;
     }
 
-    // Lines that vanished from the plan (unconfirmed / removed from script)
-    for (const auto& [line, refs] : exAudio) {
-        if (planByLine.count(line)) continue;
-        for (const auto& ref : refs) { removeExisting(ref); ++removed; }
-    }
-
-    // ── Visual pass ─────────────────────────────────────────────────────
-    int vReused = 0, vRebuilt = 0, vRemoved = 0;
-    std::unordered_set<int> plannedFirstLines;
-
-    for (const auto& group : groups) {
-        plannedFirstLines.insert(group.firstLine);
-
-        auto exIt = exVisual.find(group.firstLine);
-        std::vector<ExistingRef> existing =
-            (exIt != exVisual.end()) ? exIt->second : std::vector<ExistingRef>{};
-
-        // Same group (same first line) AND same speaker as at export time →
-        // keep the clips (shot swaps, transforms, effects, transitions all
-        // survive) and just re-span them.  Speaker unknown (no audio clip
-        // was found for the line) counts as unchanged.
-        auto spIt = exLineSpeaker.find(group.firstLine);
-        const bool sameCharacter =
-            (spIt == exLineSpeaker.end()) || (spIt->second == group.character);
-
-        if (!existing.empty() && sameCharacter) {
-            for (const auto& ref : existing) {
-                if (ref.clip->duration() != group.totalDuration)
-                    ref.clip->setDuration(group.totalDuration);
-                if (ref.clip->timelineIn() != group.timelineStart)
-                    ref.track->moveClip(
-                        ref.track->findClipIndexById(ref.clip->id()),
-                        group.timelineStart);
-            }
-            ++vReused;
-        } else {
-            for (const auto& ref : existing)
-                ref.track->removeClipById(ref.clip->id());
-            if (!existing.empty()) ++vRemoved;
-            if (placeGroupVisuals(group) > 0) ++vRebuilt;
-        }
-    }
-
-    // Visual groups that vanished from the plan
-    for (const auto& [firstLine, refs] : exVisual) {
-        if (plannedFirstLines.count(firstLine)) continue;
-        for (const auto& ref : refs)
-            ref.track->removeClipById(ref.clip->id());
-        ++vRemoved;
-    }
-
-    // ── Drop speaker tracks left empty by removals ──────────────────────
-    for (size_t i = timeline->trackCount(); i > 0; --i) {
-        Track* t = timeline->track(i - 1);
-        if (t && t->type() == TrackType::Audio && !t->isDivider()
-            && t->clipCount() == 0 && touchedAudioTracks.count(t))
-            timeline->removeTrack(i - 1);
-    }
-
-    spdlog::info("AudioSync incremental re-export: audio {} updated / {} "
-                 "unchanged / {} created / {} removed; visuals {} groups "
-                 "kept / {} rebuilt / {} removed",
-                 updated, unchanged, created, removed,
-                 vReused, vRebuilt, vRemoved);
-
-    return updated + unchanged + created;
+    return audiosync::applyExport(*timeline, plan, incremental, m_shotPresetManager != nullptr,
+                                  placeGroupVisuals);
 }
-
-} // namespace
 
 } // namespace rt

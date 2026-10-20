@@ -115,37 +115,6 @@ void AudioSync::runAutoSyncImpl()
 }
 
 
-std::vector<std::pair<double,double>> AudioSync::getEffectiveRanges(const SyncClip& clip)
-{
-    if (clip.deletedRegions.empty())
-        return {{clip.start, clip.end}};
-
-    // Sort deleted regions by start time
-    auto deleted = clip.deletedRegions;
-    std::sort(deleted.begin(), deleted.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-
-    std::vector<std::pair<double,double>> ranges;
-    double currentStart = clip.start;
-
-    for (const auto& [delStart, delEnd] : deleted) {
-        double ds = std::max(delStart, clip.start);
-        double de = std::min(delEnd, clip.end);
-
-        // Add range before deleted region (at least 50ms)
-        if (currentStart < ds - 0.05)
-            ranges.emplace_back(currentStart, ds);
-
-        currentStart = de;
-    }
-
-    // Final range after all deleted regions
-    if (currentStart < clip.end - 0.05)
-        ranges.emplace_back(currentStart, clip.end);
-
-    return ranges;
-}
-
 // ─── Export to Timeline (ported from Python _export_timeline) ────────────────
 
 void AudioSync::createClipsFromTranscription()
