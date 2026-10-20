@@ -123,6 +123,9 @@ protected:
         auto* closeUp = video->addClip(std::move(close));
         auto* stinger = addVideo("Stinger", 5 * kTicksPerSecond, kTicksPerSecond);
         auto* ending = addVideo("Ending", 20 * kTicksPerSecond, kTicksPerSecond / 2);
+        // The episode's own rolls footage after the rolls stinger: added by
+        // hand per episode, never part of the recipe.
+        addVideo("Episode rolls", 20 * kTicksPerSecond + kTicksPerSecond / 2, 3 * kTicksPerSecond);
         const QString image = dir.filePath("white.png");
         QImage white(64, 36, QImage::Format_RGB32); white.fill(Qt::white); EXPECT_TRUE(white.save(image));
         auto addImage = [&](const char* label, int64_t at, int64_t duration) {
@@ -166,6 +169,7 @@ protected:
         QJsonObject mini = section; mini.remove("musicLoopTicks");
         mini["musicFile"] = music; mini["musicSourceTimecode"] = "00:00:01:12";
         mini["videoSourceTimecode"] = "00:00:00:08"; // 8/16 = 0.5s, never 8/60
+        mini["bedMusicVolume"] = 0.05;               // its own level for the bed
         QJsonObject recipe{{"version", 1}, {"project", "template.rtp"}, {"sequence", "Template"},
             {"wideCharacter", id(wide)}, {"centeredCharacter", id(centered)}, {"closeUpCharacter", id(closeUp)},
             {"bar", id(bar)}, {"adjustment", id(adjustmentClip)}, {"endingVideo", id(ending)}, {"endingFlash", id(endingFlash)},
@@ -486,6 +490,10 @@ TEST_F(ComfyPanelTest, ProductionTemplateBuildsSectionsMusicFlashesAndCharacterE
     ASSERT_EQ(tailFlashes.size(), 1u);
     EXPECT_EQ(tailFlashes.front()->timelineIn(), ending->timelineOut() - kTicksPerSecond / 5);
     EXPECT_EQ(timeline.duration(), tailFlashes.front()->timelineOut());
+    // Nothing of the template episode's own rolls footage is copied.
+    for (size_t t = 0; t < timeline.trackCount(); ++t)
+        for (size_t c = 0; c < timeline.track(t)->clipCount(); ++c)
+            EXPECT_NE(timeline.track(t)->clip(c)->label(), "Episode rolls");
     EXPECT_EQ(video[3]->clipCount(), 0u);
     ASSERT_EQ(timeline.markers().size(), 4u);
     EXPECT_EQ(timeline.markers()[2].label, "MINI-GAME");
@@ -498,6 +506,9 @@ TEST_F(ComfyPanelTest, ProductionTemplateBuildsSectionsMusicFlashesAndCharacterE
     ASSERT_EQ(miniMusic.size(), 1u);
     EXPECT_EQ(miniMusic.front()->sourceIn(), 3 * kTicksPerSecond / 2); // WAV Source Monitor: 1:12 at 24 fps
     EXPECT_FLOAT_EQ(static_cast<AudioClip*>(miniMusic.front())->volume().defaultValue(), 0.5f);
+    auto miniBed = audio[1]->clipsAtTime(timeline.markers()[2].time + kTicksPerSecond / 2);
+    ASSERT_EQ(miniBed.size(), 1u);
+    EXPECT_FLOAT_EQ(static_cast<AudioClip*>(miniBed.front())->volume().defaultValue(), 0.05f);
     EXPECT_EQ(audio[1]->transitionCount(), 4u);
     for (const auto& transition : audio[1]->transitions()) {
         EXPECT_LT(audio[1]->findClipIndexById(transition.leftClipId), audio[1]->clipCount());

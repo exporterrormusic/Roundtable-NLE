@@ -240,6 +240,12 @@ bool ComfyTimelineTemplate::build(const std::vector<AssemblyShot>& shots, int64_
                 leadAudio->setSourceIn(sourceIn); leadAudio->setDuration(leadLength);
                 bedAudio->setSourceIn(sourceIn + leadLength);
             }
+            // A section may set its own music levels (MINIGAME's authored
+            // clips are at full volume; the show uses 0.5 lead, 0.1 bed).
+            if (spec.contains("leadMusicVolume"))
+                leadAudio->volume().setDefaultValue(static_cast<float>(spec.value("leadMusicVolume").toDouble()));
+            if (spec.contains("bedMusicVolume"))
+                bedAudio->volume().setDefaultValue(static_cast<float>(spec.value("bedMusicVolume").toDouble()));
             const auto leadMusicLength = lead->duration();
             require(leadMusicLength > 0 && leadMusicLength <= leadLength, "Invalid lead-in music duration");
             std::vector<AssemblyShot> group(shots.begin() + first, shots.begin() + end);
