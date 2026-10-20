@@ -1,0 +1,3 @@
+[submodule "tools/omnishotcut/repo"]
+	path = tools/omnishotcut/repo
+	url = https://github.com/UVA-Computer-Vision-Lab/OmniShotCut.git
