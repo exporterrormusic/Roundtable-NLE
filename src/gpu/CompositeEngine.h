@@ -316,7 +316,10 @@ private:
     // device reset only — a session is the failure scope.
     std::unordered_set<std::string> m_disabledPasses;
 
-    // ── Render graph alternative path ────────────────────────────────
+    // ── Render-graph composite ───────────────────────────────────────
+    // compositeViaRenderGraph runs the stages below in order; the frame
+    // state they share is FrameRecording (CompositeEngineFrame.h, which
+    // also says which file holds each stage).
     [[nodiscard]] std::shared_ptr<rt::CachedFrame> compositeViaRenderGraph(
         const std::vector<rt::LayerInfo>& layers,
         uint32_t outW, uint32_t outH,
@@ -335,6 +338,28 @@ private:
         const CompositeCacheKey& cacheKey,
         bool allowLruInsert = true,
         bool forceSyncReadback = false);
+    struct FrameRecording;
+    [[nodiscard]] bool beginCompositeRecording(FrameRecording& frame);
+    void ensureGpuTextureCache();
+    void buildCompositeGraph(FrameRecording& frame);
+    void prepareCompositorLayers(FrameRecording& frame);
+    void uploadLayerMasks(FrameRecording& frame);
+    void recordPasses(FrameRecording& frame);
+    void recordUploadPass(FrameRecording& frame, uint32_t passIdx);
+    void recordEffectPass(FrameRecording& frame, uint32_t passIdx);
+    void recordTransitionPass(FrameRecording& frame, uint32_t passIdx);
+    void recordCompositePass(FrameRecording& frame);
+    void recordReadbackPass(FrameRecording& frame);
+    void submitComposite(FrameRecording& frame);
+    [[nodiscard]] std::shared_ptr<rt::CachedFrame> buildCompositeResult(
+        FrameRecording& frame, const CompositeCacheKey& cacheKey,
+        bool allowLruInsert);
+    void logCompositeTimings(
+        const FrameRecording& frame, bool perfLog,
+        std::chrono::high_resolution_clock::time_point perfT0,
+        std::chrono::high_resolution_clock::time_point perfTlayers,
+        std::chrono::high_resolution_clock::time_point perfTgpuUp,
+        std::chrono::high_resolution_clock::time_point perfTcomp) const;
 
     // Composite result LRU
     static constexpr size_t kCacheSize = 8;
