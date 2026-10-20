@@ -22,7 +22,9 @@ on:
 
 jobs:
   test:
-    runs-on: windows-latest
+    # windows-latest moved to Visual Studio 2026; the project builds with
+    # Visual Studio 2022 (generator "Visual Studio 17 2022").
+    runs-on: windows-2022
 
     steps:
       - name: Checkout
