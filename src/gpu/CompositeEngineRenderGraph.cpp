@@ -396,31 +396,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     auto& ctx = GpuContext::get();
 
     // ── Ensure texture pool is large enough ──────────────────────────
-    for (uint32_t si = 0; si < kTemporalSubmissionSlots; ++si) {
-        while (m_gpuLayerTextures[si].size() < layers.size())
-            m_gpuLayerTextures[si].push_back(std::make_unique<Texture>());
-        m_gpuLayerTexKeys[si].resize(m_gpuLayerTextures[si].size());
-        while (m_layerEffectOutputs[si].size() < layers.size())
-            m_layerEffectOutputs[si].push_back(std::make_unique<Texture>());
-        while (m_gpuLayerTexturesAlt[si].size() < layers.size())
-            m_gpuLayerTexturesAlt[si].push_back(std::make_unique<Texture>());
-        while (m_gpuMaskTextures[si].size() < layers.size())
-            m_gpuMaskTextures[si].push_back(std::make_unique<Texture>());
-        if (m_maskCache[si].size() < m_gpuMaskTextures[si].size())
-            m_maskCache[si].resize(m_gpuMaskTextures[si].size());
-        if (m_effectMaskTextures[si].size() < layers.size())
-            m_effectMaskTextures[si].resize(layers.size());
-        if (m_effectMaskCache[si].size() < layers.size())
-            m_effectMaskCache[si].resize(layers.size());
-        while (m_gpuTemporalSourceTextures[si].size() < layers.size())
-            m_gpuTemporalSourceTextures[si].push_back(
-                std::make_unique<Texture>());
-        m_gpuTemporalSourceTexKeys[si].resize(
-            m_gpuTemporalSourceTextures[si].size());
-        while (m_layerTemporalOutputs[si].size() < layers.size())
-            m_layerTemporalOutputs[si].push_back(
-                std::make_unique<Texture>());
-    }
+    for (auto& resources : m_slots)
+        resources.ensureLayerCount(layers.size());
 
     // ── Set up command buffer (reuse existing triple-buffer slot) ────
     if (!m_gpuSubmission) {
@@ -460,20 +437,15 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
     for (const auto& layer : layers)
         slot.retainForCurrentSlot(layer.gpuResourceOwner);
     const int timingSlot = slot.currentSlot();
-    auto& gpuLayerTextures =
-        m_gpuLayerTextures[static_cast<size_t>(timingSlot)];
-    auto& gpuLayerTexKeys =
-        m_gpuLayerTexKeys[static_cast<size_t>(timingSlot)];
-    auto& gpuLayerTexturesAlt =
-        m_gpuLayerTexturesAlt[static_cast<size_t>(timingSlot)];
-    auto& layerEffectOutputs =
-        m_layerEffectOutputs[static_cast<size_t>(timingSlot)];
-    auto& gpuMaskTextures = m_gpuMaskTextures[static_cast<size_t>(timingSlot)];
-    auto& maskCache = m_maskCache[static_cast<size_t>(timingSlot)];
-    auto& effectMaskTextures =
-        m_effectMaskTextures[static_cast<size_t>(timingSlot)];
-    auto& effectMaskCache =
-        m_effectMaskCache[static_cast<size_t>(timingSlot)];
+    auto& slotResources = m_slots[static_cast<size_t>(timingSlot)];
+    auto& gpuLayerTextures = slotResources.layerTextures;
+    auto& gpuLayerTexKeys = slotResources.layerTexKeys;
+    auto& gpuLayerTexturesAlt = slotResources.layerTexturesAlt;
+    auto& layerEffectOutputs = slotResources.effectOutputs;
+    auto& gpuMaskTextures = slotResources.maskTextures;
+    auto& maskCache = slotResources.maskCache;
+    auto& effectMaskTextures = slotResources.effectMaskTextures;
+    auto& effectMaskCache = slotResources.effectMaskCache;
 
     // Resolve last frame's timestamps from this ring slot.  beginRecording()
     // above waited for the fence so the queries are guaranteed ready.
@@ -688,8 +660,8 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                 .name = "layer" + std::to_string(li) + "_temporalSource",
                 .image = layer.temporalGpuTextureReady
                     ? VK_NULL_HANDLE
-                    : (m_gpuTemporalSourceTextures[timingSlot][li]
-                        ? m_gpuTemporalSourceTextures[timingSlot][li]->image()
+                    : (slotResources.temporalSourceTextures[li]
+                        ? slotResources.temporalSourceTextures[li]->image()
                         : VK_NULL_HANDLE),
                 .width = layer.frameWidth ? layer.frameWidth : outW,
                 .height = layer.frameHeight ? layer.frameHeight : outH,
@@ -1253,10 +1225,10 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         temporalLayer.frame = layer.temporalFrame;
                         temporalLayer.gpuTextureReady = false;
                         temporalLayer.temporalFrame.reset();
-                        auto& key = m_gpuTemporalSourceTexKeys[timingSlot][li];
+                        auto& key = slotResources.temporalSourceTexKeys[li];
                         auto result = m_uploadManager->uploadLayer(
                             temporalLayer,
-                            *m_gpuTemporalSourceTextures[timingSlot][li],
+                            *slotResources.temporalSourceTextures[li],
                             key.mediaId, key.frameNumber, key.framePtr,
                             scrubMode);
                         if (result.success) {
@@ -1292,7 +1264,7 @@ std::shared_ptr<CachedFrame> CompositeEngine::compositeViaRenderGraph(
                         temporalH /= 2;
 
                     auto& temporalOut =
-                        *m_layerTemporalOutputs[timingSlot][li];
+                        *slotResources.temporalOutputs[li];
                     if (temporalOut.image() == VK_NULL_HANDLE ||
                         temporalOut.width() != temporalW ||
                         temporalOut.height() != temporalH) {

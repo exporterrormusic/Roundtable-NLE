@@ -232,16 +232,6 @@ private:
         int64_t  frameNumber{-1};
         const void* framePtr{nullptr};  // CachedFrame identity for re-decode detection
     };
-    // Source upload textures are owned by submission slot. The CPU may begin
-    // recording the next frame before an older slot has finished sampling its
-    // source, so a single shared vector permits destroying/re-uploading an
-    // image that is still in flight.
-    std::array<std::vector<std::unique_ptr<rt::Texture>>,
-               rt::kTemporalSubmissionSlots> m_gpuLayerTextures;
-    std::array<std::vector<PoolTexKey>,
-               rt::kTemporalSubmissionSlots> m_gpuLayerTexKeys;
-    std::array<std::vector<std::unique_ptr<rt::Texture>>,
-               rt::kTemporalSubmissionSlots> m_gpuMaskTextures;
 
     // Per-slot mask rasterization cache: when the evaluated mask state
     // (hash) and clip match the previous frame, the CPU rasterize + GPU
@@ -252,26 +242,46 @@ private:
         VkDescriptorImageInfo desc{};
         bool     valid{false};
     };
-    std::array<std::vector<MaskCacheEntry>,
-               rt::kTemporalSubmissionSlots> m_maskCache;
 
-    // Per-layer effect-mask textures (one per masked effect in the layer's
-    // chain, rasterized in the clip's source-pixel grid) + their caches.
-    std::array<std::vector<std::vector<std::unique_ptr<rt::Texture>>>,
-               rt::kTemporalSubmissionSlots> m_effectMaskTextures;
-    std::array<std::vector<std::vector<MaskCacheEntry>>,
-               rt::kTemporalSubmissionSlots> m_effectMaskCache;
+    // Everything a frame records per layer belongs to its submission slot.
+    // The CPU may begin recording the next frame before an older slot has
+    // finished sampling its sources, so one shared set would let a frame
+    // destroy or re-upload an image that is still in flight. Every list is
+    // indexed by layer.
+    struct SlotLayerResources {
+        // Source upload textures and the frame each one holds.
+        std::vector<std::unique_ptr<rt::Texture>> layerTextures;
+        std::vector<PoolTexKey> layerTexKeys;
+        // Alternate upload textures for packed-alpha layers. The compositor
+        // reads packed alpha twice per pixel (RGB + alpha halves); if the
+        // next frame's upload overwrote the same texture between those reads
+        // we would get a 1-frame spill. Alternating upload/composite targets
+        // avoids the race with zero copy overhead.
+        std::vector<std::unique_ptr<rt::Texture>> layerTexturesAlt;
+        // Clip masks.
+        std::vector<std::unique_ptr<rt::Texture>> maskTextures;
+        std::vector<MaskCacheEntry> maskCache;
+        // Effect masks: one per masked effect in the layer's chain,
+        // rasterized in the clip's source-pixel grid.
+        std::vector<std::vector<std::unique_ptr<rt::Texture>>> effectMaskTextures;
+        std::vector<std::vector<MaskCacheEntry>> effectMaskCache;
+        // Effect-output snapshots. The EffectProcessor has only two ping-pong
+        // storage images shared by all layers, so when layer B's effect chain
+        // runs after A's it overwrites what gpuLayers[A].textureInfo points
+        // at (a dissolve between two effected clips would sample B on both
+        // sides). Each layer's result is copied here right after its chain.
+        std::vector<std::unique_ptr<rt::Texture>> effectOutputs;
+        // Time interpolation: the second decoded frame's upload and the
+        // synthesized output, immutable until the slot's fence is recycled.
+        std::vector<std::unique_ptr<rt::Texture>> temporalSourceTextures;
+        std::vector<PoolTexKey> temporalSourceTexKeys;
+        std::vector<std::unique_ptr<rt::Texture>> temporalOutputs;
 
-    // Per-layer effect-output snapshot textures.  The EffectProcessor uses
-    // only two ping-pong storage images shared across all layers, so when
-    // layer B's effect chain runs after A's it overwrites the textures that
-    // gpuLayers[A].textureInfo references — breaking cross-dissolves between
-    // two effected clips (A appears to vanish, B is sampled for both sides
-    // of the mix).  We snapshot the EffectProcessor output into one of these
-    // per-layer textures after each layer's effect chain completes so the
-    // downstream Transition pass reads stable, layer-specific data.
-    std::array<std::vector<std::unique_ptr<rt::Texture>>,
-               rt::kTemporalSubmissionSlots> m_layerEffectOutputs;
+        /// Grow every list to hold at least `layerCount` layers.
+        void ensureLayerCount(size_t layerCount);
+        void clear();
+    };
+    std::array<SlotLayerResources, rt::kTemporalSubmissionSlots> m_slots;
 
     // Adjustment effects operate on a flattened full-frame composite. Keep
     // their ping-pong images separate from the clip EffectProcessor supplied
@@ -281,24 +291,7 @@ private:
     std::function<std::shared_ptr<rt::EffectProcessor>(uint32_t, uint32_t)>
         m_effectProcessorResolver;
 
-    // Time-interpolation resources are triple-buffered by submission slot.
-    // The second decoded frame needs its own upload pool and every synthesized
-    // output must remain immutable until that slot's fence is recycled.
-    std::array<std::vector<std::unique_ptr<rt::Texture>>,
-               rt::kTemporalSubmissionSlots> m_gpuTemporalSourceTextures;
-    std::array<std::vector<PoolTexKey>,
-               rt::kTemporalSubmissionSlots> m_gpuTemporalSourceTexKeys;
-    std::array<std::vector<std::unique_ptr<rt::Texture>>,
-               rt::kTemporalSubmissionSlots> m_layerTemporalOutputs;
     std::unique_ptr<rt::TemporalInterpolator> m_temporalInterpolator;
-
-    // Per-submission alternate upload textures for packed-alpha layers. The
-    // compositor reads packed-alpha twice per pixel (RGB + alpha halves);
-    // if the next frame's upload overwrites the same texture between those
-    // reads we get a 1-frame spill.  Alternating upload/composite targets
-    // avoids the race with zero copy overhead.
-    std::array<std::vector<std::unique_ptr<rt::Texture>>,
-               rt::kTemporalSubmissionSlots> m_gpuLayerTexturesAlt;
 
     // Cache coordinator (optional — for dynamic budgets + VRAM pressure)
     rt::CachePolicy* m_cachePolicy{nullptr};

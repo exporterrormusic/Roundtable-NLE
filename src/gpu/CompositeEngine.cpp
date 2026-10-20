@@ -243,17 +243,7 @@ void CompositeEngine::shutdown(GpuTeardownMode mode)
     if (m_uploadManager)
         m_uploadManager->shutdown();
     clearGpuTexCache();
-    for (auto& v : m_gpuLayerTextures) v.clear();
-    for (auto& v : m_gpuLayerTexKeys) v.clear();
-    for (auto& v : m_gpuMaskTextures) v.clear();
-    for (auto& v : m_maskCache) v.clear();
-    for (auto& v : m_effectMaskTextures) v.clear();
-    for (auto& v : m_effectMaskCache) v.clear();
-    for (auto& v : m_layerEffectOutputs) v.clear();
-    for (auto& v : m_gpuLayerTexturesAlt) v.clear();
-    for (auto& v : m_gpuTemporalSourceTextures) v.clear();
-    for (auto& v : m_gpuTemporalSourceTexKeys) v.clear();
-    for (auto& v : m_layerTemporalOutputs) v.clear();
+    for (auto& slot : m_slots) slot.clear();
     if (m_adjustmentEffectProcessor) {
         // The synchronization boundary above covers this engine-owned helper.
         // Avoid a redundant device-wide wait in its destructor.
@@ -344,31 +334,60 @@ void CompositeEngine::invalidateMediaPoolSlots(uint64_t mediaId)
 {
     if (mediaId == 0) return;
     size_t reset = 0;
-    for (auto& slotKeys : m_gpuLayerTexKeys) {
-        for (auto& key : slotKeys) {
+    auto resetKeys = [&](std::vector<PoolTexKey>& keys) {
+        for (auto& key : keys) {
             if (key.mediaId == mediaId) {
-                key.mediaId     = 0;
-                key.frameNumber = -1;
-                key.framePtr    = nullptr;
+                key = PoolTexKey{};
                 ++reset;
             }
         }
-    }
-    for (auto& slotKeys : m_gpuTemporalSourceTexKeys) {
-        for (auto& key : slotKeys) {
-            if (key.mediaId == mediaId) {
-                key.mediaId = 0;
-                key.frameNumber = -1;
-                key.framePtr = nullptr;
-                ++reset;
-            }
-        }
+    };
+    for (auto& slot : m_slots) {
+        resetKeys(slot.layerTexKeys);
+        resetKeys(slot.temporalSourceTexKeys);
     }
     if (reset > 0) {
         spdlog::warn("[LIVE-RELOAD] CompositeEngine: reset {} pool-slot "
                      "dirty-tracking key(s) for mediaId={} — next upload "
                      "will re-stage new pixels", reset, mediaId);
     }
+}
+
+void CompositeEngine::SlotLayerResources::ensureLayerCount(size_t layerCount)
+{
+    auto grow = [layerCount](std::vector<std::unique_ptr<Texture>>& textures) {
+        while (textures.size() < layerCount)
+            textures.push_back(std::make_unique<Texture>());
+    };
+    grow(layerTextures);
+    layerTexKeys.resize(layerTextures.size());
+    grow(effectOutputs);
+    grow(layerTexturesAlt);
+    grow(maskTextures);
+    if (maskCache.size() < maskTextures.size())
+        maskCache.resize(maskTextures.size());
+    if (effectMaskTextures.size() < layerCount)
+        effectMaskTextures.resize(layerCount);
+    if (effectMaskCache.size() < layerCount)
+        effectMaskCache.resize(layerCount);
+    grow(temporalSourceTextures);
+    temporalSourceTexKeys.resize(temporalSourceTextures.size());
+    grow(temporalOutputs);
+}
+
+void CompositeEngine::SlotLayerResources::clear()
+{
+    layerTextures.clear();
+    layerTexKeys.clear();
+    maskTextures.clear();
+    maskCache.clear();
+    effectMaskTextures.clear();
+    effectMaskCache.clear();
+    effectOutputs.clear();
+    layerTexturesAlt.clear();
+    temporalSourceTextures.clear();
+    temporalSourceTexKeys.clear();
+    temporalOutputs.clear();
 }
 
 void CompositeEngine::clearGpuTexCache()
