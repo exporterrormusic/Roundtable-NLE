@@ -74,6 +74,7 @@ jobs:
             -G "Visual Studio 17 2022" `
             -DCMAKE_BUILD_TYPE=Release `
             -DROUNDTABLE_BUILD_TESTS=ON `
+            -DROUNDTABLE_ENABLE_WHISPER_CUDA=OFF `
             -DCMAKE_PREFIX_PATH="${{ github.workspace }}\third_party\qt\6.8.3\msvc2022_64"
 
       - name: Build (all targets — compile coverage for the whole test suite)
