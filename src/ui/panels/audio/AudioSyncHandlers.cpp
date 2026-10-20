@@ -3,6 +3,7 @@
  * Split from AudioSync.cpp for maintainability.
  */
 #include "panels/audio/AudioSync.h"
+#include "audiosync/AutoSync.h"
 #include "ai/Transcriber.h"
 #include "ai/ScriptMatcher.h"
 #include "audio/AudioEngine.h"
@@ -783,152 +784,21 @@ void AudioSync::clearAllTranscriptions()
 void AudioSync::closeInterClipGaps()
 {
     if (session().clips.empty()) return;
-
-    // First pass: auto-trim silence from every clip (skip confirmed)
-    int trimCount = 0;
-    for (size_t i = 0; i < session().clips.size(); ++i) {
-        auto& clip = session().clips[i];
-        if (clip.matchState == 2) continue; // confirmed — don't touch
-        auto it = session().audioSamples.find(clip.sourceFile);
-        if (it == session().audioSamples.end()) continue;
-
-        const auto& audioData = it->second;
-        const int windowSize = static_cast<int>(0.010 * audioData.sampleRate); // 10ms
-        auto startSample = static_cast<int>(clip.start * audioData.sampleRate);
-        auto endSample   = static_cast<int>(clip.end * audioData.sampleRate);
-        if (startSample >= static_cast<int>(audioData.samples.size())) continue;
-        if (endSample > static_cast<int>(audioData.samples.size()))
-            endSample = static_cast<int>(audioData.samples.size());
-        if (endSample - startSample < windowSize * 3) continue;
-
-        // Measure RMS per window to build energy profile
-        std::vector<float> rmsValues;
-        for (int pos = startSample; pos + windowSize <= endSample; pos += windowSize) {
-            float sumSq = 0.0f;
-            for (int j = 0; j < windowSize; ++j) {
-                float s = audioData.samples[static_cast<size_t>(pos + j)];
-                sumSq += s * s;
-            }
-            rmsValues.push_back(std::sqrt(sumSq / static_cast<float>(windowSize)));
-        }
-        if (rmsValues.size() < 3) continue;
-        auto sorted = rmsValues;
-        std::sort(sorted.begin(), sorted.end());
-        // Dynamic-range threshold: 8% of the way from noise floor to speech peak
-        float noiseFloor  = sorted[sorted.size() / 10];       // 10th percentile
-        float speechLevel = sorted[sorted.size() * 9 / 10];   // 90th percentile
-        float dynRange    = speechLevel - noiseFloor;
-        float threshold   = (dynRange > 0.001f)
-            ? noiseFloor + dynRange * 0.08f
-            : std::max(0.003f, noiseFloor * 1.5f);
-
-        // Scan forward for speech start — require 2 consecutive above-threshold windows
-        int speechStart = startSample;
-        for (int pos = startSample; pos + windowSize * 2 <= endSample; pos += windowSize) {
-            auto rmsAt = [&](int p) {
-                float sumSq = 0.0f;
-                for (int j = 0; j < windowSize; ++j) {
-                    float s = audioData.samples[static_cast<size_t>(p + j)];
-                    sumSq += s * s;
-                }
-                return std::sqrt(sumSq / static_cast<float>(windowSize));
-            };
-            if (rmsAt(pos) > threshold && rmsAt(pos + windowSize) > threshold) {
-                speechStart = pos; break;
-            }
-        }
-        // Scan backward for speech end — require 2 consecutive above-threshold windows
-        int speechEnd = endSample;
-        for (int pos = endSample - windowSize * 2; pos >= startSample; pos -= windowSize) {
-            auto rmsAt = [&](int p) {
-                if (p + windowSize > endSample) return 0.0f;
-                float sumSq = 0.0f;
-                for (int j = 0; j < windowSize; ++j) {
-                    float s = audioData.samples[static_cast<size_t>(p + j)];
-                    sumSq += s * s;
-                }
-                return std::sqrt(sumSq / static_cast<float>(windowSize));
-            };
-            if (rmsAt(pos) > threshold && rmsAt(pos + windowSize) > threshold) {
-                speechEnd = pos + windowSize * 2; break;
-            }
-        }
-
-        int prepad  = static_cast<int>(0.060 * audioData.sampleRate); // 60ms
-        int postpad = static_cast<int>(0.040 * audioData.sampleRate); // 40ms
-        speechStart = std::max(startSample, speechStart - prepad);
-        speechEnd   = std::min(endSample, speechEnd + postpad);
-        double newStart = static_cast<double>(speechStart) / audioData.sampleRate;
-        double newEnd   = static_cast<double>(speechEnd) / audioData.sampleRate;
-        if (std::abs(newStart - clip.start) > 0.01 || std::abs(newEnd - clip.end) > 0.01) {
-            clip.start = newStart;
-            clip.end = newEnd;
-            ++trimCount;
-        }
-    }
-
-    if (session().clips.size() < 2) {
+    const auto result = audiosync::closeInterClipGaps(syncSource(), session().clips);
+    if (result.tooFewToClose) {
         if (m_transcribeStatus)
             m_transcribeStatus->setText(
-                trimCount > 0
-                    ? QString("Trimmed %1 clips").arg(trimCount)
+                result.trimmed > 0
+                    ? QString("Trimmed %1 clips").arg(result.trimmed)
                     : QString("No changes needed"));
-        if (trimCount > 0) populateCards();
+        if (result.trimmed > 0) populateCards();
         return;
     }
-
-    // Second pass: close gaps between adjacent same-file clips
-    std::sort(session().clips.begin(), session().clips.end(),
-              [](const SyncClip& x, const SyncClip& y) {
-                  if (x.sourceFile != y.sourceFile) return x.sourceFile < y.sourceFile;
-                  return x.start < y.start;
-              });
-
-    int gapsClosed = 0;
-    for (size_t i = 0; i + 1 < session().clips.size(); ++i) {
-        auto& a = session().clips[i];
-        auto& b = session().clips[i + 1];
-        if (a.sourceFile != b.sourceFile) continue;
-        if (a.matchState == 2 || b.matchState == 2) continue; // skip confirmed
-        double gap = b.start - a.end;
-        if (gap > 0.001 && gap < 0.050) { // only close tiny seam gaps (<50ms)
-            // Find the quietest point in the gap to place the boundary
-            double boundary = (a.end + b.start) / 2.0;
-            auto sampIt = session().audioSamples.find(a.sourceFile);
-            if (sampIt != session().audioSamples.end()) {
-                const auto& ad = sampIt->second;
-                int sr = static_cast<int>(ad.sampleRate);
-                int winSz = static_cast<int>(0.010 * sr);
-                int gapStart = static_cast<int>(a.end * sr);
-                int gapEnd = static_cast<int>(b.start * sr);
-                if (gapEnd - gapStart > winSz) {
-                    float bestRms = 1e9f;
-                    int bestPos = (gapStart + gapEnd) / 2;
-                    for (int pos = gapStart; pos + winSz <= gapEnd; pos += winSz / 2) {
-                        float sumSq = 0.0f;
-                        for (int j = 0; j < winSz && static_cast<size_t>(pos + j) < ad.samples.size(); ++j) {
-                            float s = ad.samples[static_cast<size_t>(pos + j)];
-                            sumSq += s * s;
-                        }
-                        float rms = std::sqrt(sumSq / static_cast<float>(winSz));
-                        if (rms < bestRms) { bestRms = rms; bestPos = pos; }
-                    }
-                    boundary = static_cast<double>(bestPos) / sr;
-                }
-            }
-            a.end = boundary;
-            b.start = boundary;
-            ++gapsClosed;
-        }
-    }
-
-    if (gapsClosed > 0 || trimCount > 0) {
-        spdlog::info("AudioSync: Trimmed {} clips, closed {} gaps", trimCount, gapsClosed);
+    if (result.gapsClosed > 0 || result.trimmed > 0)
         populateCards();
-    }
     if (m_transcribeStatus)
         m_transcribeStatus->setText(
-            QString("Trimmed %1 clips, closed %2 gaps").arg(trimCount).arg(gapsClosed));
+            QString("Trimmed %1 clips, closed %2 gaps").arg(result.trimmed).arg(result.gapsClosed));
 }
 
 } // namespace rt

@@ -5,7 +5,7 @@
 #include "audio/AudioFile.h"
 #include "command/CommandStack.h"
 #include "panels/audio/AudioSync.h"
-#include "panels/audio/AudioSyncFileName.h"
+#include "audiosync/SyncFileName.h"
 #include "panels/audio/VoiceGenerationPanel.h"
 #include "panels/audio/VoiceGenerationService.h"
 #include "panels/audio/VoiceReferenceLibrary.h"

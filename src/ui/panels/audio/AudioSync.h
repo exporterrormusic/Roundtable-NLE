@@ -47,7 +47,7 @@
 #include <QPointer>
 #include <QElapsedTimer>
 
-#include "audio/SampleBuffer.h"
+#include "audiosync/SyncClip.h"
 #include "ai/Transcriber.h"    // For TranscriptionResult
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
 
@@ -75,6 +75,7 @@ class VideoFrameGrabber;
 class VideoFrameView;
 struct ScriptLine;
 struct MatchResult;
+namespace audiosync { struct SyncSource; }
 
 // ─── Transcription worker (runs on QThread) ─────────────────────────────────
 
@@ -107,34 +108,6 @@ private:
     WhisperModelSize m_modelSize{kDefaultWhisperModel};
     TranscriptionResult m_result;
     std::atomic<bool> m_cancelRequested{false};
-};
-
-// ─── Audio clip data model ──────────────────────────────────────────────────
-
-struct SyncClip
-{
-    int         id{0};
-    std::string sourceFile;
-    std::string character;
-    double      start{0.0};     // seconds
-    double      end{0.0};       // seconds
-    std::string transcript;
-    std::string editedText;
-    int         matchState{0};  // 0=unmatched, 1=tentative, 2=confirmed
-    float       confidence{0.0f};
-    int         scriptLineNumber{-1};
-    std::string scriptSegment;
-    std::vector<std::pair<double,double>> deletedRegions;
-
-    bool operator==(const SyncClip&) const = default;
-};
-
-/// Loaded audio sample data (mono float, keyed by file path). The samples
-/// are normally a memory mapping of the decoded-audio cache file; copies
-/// (waveforms, dialogs) share them.
-struct AudioSampleData {
-    SampleBuffer samples;  // mono float -1..1
-    uint32_t sampleRate{44100};
 };
 
 /// A previously imported/matched line that can serve as cloning reference.
@@ -811,6 +784,8 @@ private:
     /// The open script's data: its session, else the scratch session.
     [[nodiscard]] ScriptSession& session() noexcept;
     [[nodiscard]] const ScriptSession& session() const noexcept;
+    /// The open script's data as the core sync algorithms take it.
+    [[nodiscard]] audiosync::SyncSource syncSource() const;
     std::string m_pendingSessionName; // name to apply on next interactive load, empty = auto-generate
 
     // Setup Panel — Script column
