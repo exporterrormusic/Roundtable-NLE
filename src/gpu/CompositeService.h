@@ -691,6 +691,25 @@ private:
         const RenderExecutionContext& context,
         RenderResultStatus* exceptionStatus = nullptr);
 
+    // compositeFrameImpl stages, in the order it runs them
+    // (CompositeServiceFrameStages.cpp). FrameState
+    // (CompositeServiceFrameState.h) carries the request between them. A
+    // FrameAnswer is the frame to return (null is an answer too);
+    // std::nullopt means "go on to the next stage".
+    struct FrameState;
+    using FrameAnswer = std::optional<std::shared_ptr<CachedFrame>>;
+    void consumeCacheInvalidation(FrameState& r);
+    [[nodiscard]] FrameAnswer serveSegmentCache(FrameState& r);
+    void warmNewShotClips(FrameState& r);
+    void logPipelineConfigOnce(const FrameState& r);
+    [[nodiscard]] FrameAnswer serveCompositeLru(FrameState& r);
+    void resolveLayers(FrameState& r);
+    [[nodiscard]] FrameAnswer answerIncompleteFrame(FrameState& r);
+    void reportLayers(FrameState& r);
+    [[nodiscard]] FrameAnswer serveStaticComposite(FrameState& r);
+    [[nodiscard]] FrameAnswer servePassthroughLayer(FrameState& r);
+    [[nodiscard]] std::shared_ptr<CachedFrame> compositeOnGpu(FrameState& r);
+
     // Layer building (extracted to CompositeServiceLayerBuild.cpp)
     std::vector<LayerInfo> buildLayersForFrame(int64_t tick, uint32_t outW, uint32_t outH,
                                                 bool scrubMode, bool playbackNonBlocking,
