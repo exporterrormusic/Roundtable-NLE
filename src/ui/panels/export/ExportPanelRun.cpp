@@ -744,8 +744,12 @@ void ExportPanel::onPollProgress()
     double  elapsed    = j->progress.elapsedSeconds.load();
     double  fps        = (elapsed > 0.5) ? (curFrame / elapsed) : 0.0;
 
+    // Once every frame is rendered the job finishes the file (muxing, then a
+    // decode of every frame to validate it): show that step, not a frame
+    // counter stuck at its end.
+    const bool framesDone = totalFrame > 0 && curFrame >= totalFrame;
     QString status;
-    if (pct < 100) {
+    if (pct < 100 && !framesDone) {
         status = tr("Rendering \u2014 %1/%2 frames").arg(curFrame).arg(totalFrame);
         if (fps > 0.1) {
             status += QStringLiteral("  \u00B7  %1 fps").arg(QString::number(fps, 'f', 1));
@@ -768,7 +772,7 @@ void ExportPanel::onPollProgress()
 
     // "RENDERING FRAME n / m" pip over the preview (video jobs only).
     if (m_renderPip) {
-        if (!j->config.audioOnly && pct < 100) {
+        if (!j->config.audioOnly && pct < 100 && !framesDone) {
             m_renderPip->setText(tr("RENDERING FRAME %1 / %2")
                                      .arg(curFrame).arg(totalFrame));
             m_renderPip->setVisible(true);

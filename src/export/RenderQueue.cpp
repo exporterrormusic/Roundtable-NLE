@@ -34,6 +34,12 @@ namespace rt {
 
 namespace {
 
+/// Share of a video job's progress bar for rendering frames; the strict
+/// validation decode of the finished file fills the rest. Validation runs at
+/// roughly a quarter of the render's time (it decodes every frame back), so
+/// a thin share left the bar sitting near the end for most of a minute.
+constexpr float kRenderProgressShare = 80.0f;
+
 /// A small BGRA picture of an NV12 export frame for the export panel's
 /// preview: every `step`-th pixel, BT.709 limited range back to RGB.
 std::shared_ptr<CachedFrame> nv12PreviewFrame(const CachedFrame& src, uint32_t step)
@@ -956,7 +962,7 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
         const double fps = elapsed > 0 ? framesCompleted / elapsed : 0.0;
 
         job.progress.currentFrame = framesCompleted;
-        job.progress.percent = 95.0f * static_cast<float>(framesCompleted) / totalFrames;
+        job.progress.percent = kRenderProgressShare * static_cast<float>(framesCompleted) / totalFrames;
         job.progress.elapsedSeconds = elapsed;
         job.progress.fps = fps;
         job.progress.estimatedRemaining = fps > 0
@@ -1341,7 +1347,8 @@ void RenderQueue::processJob(ExportJob& job, JobRunContext& ctx,
     const ExportFileValidation validation = validateExportFile(
         ctx.stagedOutputPath, totalFrames, outW, outH, fpsNum, fpsDen,
         [this, &job](int64_t decoded, int64_t expected) {
-            job.progress.percent = 95.0f + 4.9f * static_cast<float>(decoded) / expected;
+            job.progress.percent = kRenderProgressShare
+                + (99.9f - kRenderProgressShare) * static_cast<float>(decoded) / expected;
             {
                 std::lock_guard<std::mutex> lk(m_mutex);
                 job.progress.statusText = "Validating frame " + std::to_string(decoded)
