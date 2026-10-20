@@ -38,6 +38,7 @@
 #include "timeline/EditOperations.h"
 #include "timeline/MediaRelinker.h"
 #include "timeline/Timeline.h"
+#include <chrono>
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
@@ -506,6 +507,17 @@ void TimelineWorkspace::refreshChangedMedia(const std::filesystem::path& path)
 
 void TimelineWorkspace::refreshAfterUndoRedo()
 {
+    // An undo is a keypress: time each step and name the slow one.
+    using Clock = std::chrono::steady_clock;
+    const auto refreshStart = Clock::now();
+    auto lapStart = refreshStart;
+    const auto lap = [&lapStart]() {
+        const auto now = Clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(now - lapStart).count();
+        lapStart = now;
+        return ms;
+    };
+
     // Undo/redo can touch a sequence other than the active one.
     markSnapshotDirty(/*allSequences=*/true);
     invalidateCompositeCache();
@@ -515,6 +527,7 @@ void TimelineWorkspace::refreshAfterUndoRedo()
     // already-cached mix — so drop the cache here or an undone/redone audio
     // cross-dissolve keeps playing its stale (pre-edit) mix.
     invalidateAudioSources();
+    const double cachesMs = lap();
 
     // Sync playhead from the Timeline model to the panel and playback
     // controller.  Paste/duplicate commands now move the model's playhead
@@ -531,9 +544,11 @@ void TimelineWorkspace::refreshAfterUndoRedo()
     // and every clip panel let go of clips that are no longer on the
     // timeline (the history listener already did this for recorded steps).
     m_clipBinding->releaseClipsNotOnTimeline();
+    const double playheadMs = lap();
 
     // Rebuild the timeline track widgets so split/merged clips are visible.
     if (m_timelinePanel) m_timelinePanel->rebuildTracks();
+    const double rebuildMs = lap();
 
 #ifdef ROUNDTABLE_HAS_SPINE
     // Purge spine cache entries for clip IDs that no longer exist on the
@@ -558,6 +573,7 @@ void TimelineWorkspace::refreshAfterUndoRedo()
         m_compositeService->purgeDeadSpineStates(liveIds);
     }
 #endif
+    const double spineMs = lap();
 
     // If selected clip still exists, refresh property panels to reflect undo/redo.
     // Recorded (EditSession) steps change clips in place without running any
@@ -576,6 +592,7 @@ void TimelineWorkspace::refreshAfterUndoRedo()
     if (m_GraphicsEditorPanel && m_GraphicsEditorPanel->clip())
         m_GraphicsEditorPanel->refresh();
     if (m_captionsPanel) m_captionsPanel->refresh();
+    const double panelsMs = lap();
 
     updateTransformOverlay();
     if (m_programMonitor) {
@@ -594,8 +611,17 @@ void TimelineWorkspace::refreshAfterUndoRedo()
     // Clips may have been added/removed/relinked — keep the live file-swap
     // watcher in sync with the timeline's current media set.
     m_mediaWatch->rescan();
+    const double monitorMs = lap();
 
     schedulePostEditWork();
+
+    const double totalMs = std::chrono::duration<double, std::milli>(
+        Clock::now() - refreshStart).count();
+    if (totalMs > 50.0)
+        spdlog::warn("[UNDO-SLOW] refresh after undo/redo took {:.0f} ms: caches {:.0f}, "
+                     "playhead {:.0f}, rebuild tracks {:.0f}, spine {:.0f}, panels {:.0f}, "
+                     "monitor/media {:.0f}", totalMs, cachesMs, playheadMs, rebuildMs, spineMs,
+                     panelsMs, monitorMs);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -1303,3 +1303,30 @@ TEST(GoldenFrames, StaticFramesAreReusedUntilAnEdit)
     EXPECT_NE(refreshed.get(), edited.get()) << "an invalidation kept the old composite";
     EXPECT_TRUE(samePixels(*refreshed, *edited));
 }
+
+// The timeline's render bar asks, frame by frame, whether "Render In to Out"
+// has stored a frame for the current settings: yes exactly over the rendered
+// range, and no again once an edit changes what the frame would show.
+TEST(GoldenFrames, RenderBarSeesExactlyThePreRenderedFrames)
+{
+    REQUIRE_GPU();
+    Scene scene;
+    const auto tracks = scene.videoTracks(1);
+    auto* clip = addImage(*tracks[0], g_harness->bars, 0, seconds(4));
+    scene.publish();
+    std::string why;
+    ASSERT_TRUE(renderPreview(scene, 0, &why)) << why;   // binds the preview to the scene
+
+    auto& preview = *g_harness->preview;
+    const int64_t inside = seconds(1) + frames(3);
+    EXPECT_FALSE(preview.isTickCached(inside));
+    ASSERT_GT(preview.renderRangeToCache(seconds(1), seconds(2), kW, kH, {}, {},
+                                         /*forceFullResolution=*/true), 0);
+    EXPECT_TRUE(preview.isTickCached(seconds(1)));
+    EXPECT_TRUE(preview.isTickCached(inside));
+    EXPECT_FALSE(preview.isTickCached(seconds(3)));   // never rendered
+
+    clip->opacity().writeValue(0, 0.5f);
+    scene.publish();
+    EXPECT_FALSE(preview.isTickCached(inside)) << "an edited frame still read as pre-rendered";
+}

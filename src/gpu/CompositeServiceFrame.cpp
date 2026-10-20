@@ -554,13 +554,21 @@ float CompositeService::measuredFrameCostMs(int64_t tick) const
 bool CompositeService::isTickCached(int64_t tick) const
 {
     if (!m_segmentRenderCache || !m_timeline) return false;
-    const uint64_t cfgHash = boundConfigHash(tick, RenderStateNone);
     // "Render In to Out" pre-renders at Full (it serves export + full-res
     // playback), so the bar must probe Full to light green from the editing
     // (reduced-tier) context too.  Also accept the current effective tier so a
     // reduced-tier pre-render still shows.
-    return m_segmentRenderCache->hasFresh(tick, ResolutionTier::Full, cfgHash)
-        || m_segmentRenderCache->hasFresh(tick, effectiveCacheTier(), cfgHash);
+    // Hashing the frame's configuration is the costly part (the render bar
+    // probes thousands of ticks on every timeline rebuild, ~36 us each): skip
+    // it where the cache holds nothing for this tick at either tier.
+    const ResolutionTier tier = effectiveCacheTier();
+    const bool fullCandidate = m_segmentRenderCache->hasCandidate(tick, ResolutionTier::Full);
+    const bool tierCandidate = tier != ResolutionTier::Full
+                            && m_segmentRenderCache->hasCandidate(tick, tier);
+    if (!fullCandidate && !tierCandidate) return false;
+    const uint64_t cfgHash = boundConfigHash(tick, RenderStateNone);
+    return (fullCandidate && m_segmentRenderCache->hasFresh(tick, ResolutionTier::Full, cfgHash))
+        || (tierCandidate && m_segmentRenderCache->hasFresh(tick, tier, cfgHash));
 }
 
 // ── §4.6 slice 2c: "Render In to Out" foreground driver ─────────────────────

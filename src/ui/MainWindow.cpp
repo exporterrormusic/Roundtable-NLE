@@ -85,6 +85,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
+
 #include <algorithm>
 #include <filesystem>
 #include <set>
@@ -120,17 +122,23 @@ void MainWindow::onUndo()
             }
         }
 
+        using Clock = std::chrono::steady_clock;
+        const auto t0 = Clock::now();
         auto desc = m_commandStack->undoDescription();
         m_commandStack->undo();
-        // Refresh timeline UI to reflect the undone change
-        if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel())
-            m_timelineWorkspace->timelinePanel()->rebuildTracks();
-        // Flush composite cache and refresh monitor + overlay
+        const auto t1 = Clock::now();
+        // Rebuild the timeline UI, flush the composite and audio caches and
+        // refresh the monitor + overlay (refreshAfterUndoRedo does all of it,
+        // the track rebuild once and after stale clips are released).
         if (m_timelineWorkspace)
             m_timelineWorkspace->refreshAfterUndoRedo();
-        // Reload audio sources so audio reflects the undone state
-        if (m_timelineWorkspace)
-            m_timelineWorkspace->invalidateAudioSources();
+        const auto t2 = Clock::now();
+        const auto ms = [](Clock::time_point a, Clock::time_point b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        if (ms(t0, t2) > 50.0)
+            spdlog::warn("[UNDO-SLOW] Undo '{}' took {:.0f} ms: model {:.0f}, refresh {:.0f}",
+                         desc, ms(t0, t2), ms(t0, t1), ms(t1, t2));
 
         // Restore the previously raised dock so undo doesn't switch tabs.
         if (raisedDock)
@@ -161,17 +169,23 @@ void MainWindow::onRedo()
             }
         }
 
+        using Clock = std::chrono::steady_clock;
+        const auto t0 = Clock::now();
         auto desc = m_commandStack->redoDescription();
         m_commandStack->redo();
-        // Refresh timeline UI to reflect the redone change
-        if (m_timelineWorkspace && m_timelineWorkspace->timelinePanel())
-            m_timelineWorkspace->timelinePanel()->rebuildTracks();
-        // Flush composite cache and refresh monitor + overlay
+        const auto t1 = Clock::now();
+        // Rebuild the timeline UI, flush the composite and audio caches and
+        // refresh the monitor + overlay (refreshAfterUndoRedo does all of it,
+        // the track rebuild once and after stale clips are released).
         if (m_timelineWorkspace)
             m_timelineWorkspace->refreshAfterUndoRedo();
-        // Reload audio sources so audio reflects the redone state
-        if (m_timelineWorkspace)
-            m_timelineWorkspace->invalidateAudioSources();
+        const auto t2 = Clock::now();
+        const auto ms = [](Clock::time_point a, Clock::time_point b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        if (ms(t0, t2) > 50.0)
+            spdlog::warn("[UNDO-SLOW] Redo '{}' took {:.0f} ms: model {:.0f}, refresh {:.0f}",
+                         desc, ms(t0, t2), ms(t0, t1), ms(t1, t2));
 
         // Restore the previously raised dock so redo doesn't switch tabs.
         if (raisedDock)
