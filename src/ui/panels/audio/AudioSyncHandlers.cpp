@@ -467,26 +467,13 @@ bool AudioSync::ensureCrisperWhisperConsent()
 
 void AudioSync::onCancelTranscriptionClicked()
 {
-    if (m_transcriptionState == TranscriptionState::Idle
-        || m_transcriptionState == TranscriptionState::Cancelling) {
+    if (!m_transcriptionRunner->isActive() || m_transcriptionRunner->isCancelling())
         return;
-    }
 
-    m_transcriptionState = TranscriptionState::Cancelling;
     // Completed files keep their results; no additional files are launched.
-    session().pendingTranscriptionIndices.clear();
+    m_transcriptionRunner->cancel();
     m_transcribeStatus->setText(QStringLiteral("Cancelling transcription..."));
     updateTranscriptionControls();
-
-    spdlog::info("AudioSync: Cancelling transcription run {}", m_transcriptionRunId);
-    if (m_worker)
-        m_worker->requestCancel();
-    m_transcriber->cancelAsync();
-
-    if (m_workerThread && !m_workerThread->isRunning())
-        m_workerThread->quit();
-    else if (!m_workerThread)
-        finishTranscriptionRun(true);
 }
 
 void AudioSync::onAutoSyncClicked()
@@ -540,13 +527,13 @@ void AudioSync::onReExportClicked()
 void AudioSync::onTranscriptionProgress(float percent, const QString& status)
 {
     float clampedPercent = std::clamp(percent, 0.0f, 100.0f);
-    size_t runTotal = std::max<size_t>(session().transcriptionRunTotal, 1);
-    double overall = (static_cast<double>(session().transcriptionRunCompleted)
+    size_t runTotal = std::max<size_t>(m_transcriptionRunner->total(), 1);
+    double overall = (static_cast<double>(m_transcriptionRunner->completed())
                     + static_cast<double>(clampedPercent) / 100.0)
                     / static_cast<double>(runTotal) * 100.0;
     m_progressBar->setValue(static_cast<int>(std::clamp(overall, 0.0, 99.0)));
 
-    size_t fileNumber = std::min(session().transcriptionRunCompleted + 1, runTotal);
+    size_t fileNumber = std::min(m_transcriptionRunner->completed() + 1, runTotal);
     m_transcribeStatus->setText(QString("File %1/%2: %3")
         .arg(fileNumber)
         .arg(runTotal)
@@ -554,110 +541,56 @@ void AudioSync::onTranscriptionProgress(float percent, const QString& status)
     emit transcriptionProgress(percent, status);
 }
 
-void AudioSync::handleTranscriptionFinished(
-    uint64_t runId, const QPointer<TranscriptionWorker>& worker, bool success)
+void AudioSync::onTranscriptionFileStarted(const std::string& path, size_t number, size_t total)
 {
-    if (runId != m_transcriptionRunId
-        || m_transcriptionState == TranscriptionState::Idle
-        || !worker
-        || worker != m_worker) {
-        return;
-    }
+    if (ScriptSession* target = transcriptionSession())
+        target->audioPath = path;
+    m_transcribeStatus->setText(QString("Transcribing file %1/%2...").arg(number).arg(total));
+}
 
-    if (success) {
-        if (session().currentTranscriptionIndex < session().allTranscriptionResults.size())
-            session().allTranscriptionResults[session().currentTranscriptionIndex] = worker->result();
-        m_transcriptionRunHadSuccess = true;
+void AudioSync::onTranscriptionFileFinished(const std::string& path,
+                                            const TranscriptionResult& result)
+{
+    ScriptSession* target = transcriptionSession();
+    if (!target)
+        return;   // its script was closed or replaced mid-run
+    const auto& paths = target->audioPaths;
+    const auto it = std::find(paths.begin(), paths.end(), path);
+    if (it == paths.end())
+        return;
+    if (target->allTranscriptionResults.size() < paths.size())
+        target->allTranscriptionResults.resize(paths.size());
+    target->allTranscriptionResults[static_cast<size_t>(it - paths.begin())] = result;
+    if (target == &session())
         refreshTranscribeFileList();
-    } else if (m_transcriptionState != TranscriptionState::Cancelling
-               && m_transcriptionRunError.isEmpty()) {
-        m_transcriptionRunError = QStringLiteral("Transcription failed");
-    }
-
-    if (session().transcriptionRunCompleted < session().transcriptionRunTotal)
-        ++session().transcriptionRunCompleted;
-
-    auto it = std::find(session().pendingTranscriptionIndices.begin(),
-                        session().pendingTranscriptionIndices.end(),
-                        session().currentTranscriptionIndex);
-    if (it != session().pendingTranscriptionIndices.end())
-        session().pendingTranscriptionIndices.erase(it);
 }
 
-void AudioSync::handleTranscriptionError(uint64_t runId, const QString& error)
+void AudioSync::onTranscriptionFileFailed(const QString& error)
 {
-    if (runId != m_transcriptionRunId
-        || m_transcriptionState == TranscriptionState::Idle
-        || m_transcriptionState == TranscriptionState::Cancelling) {
-        return;
-    }
-
-    m_transcriptionRunError = error;
     m_transcribeStatus->setText(QStringLiteral("Transcription error: %1").arg(error));
-    spdlog::error("AudioSync: Transcription run {} failed: {}",
-                  runId, error.toStdString());
-}
-
-void AudioSync::handleTranscriptionThreadFinished(
-    uint64_t runId, const QPointer<QThread>& thread)
-{
-    if (!thread)
-        return;
-
-    if (thread != m_workerThread) {
-        thread->deleteLater();
-        return;
-    }
-
-    m_worker = nullptr;
-    m_workerThread = nullptr;
-    thread->deleteLater();
-
-    if (m_destroying.load() || runId != m_transcriptionRunId)
-        return;
-
-    if (m_transcriptionState == TranscriptionState::Cancelling) {
-        finishTranscriptionRun(true);
-        return;
-    }
-
-    if (!session().pendingTranscriptionIndices.empty()) {
-        session().currentTranscriptionIndex = session().pendingTranscriptionIndices.front();
-        m_transcribeStatus->setText(QString("Transcribing file %1/%2...")
-            .arg(std::min(session().transcriptionRunCompleted + 1, session().transcriptionRunTotal))
-            .arg(std::max<size_t>(session().transcriptionRunTotal, 1)));
-        startTranscriptionForFile(session().currentTranscriptionIndex, runId);
-        return;
-    }
-
-    finishTranscriptionRun(false);
 }
 
 void AudioSync::finishTranscriptionRun(bool cancelled)
 {
-    if (m_transcriptionState == TranscriptionState::Idle)
-        return;
+    const size_t completed = m_transcriptionRunner->completed();
+    const size_t total = m_transcriptionRunner->total();
+    const bool hadSuccess = m_transcriptionRunner->hadSuccess();
+    const QString error = m_transcriptionRunner->error();
+    ScriptSession* target = transcriptionSession();
+    m_transcriptionSessionKey.reset();
 
-    const size_t completed = session().transcriptionRunCompleted;
-    const size_t total = session().transcriptionRunTotal;
-    const bool hadSuccess = m_transcriptionRunHadSuccess;
-    const QString error = m_transcriptionRunError;
-
-    m_transcriptionState = TranscriptionState::Idle;
-    session().pendingTranscriptionIndices.clear();
     m_progressBar->setVisible(false);
     updateTranscriptionControls();
 
-    if (hadSuccess)
-        applyFinishedTranscriptions();
+    if (hadSuccess && target)
+        applyFinishedTranscriptions(*target);
 
+    const ScriptSession& shown = target ? *target : session();
     if (cancelled) {
         m_transcribeStatus->setText(QString("Transcription cancelled (%1 of %2 file(s) completed)")
             .arg(completed).arg(total));
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().warning)));
-        spdlog::info("AudioSync: Transcription run {} cancelled after {}/{} file(s)",
-                     m_transcriptionRunId, completed, total);
     } else if (!error.isEmpty()) {
         m_transcribeStatus->setText(hadSuccess
             ? QString("Transcription completed with errors (%1/%2): %3")
@@ -666,7 +599,7 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().warning)));
         emit transcriptionFailed(error);
-    } else if (session().clips.empty()) {
+    } else if (shown.clips.empty()) {
         m_transcribeStatus->setText(QStringLiteral("Transcription returned no segments"));
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().warning)));
@@ -674,41 +607,62 @@ void AudioSync::finishTranscriptionRun(bool cancelled)
         m_progressBar->setValue(100);
         m_transcribeStatus->setText(
             QString("Transcribed %1 segments from %2 file(s)")
-                .arg(session().clips.size()).arg(session().audioPaths.size()));
+                .arg(shown.clips.size()).arg(shown.audioPaths.size()));
         m_transcribeStatus->setStyleSheet(QString("color: %1;")
             .arg(Theme::hex(Theme::colors().success)));
     }
-
-    session().transcriptionRunCompleted = 0;
-    session().transcriptionRunTotal = 0;
-    m_transcriptionRunHadSuccess = false;
-    m_transcriptionRunError.clear();
 }
 
-void AudioSync::applyFinishedTranscriptions()
+ScriptSession* AudioSync::transcriptionSession()
 {
-    appendClipsFromNewTranscriptions();
-    if (session().script && !session().script->lines.empty())
-        mergeSegmentsToMatchScript();
+    if (!m_transcriptionSessionKey)
+        return nullptr;
+    if (*m_transcriptionSessionKey == m_activeScriptKey)
+        return &session();
+    auto it = m_scriptSessions.find(*m_transcriptionSessionKey);
+    return it != m_scriptSessions.end() ? &it->second : nullptr;
+}
 
-    if (!session().clips.empty()) {
-        session().transcriptionDone = true;
-        populateClipList();
-        updateWorkflowState();
-        emit transcriptionFinished(static_cast<int>(session().clips.size()));
+void AudioSync::detachTranscriptionRun()
+{
+    m_transcriptionSessionKey.reset();
+    onCancelTranscriptionClicked();
+}
+
+void AudioSync::applyFinishedTranscriptions(ScriptSession& target)
+{
+    audiosync::appendClipsFromTranscriptions(syncSourceOf(target), target.clips);
+    if (target.script && !target.script->lines.empty())
+        audiosync::mergeSegmentsToMatchScript(syncSourceOf(target), target.clips);
+
+    if (target.clips.empty())
+        return;
+    target.transcriptionDone = true;
+    if (&target != &session()) {
+        // A script that is not open: its views are built when it is opened.
+        populateScriptSessionList();
+        return;
     }
+    populateClipList();
+    updateWorkflowState();
+    emit transcriptionFinished(static_cast<int>(target.clips.size()));
 }
 
 void AudioSync::setTranscriptionsForTesting(std::vector<TranscriptionResult> results)
 {
     session().allTranscriptionResults = std::move(results);
-    applyFinishedTranscriptions();
+    applyFinishedTranscriptions(session());
+}
+
+void AudioSync::setTranscribeFunctionForTesting(TranscriptionRunner::TranscribeFn transcribe)
+{
+    m_transcribeForTesting = std::move(transcribe);
 }
 
 void AudioSync::updateTranscriptionControls()
 {
-    const bool active = m_transcriptionState != TranscriptionState::Idle;
-    const bool cancelling = m_transcriptionState == TranscriptionState::Cancelling;
+    const bool active = m_transcriptionRunner->isActive();
+    const bool cancelling = m_transcriptionRunner->isCancelling();
 
     if (m_transcribeBtn)
         m_transcribeBtn->setEnabled(!active);

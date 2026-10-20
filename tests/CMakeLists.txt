@@ -196,6 +196,8 @@ add_roundtable_test(test_mask_tracker    LIBS roundtable_ui roundtable_core USES
 add_roundtable_test(test_comfy_workflow LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
 # Batch runner against an in-process fake ComfyUI HTTP server (localhost only).
 add_roundtable_test(test_comfy_runner   LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
+# Transcription run sequencing with a fake transcribe function.
+add_roundtable_test(test_transcription_runner LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP core)
 add_roundtable_test(test_comfy_panel LIBS roundtable_ui roundtable_export roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_video_frame_grabber LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_manual_match_dialog LIBS roundtable_ui roundtable_core USES_QT GROUP ui)

@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 #include "AudioSyncFixture.h"
+#include "../support/StallGuard.h"
 
 #include "ai/Transcriber.h"
 #include "command/CommandStack.h"
@@ -24,9 +25,15 @@
 #include <QPushButton>
 #include <QTemporaryDir>
 
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <sstream>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +55,16 @@ struct AudioSyncTestAccess
     static void removeFile(AudioSync& a, int file) { a.removeFileFromSync(file); }
     static void switchTo(AudioSync& a, const std::string& key) { a.switchToScript(key); }
     static QListWidget* sessionList(AudioSync& a) { return a.m_scriptSessionList; }
+    static std::vector<SyncClip>& clipsOf(AudioSync& a, const std::string& key)
+    {
+        return a.m_scriptSessions.at(key).clips;
+    }
+    static bool transcribing(AudioSync& a) { return a.m_transcriptionRunner->isActive(); }
+    static void cancelTranscription(AudioSync& a) { a.onCancelTranscriptionClicked(); }
+    static std::string transcribeStatus(AudioSync& a)
+    {
+        return a.m_transcribeStatus->text().toStdString();
+    }
     static bool filterCharacter(AudioSync& a, const QString& name)
     {
         QListWidget* list = a.m_charFilterList;
@@ -508,6 +525,220 @@ TEST_F(AudioSyncWorkflowTest, ActiveScriptRowShowsItsClipsAndState)
         EXPECT_EQ(item->data(Qt::UserRole + 3).toInt(), 3) << "synced";
     }
     EXPECT_TRUE(found) << "no active row";
+}
+
+// ── Transcription runs (TranscriptionRunner with a fake transcribe) ────────
+
+/// Holds a fake transcribe call until released or stopped.
+struct TranscribeGate
+{
+    std::mutex mutex;
+    std::condition_variable_any cv;
+    bool open{false};
+    std::atomic<bool> entered{false};
+
+    bool wait(std::stop_token stop)
+    {
+        entered = true;
+        std::unique_lock lock(mutex);
+        return cv.wait(lock, stop, [this] { return open; });
+    }
+    void release()
+    {
+        {
+            std::lock_guard lock(mutex);
+            open = true;
+        }
+        cv.notify_all();
+    }
+};
+
+class AudioSyncTranscribeTest : public AudioSyncWorkflowTest
+{
+protected:
+    /// Script loaded and both files imported and decoded; no transcriptions.
+    void importBoth(rt::AudioSync& audioSync, const std::string& key = "memory://morning-show")
+    {
+        ASSERT_TRUE(audioSync.loadScript(kScript, key));
+        ASSERT_TRUE(audioSync.importAudio(alicePath));
+        ASSERT_TRUE(audioSync.importAudio(bobPath));
+        ASSERT_TRUE(waitFor([&] { return !audioSync.audioSamplesPending(); }));
+    }
+
+    /// Whisper's results for the two files; `bob` decides Bob's.
+    rt::TranscriptionRunner::TranscribeFn fake(
+        std::function<rt::TranscriptionResult(std::stop_token)> bob = {}) const
+    {
+        const std::string alice = alicePath;
+        return [alice, bob](const std::string& path, std::stop_token stop,
+                            const rt::TranscriptionRunner::ProgressFn& progress) {
+            progress(50.0f, "Transcribing...");
+            if (path == alice) return transcriptionOf(kAlice, true);
+            return bob ? bob(stop) : transcriptionOf(kBob, true);
+        };
+    }
+
+    static rt::TranscriptionResult stopped()
+    {
+        rt::TranscriptionResult result;
+        result.status = rt::TranscriptionStatus::Cancelled;
+        return result;
+    }
+
+    const char* const kAllClips =
+        "0 ALICE.wav Alice line=-1 state=0 150-2750\n"
+        "1 ALICE.wav Alice line=-1 state=0 2950-5650\n"
+        "2 ALICE.wav Alice line=-1 state=0 5850-8350\n"
+        "3 BOB.wav Bob line=-1 state=0 50-2850\n"
+        "4 BOB.wav Bob line=-1 state=0 3150-5950\n"
+        "5 BOB.wav Bob line=-1 state=0 6050-8750\n";
+    const char* const kAliceClips =
+        "0 ALICE.wav Alice line=-1 state=0 150-2750\n"
+        "1 ALICE.wav Alice line=-1 state=0 2950-5650\n"
+        "2 ALICE.wav Alice line=-1 state=0 5850-8350\n";
+};
+
+// A run builds the same clips as installing the results directly.
+TEST_F(AudioSyncTranscribeTest, ARunBuildsTheClipsOfEveryFile)
+{
+    rt::AudioSync audioSync;
+    importBoth(audioSync);
+    audioSync.setTranscribeFunctionForTesting(fake());
+    audioSync.startTranscription();
+    EXPECT_TRUE(AudioSyncTestAccess::transcribing(audioSync));
+    ASSERT_TRUE(waitFor([&] { return !AudioSyncTestAccess::transcribing(audioSync); }));
+
+    EXPECT_TRUE(audioSync.isTranscriptionComplete());
+    EXPECT_EQ(describe(AudioSyncTestAccess::clips(audioSync)), kAllClips);
+    EXPECT_EQ(AudioSyncTestAccess::transcriptions(audioSync).size(), 2u);
+    EXPECT_EQ(AudioSyncTestAccess::transcribeStatus(audioSync),
+              "Transcribed 6 segments from 2 file(s)");
+
+    // Everything is transcribed: a second click has nothing to do.
+    audioSync.startTranscription();
+    EXPECT_FALSE(AudioSyncTestAccess::transcribing(audioSync));
+    EXPECT_EQ(AudioSyncTestAccess::transcribeStatus(audioSync), "All files already transcribed");
+}
+
+TEST_F(AudioSyncTranscribeTest, AFailedFileLeavesTheOthersTranscribed)
+{
+    rt::AudioSync audioSync;
+    importBoth(audioSync);
+    audioSync.setTranscribeFunctionForTesting(fake([](std::stop_token) {
+        rt::TranscriptionResult failed;
+        failed.status = rt::TranscriptionStatus::Failed;
+        failed.error.message = "could not decode BOB.wav";
+        return failed;
+    }));
+    audioSync.startTranscription();
+    ASSERT_TRUE(waitFor([&] { return !AudioSyncTestAccess::transcribing(audioSync); }));
+
+    EXPECT_EQ(describe(AudioSyncTestAccess::clips(audioSync)), kAliceClips);
+    EXPECT_EQ(AudioSyncTestAccess::transcribeStatus(audioSync),
+              "Transcription completed with errors (2/2): could not decode BOB.wav");
+}
+
+// Cancel keeps the files already done and stops the one in progress.
+TEST_F(AudioSyncTranscribeTest, CancelKeepsTheFilesAlreadyDone)
+{
+    TranscribeGate gate;   // outlives the panel and its run
+    rt::AudioSync audioSync;
+    importBoth(audioSync);
+    audioSync.setTranscribeFunctionForTesting(fake([&](std::stop_token stop) {
+        return gate.wait(stop) ? transcriptionOf(kBob, true) : stopped();
+    }));
+    audioSync.startTranscription();
+    ASSERT_TRUE(waitFor([&] {
+        return gate.entered.load()
+            && !AudioSyncTestAccess::transcriptions(audioSync)[0].segments.empty();
+    }));
+
+    AudioSyncTestAccess::cancelTranscription(audioSync);
+    EXPECT_EQ(AudioSyncTestAccess::transcribeStatus(audioSync), "Cancelling transcription...");
+    ASSERT_TRUE(waitFor([&] { return !AudioSyncTestAccess::transcribing(audioSync); }));
+
+    EXPECT_EQ(describe(AudioSyncTestAccess::clips(audioSync)), kAliceClips);
+    EXPECT_TRUE(AudioSyncTestAccess::transcriptions(audioSync)[1].segments.empty());
+    EXPECT_EQ(AudioSyncTestAccess::transcribeStatus(audioSync),
+              "Transcription cancelled (1 of 2 file(s) completed)");
+}
+
+// Opening another script mid-run: the results still go to the script the
+// run started in. (They used to land in whichever script was open.)
+TEST_F(AudioSyncTranscribeTest, ResultsGoToTheScriptTheRunStartedIn)
+{
+    TranscribeGate gate;   // outlives the panel and its run
+    rt::AudioSync audioSync;
+    importBoth(audioSync, "memory://first");
+    audioSync.setTranscribeFunctionForTesting(fake([&](std::stop_token stop) {
+        return gate.wait(stop) ? transcriptionOf(kBob, true) : stopped();
+    }));
+    audioSync.startTranscription();
+    ASSERT_TRUE(waitFor([&] { return gate.entered.load(); }));
+
+    ASSERT_TRUE(audioSync.loadScript(
+        "CAROL: A second script with one line only.\n", "memory://second"));
+    gate.release();
+    ASSERT_TRUE(waitFor([&] { return !AudioSyncTestAccess::transcribing(audioSync); }));
+
+    EXPECT_EQ(describe(AudioSyncTestAccess::clips(audioSync)), "");
+    EXPECT_TRUE(audioSync.audioPaths().empty());
+    EXPECT_EQ(describe(AudioSyncTestAccess::clipsOf(audioSync, "memory://first")), kAllClips);
+
+    AudioSyncTestAccess::switchTo(audioSync, "memory://first");
+    EXPECT_EQ(describe(AudioSyncTestAccess::clips(audioSync)), kAllClips);
+    EXPECT_EQ(AudioSyncTestAccess::transcriptions(audioSync).size(), 2u);
+    EXPECT_TRUE(audioSync.isTranscriptionComplete());
+}
+
+// Opening a project mid-run cancels the run; its results are dropped, even
+// when the project has a script and file of the same name.
+TEST_F(AudioSyncTranscribeTest, OpeningAProjectMidRunDropsTheRun)
+{
+    std::vector<uint8_t> project;
+    {
+        rt::AudioSync other;
+        ASSERT_TRUE(other.loadScript(kScript, "memory://morning-show"));
+        ASSERT_TRUE(other.importAudio(bobPath));
+        ASSERT_TRUE(waitFor([&] { return !other.audioSamplesPending(); }));
+        project = other.serializeToBlob();
+    }
+
+    TranscribeGate gate;   // outlives the panel and its run
+    rt::AudioSync audioSync;
+    importBoth(audioSync);
+    audioSync.setTranscribeFunctionForTesting(fake([&](std::stop_token stop) {
+        return gate.wait(stop) ? transcriptionOf(kBob, true) : stopped();
+    }));
+    audioSync.startTranscription();
+    ASSERT_TRUE(waitFor([&] { return gate.entered.load(); }));
+
+    audioSync.deserializeFromBlob(project);
+    ASSERT_TRUE(waitFor([&] { return !AudioSyncTestAccess::transcribing(audioSync); }));
+    EXPECT_EQ(describe(AudioSyncTestAccess::clips(audioSync)), "");
+    EXPECT_EQ(audioSync.audioPaths(), std::vector<std::string>{bobPath});
+    EXPECT_EQ(audioSync.serializeToBlob(), project);
+}
+
+TEST_F(AudioSyncTranscribeTest, ClosingThePanelMidRunStopsTheRun)
+{
+    TranscribeGate gate;
+    std::atomic<bool> sawStop{false};
+    auto audioSync = std::make_unique<rt::AudioSync>();
+    importBoth(*audioSync);
+    audioSync->setTranscribeFunctionForTesting(fake([&](std::stop_token stop) {
+        if (!gate.wait(stop)) sawStop = true;
+        return stopped();
+    }));
+    audioSync->startTranscription();
+    ASSERT_TRUE(waitFor([&] { return gate.entered.load(); }));
+
+    {
+        rt::test::StallGuard guard("AudioSync destroyed mid-transcription");
+        audioSync.reset();
+    }
+    EXPECT_TRUE(sawStop.load());
+    QCoreApplication::processEvents();   // nothing queued reaches the dead panel
 }
 
 } // namespace

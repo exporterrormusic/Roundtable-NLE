@@ -159,15 +159,14 @@ void AudioSync::createClipsFromAllTranscriptions()
     session().clips = audiosync::clipsFromTranscriptions(syncSource());
 }
 
-void AudioSync::appendClipsFromNewTranscriptions()
-{
-    audiosync::appendClipsFromTranscriptions(syncSource(), session().clips);
-}
-
 audiosync::SyncSource AudioSync::syncSource() const
 {
-    return {session().script.get(), session().audioPaths,
-            session().allTranscriptionResults, session().audioSamples};
+    return syncSourceOf(session());
+}
+
+audiosync::SyncSource AudioSync::syncSourceOf(const ScriptSession& data)
+{
+    return {data.script.get(), data.audioPaths, data.allTranscriptionResults, data.audioSamples};
 }
 
 } // namespace rt

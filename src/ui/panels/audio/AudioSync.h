@@ -50,12 +50,14 @@
 #include "audiosync/SyncClip.h"
 #include "ai/Transcriber.h"    // For TranscriptionResult
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
+#include "panels/audio/TranscriptionRunner.h"
 
 #include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -76,39 +78,6 @@ class VideoFrameView;
 struct ScriptLine;
 struct MatchResult;
 namespace audiosync { struct SyncSource; }
-
-// ─── Transcription worker (runs on QThread) ─────────────────────────────────
-
-class TranscriptionWorker : public QObject
-{
-    Q_OBJECT
-public:
-    explicit TranscriptionWorker(Transcriber* transcriber, QObject* parent = nullptr);
-
-    void setAudioPath(const std::string& path) { m_audioPath = path; }
-    void setLanguage(const std::string& lang)   { m_language = lang; }
-    void setModelSize(WhisperModelSize size)    { m_modelSize = size; }
-    void requestCancel() noexcept { m_cancelRequested.store(true, std::memory_order_release); }
-
-    /// Access the result after finished(true).
-    [[nodiscard]] const TranscriptionResult& result() const { return m_result; }
-
-public slots:
-    void process();
-
-signals:
-    void progressChanged(float percent, const QString& status);
-    void finished(bool success);
-    void errorOccurred(const QString& error);
-
-private:
-    Transcriber* m_transcriber;
-    std::string  m_audioPath;
-    std::string  m_language;
-    WhisperModelSize m_modelSize{kDefaultWhisperModel};
-    TranscriptionResult m_result;
-    std::atomic<bool> m_cancelRequested{false};
-};
 
 /// A previously imported/matched line that can serve as cloning reference.
 struct VoiceReferenceCandidate {
@@ -151,10 +120,6 @@ struct ScriptSession
     std::unordered_map<int, std::string>    lineAudioFile;
     mutable std::unordered_map<std::string, QColor> characterColors;
     std::vector<TranscriptionResult>        allTranscriptionResults;
-    size_t                                  currentTranscriptionIndex{0};
-    size_t                                  transcriptionRunTotal{0};
-    size_t                                  transcriptionRunCompleted{0};
-    std::vector<size_t>                     pendingTranscriptionIndices;
     std::unordered_map<std::string, std::string> shotOverrides; ///< see AudioSync::session().shotOverrides
     ShowPipelineState                       pipeline;      ///< see AudioSync::session().pipeline
 };
@@ -277,6 +242,8 @@ public:
     /// Test seam: install per-file transcription results (index-aligned with
     /// audioPaths()) and build clips exactly as a finished run does.
     void setTranscriptionsForTesting(std::vector<TranscriptionResult> results);
+    /// Test seam: transcribe files with `transcribe` instead of whisper.
+    void setTranscribeFunctionForTesting(TranscriptionRunner::TranscribeFn transcribe);
 
     /// Get character names from the loaded script.
     [[nodiscard]] QStringList scriptCharacters() const;
@@ -447,22 +414,23 @@ private:
     void runAutoSyncImpl();      // algorithm body; public runAutoSync adds undo history
     void createClipsFromTranscription();
     void createClipsFromAllTranscriptions();
-    void appendClipsFromNewTranscriptions();
-    void mergeSegmentsToMatchScript();
     void resegmentByScript();          // script-guided re-segmentation (#2)
     void startSingleFileTranscription(size_t index);
     void beginTranscriptionRun(std::vector<size_t> indices);
-    void startTranscriptionForFile(size_t index, uint64_t runId);
-    void handleTranscriptionFinished(uint64_t runId,
-                                     const QPointer<TranscriptionWorker>& worker,
-                                     bool success);
-    void handleTranscriptionError(uint64_t runId, const QString& error);
-    void handleTranscriptionThreadFinished(uint64_t runId,
-                                           const QPointer<QThread>& thread);
+    /// Whisper / CrisperWhisper with the model picked in the model combo.
+    [[nodiscard]] TranscriptionRunner::TranscribeFn whisperTranscribeFunction() const;
+    void onTranscriptionFileStarted(const std::string& path, size_t number, size_t total);
+    void onTranscriptionFileFinished(const std::string& path, const TranscriptionResult& result);
+    void onTranscriptionFileFailed(const QString& error);
     void finishTranscriptionRun(bool cancelled);
+    /// The session the current run writes to: the one it started in, wherever
+    /// that is now. Null when that script was closed or replaced.
+    [[nodiscard]] ScriptSession* transcriptionSession();
+    /// Cancel the run and drop its results (the sessions are being replaced).
+    void detachTranscriptionRun();
     /// Clips from newly transcribed files, merged to the script; what a run
     /// that transcribed at least one file ends with.
-    void applyFinishedTranscriptions();
+    void applyFinishedTranscriptions(ScriptSession& target);
     void updateTranscriptionControls();
     [[nodiscard]] bool ensureCrisperWhisperConsent();
     [[nodiscard]] bool isCrisperWhisperSelected() const;
@@ -714,16 +682,13 @@ private:
     /// render as a red "SET SHOT" button; picked ones stay clickable.
     [[nodiscard]] QWidget* createShotTag(const ScriptLine& line, int width);
 
-    // Multi-file transcription state
-
-    // Transcription worker
-    enum class TranscriptionState { Idle, Running, Cancelling };
-    TranscriptionState m_transcriptionState{TranscriptionState::Idle};
-    uint64_t m_transcriptionRunId{0};
-    bool m_transcriptionRunHadSuccess{false};
-    QString m_transcriptionRunError;
-    QPointer<QThread>             m_workerThread;
-    QPointer<TranscriptionWorker> m_worker;
+    // Transcription runs: the runner is created after m_transcriber and
+    // destroyed first (~AudioSync resets it explicitly).
+    std::unique_ptr<TranscriptionRunner> m_transcriptionRunner;
+    /// Key of the session the run started in (empty: the scratch session);
+    /// nullopt once the run is detached.
+    std::optional<std::string> m_transcriptionSessionKey;
+    TranscriptionRunner::TranscribeFn m_transcribeForTesting;
 
     // ── UI widgets ──────────────────────────────────────────────────────
 
@@ -786,6 +751,7 @@ private:
     [[nodiscard]] const ScriptSession& session() const noexcept;
     /// The open script's data as the core sync algorithms take it.
     [[nodiscard]] audiosync::SyncSource syncSource() const;
+    [[nodiscard]] static audiosync::SyncSource syncSourceOf(const ScriptSession& data);
     std::string m_pendingSessionName; // name to apply on next interactive load, empty = auto-generate
 
     // Setup Panel — Script column

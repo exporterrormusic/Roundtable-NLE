@@ -2,7 +2,6 @@
  * AudioSync.cpp — 5-step audio sync workflow panel implementation.
  */
 
-#include "threading/ThreadRegistry.h"
 #include "panels/audio/AudioSync.h"
 #include "panels/audio/VideoFrameGrabber.h"
 #include "widgets/VideoFrameView.h"
@@ -68,84 +67,7 @@
 #include <sstream>
 #include <filesystem>
 
-//  TranscriptionWorker
-// ═══════════════════════════════════════════════════════════════════════════
-
 namespace rt {
-
-TranscriptionWorker::TranscriptionWorker(Transcriber* transcriber, QObject* parent)
-    : QObject(parent)
-    , m_transcriber(transcriber)
-{
-}
-
-void TranscriptionWorker::process()
-{
-    ThreadRegistry::Scope registryScope("AudioSync transcription");
-    if (!m_transcriber) {
-        emit errorOccurred("Transcriber not initialized");
-        emit finished(false);
-        return;
-    }
-
-    try {
-
-    if (m_cancelRequested.load(std::memory_order_acquire)) {
-        emit finished(false);
-        return;
-    }
-
-    auto progress = [this](float pct, const std::string& status) {
-        emit progressChanged(pct, QString::fromStdString(status));
-    };
-
-    // Load model on the background thread (downloads from HuggingFace
-    // if not cached — can take a while on slow connections).  Previously
-    // this was done on the UI thread, freezing the app for the entire
-    // download duration.
-    if (!m_transcriber->isModelLoaded() || m_transcriber->currentModel() != m_modelSize) {
-        emit progressChanged(0.0f, QStringLiteral("Loading transcription model..."));
-        if (!m_transcriber->loadModel(m_modelSize, progress)) {
-            emit errorOccurred(QString::fromStdString(
-                m_transcriber->lastError().empty()
-                    ? "Failed to load Whisper model"
-                    : m_transcriber->lastError()));
-            emit finished(false);
-            return;
-        }
-    }
-
-    // A cancellation request may arrive while loadModel() is starting. The
-    // Transcriber resets its backend cancellation flag at model boundaries,
-    // so retain this worker-owned token and check it before inference.
-    if (m_cancelRequested.load(std::memory_order_acquire)) {
-        m_transcriber->cancelAsync();
-        emit finished(false);
-        return;
-    }
-
-    m_result = m_transcriber->transcribe(m_audioPath, m_language, progress);
-
-    if (!m_result.succeeded()) {
-        if (m_result.status != TranscriptionStatus::Cancelled) {
-            emit errorOccurred(QString::fromStdString(
-                m_result.error.message.empty()
-                    ? "Transcription failed"
-                    : m_result.error.message));
-        }
-        emit finished(false);
-    } else {
-        emit finished(true);
-    }
-    } catch (const std::exception& error) {
-        emit errorOccurred(QStringLiteral("Transcription exception: %1")
-            .arg(QString::fromUtf8(error.what())));
-        emit finished(false);
-    } catch (...) {
-        emit errorOccurred(QStringLiteral("Unknown transcription exception"));
-        emit finished(false);
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  AudioSync — construction
@@ -158,6 +80,21 @@ AudioSync::AudioSync(QWidget* parent)
     // Point whisper model downloads to writable user data directory
     m_transcriber->setModelsDirectory(
         (rt::userDataDir() + "/models").toStdString());
+
+    m_transcriptionRunner = std::make_unique<TranscriptionRunner>(
+        [transcriber = m_transcriber.get()] { transcriber->cancelAsync(); });
+    connect(m_transcriptionRunner.get(), &TranscriptionRunner::fileStarted,
+            this, &AudioSync::onTranscriptionFileStarted);
+    connect(m_transcriptionRunner.get(), &TranscriptionRunner::fileProgress, this,
+            [this](const std::string&, float percent, const QString& status) {
+                onTranscriptionProgress(percent, status);
+            });
+    connect(m_transcriptionRunner.get(), &TranscriptionRunner::fileFinished,
+            this, &AudioSync::onTranscriptionFileFinished);
+    connect(m_transcriptionRunner.get(), &TranscriptionRunner::fileFailed, this,
+            [this](const std::string&, const QString& error) { onTranscriptionFileFailed(error); });
+    connect(m_transcriptionRunner.get(), &TranscriptionRunner::finished,
+            this, &AudioSync::finishTranscriptionRun);
 
     m_audioTaskOwner = MediaTaskQueue::instance().createOwner();
 
@@ -222,32 +159,14 @@ AudioSync::AudioSync(QWidget* parent)
 AudioSync::~AudioSync()
 {
     m_destroying.store(true);
-    ++m_transcriptionRunId; // Invalidate queued callbacks from the active run.
+    // A run in progress is cancelled and waited for (cancellation is
+    // cooperative for both whisper.cpp and the CrisperWhisper pipe worker);
+    // nothing it queued reaches this panel. Before m_transcriber goes.
+    m_transcriptionRunner.reset();
     // Drop queued waveform decodes; a running one is cancelled and its
     // completion never reaches this panel.
     cancelAudioSampleDecodes();
     if (m_cardBuildTimer) m_cardBuildTimer->stop();
-    m_transcriptionState = TranscriptionState::Cancelling;
-
-    QPointer<QThread> thread = m_workerThread;
-    if (thread) {
-        m_transcriber->cancelAsync();
-        thread->quit();
-
-        // QThread's destructor aborts the process if the thread is still
-        // running. Cancellation is cooperative for both whisper.cpp and the
-        // CrisperWhisper pipe worker, so wait for it to finish rather than
-        // allowing QObject child destruction to hit that fatal path.
-        if (thread->isRunning())
-            thread->wait();
-
-        QObject::disconnect(thread, nullptr, this, nullptr);
-        if (m_worker)
-            delete m_worker.data();
-        m_worker = nullptr;
-        delete thread.data();
-        m_workerThread = nullptr;
-    }
 }
 
 void AudioSync::setCommandStack(CommandStack* stack)
@@ -814,8 +733,12 @@ bool AudioSync::loadScript(const std::string& pathOrContent,
         // no session existed for the open key (the scratch session) moves
         // into the new script's session.
         ScriptSession carried;
-        if (!m_scriptSessions.count(m_activeScriptKey))
+        if (!m_scriptSessions.count(m_activeScriptKey)) {
             carried = std::move(m_scratchSession);
+            // A transcription run on the scratch data follows it.
+            if (m_transcriptionSessionKey == m_activeScriptKey)
+                m_transcriptionSessionKey = sessionKey;
+        }
         QString savedSource = m_lastScriptSource;
         auto savedAudioPaths = std::move(carried.audioPaths);
         auto savedAudioPath = std::move(carried.audioPath);
@@ -941,9 +864,9 @@ void AudioSync::importAudioFiles(const QStringList& paths)
 
 void AudioSync::startTranscription()
 {
-    if (m_transcriptionState != TranscriptionState::Idle || m_workerThread) {
+    if (m_transcriptionRunner->isActive()) {
         spdlog::warn("AudioSync: Ignoring Transcribe request while run {} is active",
-                     m_transcriptionRunId);
+                     m_transcriptionRunner->runId());
         return;
     }
 
@@ -952,9 +875,8 @@ void AudioSync::startTranscription()
         return;
     }
 
-    // Model loading is now deferred to the background worker thread
-    // (TranscriptionWorker::process) to avoid blocking the UI during
-    // download from HuggingFace.
+    // The model loads on the transcription thread (whisperTranscribeFunction)
+    // so a download from HuggingFace does not block the UI.
 
     // Preserve existing transcription results — only transcribe new files
     if (session().allTranscriptionResults.size() < session().audioPaths.size()) {
@@ -990,9 +912,9 @@ void AudioSync::startTranscription()
 
 void AudioSync::startSingleFileTranscription(size_t index)
 {
-    if (m_transcriptionState != TranscriptionState::Idle || m_workerThread) {
+    if (m_transcriptionRunner->isActive()) {
         spdlog::warn("AudioSync: Ignoring per-file Transcribe request while run {} is active",
-                     m_transcriptionRunId);
+                     m_transcriptionRunner->runId());
         if (m_transcribeStatus)
             m_transcribeStatus->setText(QStringLiteral("A transcription is already in progress"));
         return;
@@ -1007,7 +929,7 @@ void AudioSync::startSingleFileTranscription(size_t index)
 
 void AudioSync::beginTranscriptionRun(std::vector<size_t> indices)
 {
-    if (m_transcriptionState != TranscriptionState::Idle || m_workerThread || indices.empty())
+    if (m_transcriptionRunner->isActive() || indices.empty())
         return;
     if (!ensureCrisperWhisperConsent()) {
         selectDefaultWhisperModel();
@@ -1024,87 +946,59 @@ void AudioSync::beginTranscriptionRun(std::vector<size_t> indices)
     if (indices.empty())
         return;
 
-    session().pendingTranscriptionIndices = std::move(indices);
-    session().transcriptionRunTotal = session().pendingTranscriptionIndices.size();
-    session().transcriptionRunCompleted = 0;
-    m_transcriptionRunHadSuccess = false;
-    m_transcriptionRunError.clear();
-    m_transcriptionState = TranscriptionState::Running;
-    const uint64_t runId = ++m_transcriptionRunId;
-    session().currentTranscriptionIndex = session().pendingTranscriptionIndices.front();
+    std::vector<std::string> paths;
+    paths.reserve(indices.size());
+    for (size_t index : indices)
+        paths.push_back(session().audioPaths[index]);
+    const size_t total = paths.size();
+    const std::string firstPath = paths.front();
+    if (!m_transcriptionRunner->start(std::move(paths),
+            m_transcribeForTesting ? m_transcribeForTesting : whisperTranscribeFunction()))
+        return;
+    // Results go to this session even if another script is opened mid-run.
+    m_transcriptionSessionKey = m_activeScriptKey;
+    session().audioPath = firstPath;
 
-    m_transcribeStatus->setText(QString("Transcribing file 1/%1...")
-        .arg(session().transcriptionRunTotal));
+    m_transcribeStatus->setText(QString("Transcribing file 1/%1...").arg(total));
     m_progressBar->setVisible(true);
     m_progressBar->setValue(0);
     updateTranscriptionControls();
-
-    spdlog::info("AudioSync: Starting transcription run {} with {} file(s)",
-                 runId, session().transcriptionRunTotal);
     emit transcriptionStarted();
-    startTranscriptionForFile(session().currentTranscriptionIndex, runId);
 }
 
-void AudioSync::startTranscriptionForFile(size_t index, uint64_t runId)
+TranscriptionRunner::TranscribeFn AudioSync::whisperTranscribeFunction() const
 {
-    if (runId != m_transcriptionRunId
-        || m_transcriptionState == TranscriptionState::Idle
-        || index >= session().audioPaths.size()) {
-        return;
-    }
+    const QString modelId = m_modelCombo->currentData().isValid()
+        ? m_modelCombo->currentData().toString()
+        : m_modelCombo->currentText();
+    const WhisperModelSize model = whisperModelFromName(modelId.toStdString());
+    Transcriber* transcriber = m_transcriber.get();
 
-    // A new worker is launched only after the previous QThread::finished
-    // callback has cleared these pointers. Never replace an active worker.
-    if (m_workerThread || m_worker) {
-        spdlog::error("AudioSync: Refusing to replace active worker in run {}", runId);
-        return;
-    }
-
-    session().audioPath = session().audioPaths[index];
-
-    auto* thread = new QThread;
-    auto* worker = new TranscriptionWorker(m_transcriber.get());
-    m_workerThread = thread;
-    m_worker = worker;
-    worker->setAudioPath(session().audioPath);
-    {
-        const QString modelId = m_modelCombo->currentData().isValid()
-            ? m_modelCombo->currentData().toString()
-            : m_modelCombo->currentText();
-        auto modelName = modelId.toStdString();
-        worker->setModelSize(whisperModelFromName(modelName));
-    }
-    worker->moveToThread(thread);
-
-    const QPointer<TranscriptionWorker> safeWorker(worker);
-    const QPointer<QThread> safeThread(thread);
-    connect(thread, &QThread::started, worker, &TranscriptionWorker::process);
-    connect(worker, &TranscriptionWorker::progressChanged, this,
-            [this, runId, safeWorker](float percent, const QString& status) {
-                if (runId == m_transcriptionRunId && safeWorker == m_worker)
-                    onTranscriptionProgress(percent, status);
-            }, Qt::QueuedConnection);
-    connect(worker, &TranscriptionWorker::errorOccurred, this,
-            [this, runId, safeWorker](const QString& error) {
-                if (safeWorker == m_worker)
-                    handleTranscriptionError(runId, error);
-            }, Qt::QueuedConnection);
-    connect(worker, &TranscriptionWorker::finished, this,
-            [this, runId, safeWorker, safeThread](bool success) {
-                if (safeWorker == m_worker)
-                    handleTranscriptionFinished(runId, safeWorker, success);
-                // The worker slot has returned after this signal. Asking the
-                // event loop to quit is safe even for a stale/invalidated run.
-                if (safeThread)
-                    safeThread->quit();
-            }, Qt::QueuedConnection);
-    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
-    connect(thread, &QThread::finished, this,
-            [this, runId, safeThread] {
-                handleTranscriptionThreadFinished(runId, safeThread);
-            }, Qt::QueuedConnection);
-
-    thread->start();
+    return [transcriber, model](const std::string& path, std::stop_token stop,
+                                const TranscriptionRunner::ProgressFn& progress) {
+        // Load the model here, off the UI thread: it may download from
+        // HuggingFace, which can take a while on slow connections.
+        if (!transcriber->isModelLoaded() || transcriber->currentModel() != model) {
+            progress(0.0f, "Loading transcription model...");
+            if (!transcriber->loadModel(model, progress)) {
+                TranscriptionResult failed;
+                failed.status = TranscriptionStatus::Failed;
+                failed.error.message = transcriber->lastError().empty()
+                    ? "Failed to load Whisper model" : transcriber->lastError();
+                return failed;
+            }
+        }
+        // A cancel may arrive while loadModel() runs, and the Transcriber
+        // resets its backend cancel flag at model boundaries: check the run's
+        // own stop request before inference.
+        if (stop.stop_requested()) {
+            transcriber->cancelAsync();
+            TranscriptionResult cancelled;
+            cancelled.status = TranscriptionStatus::Cancelled;
+            return cancelled;
+        }
+        return transcriber->transcribe(path, {}, progress);
+    };
 }
 
 int AudioSync::scriptLineCount() const

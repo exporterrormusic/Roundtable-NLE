@@ -30,11 +30,6 @@
 
 namespace rt {
 
-void AudioSync::mergeSegmentsToMatchScript()
-{
-    audiosync::mergeSegmentsToMatchScript(syncSource(), session().clips);
-}
-
 void AudioSync::resegmentByScript()
 {
     audiosync::resegmentByScript(syncSource(), session().clips);

@@ -143,6 +143,7 @@ void AudioSync::switchToScript(const std::string& sessionKey)
 void AudioSync::resetForNewProject()
 {
     // Save nothing — this is a hard reset for project switch
+    detachTranscriptionRun();
     m_scriptSessions.clear();
     clearCurrentSession();
 

@@ -639,15 +639,6 @@ void AudioSync::sortAudioFileList(int criterion)
 {
     if (!m_audioFileList || session().audioPaths.empty()) return;
 
-    const std::string activeTranscriptionPath =
-        session().currentTranscriptionIndex < session().audioPaths.size()
-            ? session().audioPaths[session().currentTranscriptionIndex]
-            : std::string{};
-    std::vector<std::string> pendingPaths;
-    pendingPaths.reserve(session().pendingTranscriptionIndices.size());
-    for (size_t index : session().pendingTranscriptionIndices)
-        if (index < session().audioPaths.size()) pendingPaths.push_back(session().audioPaths[index]);
-
     if (m_previewFileIdx >= 0)
         stopFilePlayback();
 
@@ -694,21 +685,6 @@ void AudioSync::sortAudioFileList(int criterion)
     }
     session().audioPaths = std::move(sorted);
     session().allTranscriptionResults = std::move(sortedResults);
-
-    auto indexForPath = [this](const std::string& path) -> size_t {
-        auto it = std::find(session().audioPaths.begin(), session().audioPaths.end(), path);
-        return it == session().audioPaths.end()
-            ? session().audioPaths.size()
-            : static_cast<size_t>(std::distance(session().audioPaths.begin(), it));
-    };
-    if (!activeTranscriptionPath.empty())
-        session().currentTranscriptionIndex = indexForPath(activeTranscriptionPath);
-    session().pendingTranscriptionIndices.clear();
-    for (const auto& path : pendingPaths) {
-        const size_t index = indexForPath(path);
-        if (index < session().audioPaths.size())
-            session().pendingTranscriptionIndices.push_back(index);
-    }
 
     // Rebuild the list widget
     m_audioFileList->clear();
@@ -978,10 +954,8 @@ void AudioSync::removeFilesFromSync(std::vector<int> fileIndices)
 {
     if (fileIndices.empty()) return;
 
-    // Index-based worker callbacks require the file vectors to remain stable
-    // for the entire run, including cancellation cleanup.
-    if (m_transcriptionState != TranscriptionState::Idle
-        || (m_workerThread && m_workerThread->isRunning())) {
+    // Like the Remove button, which is disabled while a run is going.
+    if (m_transcriptionRunner->isActive()) {
         if (m_transcribeStatus)
             m_transcribeStatus->setText("Cancel or wait for transcription to finish before removing files");
         return;
@@ -1024,12 +998,6 @@ void AudioSync::removeFilesFromSync(std::vector<int> fileIndices)
         session().audioPaths.erase(session().audioPaths.begin() + index);
         session().allTranscriptionResults.erase(session().allTranscriptionResults.begin() + index);
     }
-
-    // No queued work may survive an idle-state file-list mutation.
-    session().pendingTranscriptionIndices.clear();
-    session().currentTranscriptionIndex = 0;
-    session().transcriptionRunTotal = 0;
-    session().transcriptionRunCompleted = 0;
 
     // Remove every derived clip and script-line assignment for these files.
     auto clipsEnd = std::remove_if(session().clips.begin(), session().clips.end(),

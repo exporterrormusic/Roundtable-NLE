@@ -181,6 +181,7 @@ void AudioSync::restoreProjectState(const QString& projectName)
 
     if (sessionCount > 0) {
         // Multi-session format — restore all sessions
+        detachTranscriptionRun();
         m_scriptSessions.clear();
         clearCurrentSession();
 
@@ -727,6 +728,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
                      sessionCount, activeKey);
 
         // Clear existing sessions before restoring
+        detachTranscriptionRun();
         m_scriptSessions.clear();
         clearCurrentSession();
 
@@ -892,6 +894,7 @@ void AudioSync::deserializeFromBlob(const std::vector<uint8_t>& blob)
     // ═══════════════════════════════════════════════════════════════════
 
     // Clear sessions so the restored single session is the only one
+    detachTranscriptionRun();
     m_scriptSessions.clear();
     clearCurrentSession();
 

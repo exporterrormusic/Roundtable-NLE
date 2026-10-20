@@ -132,6 +132,7 @@ add_library(roundtable_ui STATIC
     panels/audio/AudioSyncResegmentAndManual.cpp
     panels/audio/AudioSyncUIScriptPage.cpp
     panels/audio/AudioSyncVoice.cpp
+    panels/audio/TranscriptionRunner.cpp
     panels/audio/VideoFrameGrabber.cpp
     panels/comfy/ComfyPanel.cpp
     panels/comfy/ComfyPanelRender.cpp
