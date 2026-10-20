@@ -21,6 +21,48 @@
  *   └────────────────────────────────────────────────────┘
  *
  * Runs transcription on a background thread — never blocks UI.
+ *
+ * ── Where things live ───────────────────────────────────────────────────
+ * The panel keeps the widgets and the workflow; the parts with no widgets
+ * are modules of their own, each with tests:
+ *
+ *   core/audiosync/AutoSync      transcriptions → clips, Auto-Sync (word
+ *                                alignment first, then the heuristic
+ *                                match), silence trim, gap closing.
+ *                                Sync behaviour changes go here, with a
+ *                                test in tests/core/test_auto_sync.cpp.
+ *   core/audiosync/ExportPlan    what the export puts where, full export vs
+ *                                in-place re-export, the locked-track
+ *                                preflight (tests/core/test_export_plan.cpp).
+ *   core/audiosync/ClipPlayback  a clip's playback buffer (trimmed, deleted
+ *                                regions cut out) and its time map.
+ *   TranscriptionRunner          transcription runs: the thread, cancel,
+ *                                per-file results. A run writes to the
+ *                                script it started in.
+ *   AudioSampleLoader            background decode of the open script's
+ *                                files (+ sample cache) and the actions
+ *                                waiting for it.
+ *   AudioSyncPlayer              AudioSync's turns on the shared AudioEngine
+ *                                (sync-clock detach, the buffers it reads).
+ *
+ * The panel's own files: AudioSync.cpp (construction, script load, import,
+ * starting transcription), AudioSyncHandlers (buttons, transcription
+ * results), AudioSyncData / AudioSyncAlign / AudioSyncResegmentAndManual
+ * (the panel side of the sync algorithms, manual match), AudioSyncSession
+ * (script sessions: session() is the open script's ScriptSession, or the
+ * scratch session before any script), AudioSyncPersistence (project blob,
+ * QSettings, split/merge), AudioSyncPlayback (what plays, playheads),
+ * AudioSyncFileList (script history, IMPORT / TRANSCRIBE lists),
+ * AudioSyncCards / AudioSyncPopulateCards (MATCH cards; Cards also serves
+ * the COMFYUI page its shot list), AudioSyncState (character tabs,
+ * filters, workflow state), AudioSyncUI / AudioSyncUIScriptPage (setupUi),
+ * AudioSyncVoice (TTS: voice references, generated and draft audio),
+ * AudioSyncExport (the undo step around ExportPlan and the default-shot
+ * layers).
+ *
+ * tests/ui/test_audio_sync_workflow.cpp pins the whole loop (transcribe,
+ * sync, edit, export, re-export, sessions, project blob); run it after any
+ * change here.
  */
 
 #pragma once
