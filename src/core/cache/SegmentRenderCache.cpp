@@ -406,7 +406,7 @@ void SegmentRenderCache::scanDiskCache()
         if (!it->is_regular_file(ec)) continue;
         if (it->path().extension() != ".rtsc") continue;
         DiskKey k;
-        if (!parseDiskName(it->path().filename().string(), k)) continue;
+        if (!parseDiskName(pathToUtf8(it->path().filename()), k)) continue;
         if (m_diskIndex.insert(k).second) {
             const Key key{k.tick, k.tier};
             ++m_diskCandidateCounts[key];
@@ -430,7 +430,7 @@ void SegmentRenderCache::enforceDiskBudget()
         if (!it->is_regular_file(ec)) continue;
         if (it->path().extension() != ".rtsc") continue;
         DiskKey k;
-        if (!parseDiskName(it->path().filename().string(), k)) continue;
+        if (!parseDiskName(pathToUtf8(it->path().filename()), k)) continue;
         std::error_code sec, tec;
         files.push_back({it->path(), k, it->file_size(sec),
                          std::filesystem::last_write_time(it->path(), tec)});

@@ -110,10 +110,10 @@ void ProjectController::beginAsyncProjectLoad(
                 }
             } catch (const std::exception& e) {
                 spdlog::error("Project load failed for '{}': {}",
-                              p.string(), e.what());
+                              pathToUtf8(p), e.what());
             } catch (...) {
                 spdlog::error("Project load failed for '{}' with an unknown error",
-                              p.string());
+                              pathToUtf8(p));
             }
 
             if (!stop.stop_requested()) {

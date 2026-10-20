@@ -7,6 +7,7 @@
 #include "decode/VideoDecoder.h"
 #include "Compositor.h"     // src/gpu — buildViewportTransform
 #include "Constants.h"
+#include "PathUtils.h"
 
 #include <QApplication>
 #include <QProgressDialog>
@@ -198,7 +199,7 @@ int track(const MaskTrackParams& p, OpacityMask& mask, QWidget* parent)
                   /*sliceOnlyThreading=*/true))
     {
         spdlog::warn("[MASK-TRACK] cannot open '{}': {}",
-                     p.mediaPath.string(), dec.lastError());
+                     pathToUtf8(p.mediaPath), dec.lastError());
         return 0;
     }
     const auto& info = dec.info();
