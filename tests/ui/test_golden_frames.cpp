@@ -1087,3 +1087,219 @@ TEST(GoldenFrames, TextLayer)
     expectGolden(*frame, "text_arial");
     expectRoundTrip(scene, seconds(1), *frame);
 }
+
+// ─── F. Paths the render core must keep ──────────────────────────────────────
+// Pins for compositor paths the sections above don't reach: partial and
+// stacked adjustment layers, several effected layers in one frame, temporal
+// interpolation, one-sided dissolves, legacy-space masks and static reuse.
+
+TEST(GoldenFrames, AdjustmentClipAtPartialStrengthAndStacked)
+{
+    REQUIRE_GPU();
+    auto build = [](Scene& scene, bool stacked) {
+        const auto tracks = scene.videoTracks(stacked ? 4 : 3);
+        addImage(*tracks[0], g_harness->checker, 0, seconds(4));
+        auto* bars = addImage(*tracks[1], g_harness->bars, 0, seconds(4));
+        bars->scaleX().writeValue(0, 0.6f);
+        bars->scaleY().writeValue(0, 0.6f);
+        auto tint = std::make_unique<AdjustmentClip>();
+        tint->setDuration(seconds(4));
+        auto effect = createEffect(EffectType::Tint);
+        driveParams(*effect);
+        tint->effects().addEffect(std::move(effect));
+        if (!stacked) tint->opacity().writeValue(0, 0.5f);
+        tracks[2]->addClip(std::move(tint));
+        if (stacked) {
+            // Directly on top of the first: its graded frame feeds this one.
+            auto blur = std::make_unique<AdjustmentClip>();
+            blur->setDuration(seconds(4));
+            auto effect2 = createEffect(EffectType::Blur);
+            driveParams(*effect2);
+            blur->effects().addEffect(std::move(effect2));
+            tracks[3]->addClip(std::move(blur));
+        }
+    };
+    {
+        SCOPED_TRACE("half strength");
+        Scene scene;
+        build(scene, false);
+        auto frame = renderBoth(scene, seconds(1));
+        ASSERT_TRUE(frame);
+        expectGolden(*frame, "adjustment_tint_half_strength");
+        expectRoundTrip(scene, seconds(1), *frame);
+        expectNv12MatchesBgra(scene, seconds(1), *frame);
+    }
+    {
+        SCOPED_TRACE("stacked");
+        Scene scene;
+        build(scene, true);
+        auto frame = renderBoth(scene, seconds(1));
+        ASSERT_TRUE(frame);
+        expectGolden(*frame, "adjustment_tint_then_blur");
+        expectRoundTrip(scene, seconds(1), *frame);
+    }
+}
+
+// EffectProcessor has one pair of ping-pong images for every layer, so each
+// effected layer's result must be copied out before the next one runs.
+TEST(GoldenFrames, TwoEffectedClipsAndADissolveBetweenThem)
+{
+    REQUIRE_GPU();
+    {
+        SCOPED_TRACE("stacked layers");
+        Scene scene;
+        const auto tracks = scene.videoTracks(2);
+        auto* bottom = addImage(*tracks[0], g_harness->checker, 0, seconds(4));
+        auto blur = createEffect(EffectType::Blur);
+        driveParams(*blur);
+        bottom->effects().addEffect(std::move(blur));
+        auto* top = addImage(*tracks[1], g_harness->bars, 0, seconds(4));
+        top->scaleX().writeValue(0, 0.5f);
+        top->scaleY().writeValue(0, 0.5f);
+        auto tint = createEffect(EffectType::Tint);
+        driveParams(*tint);
+        top->effects().addEffect(std::move(tint));
+        auto frame = renderBoth(scene, seconds(1));
+        ASSERT_TRUE(frame);
+        expectGolden(*frame, "two_effected_layers");
+        expectRoundTrip(scene, seconds(1), *frame);
+    }
+    {
+        SCOPED_TRACE("dissolve");
+        TransitionScene s;
+        const TransitionType type = TransitionType::CrossDissolve;
+        buildCut(s, &type);
+        auto tint = createEffect(EffectType::Tint);
+        driveParams(*tint);
+        s.left->effects().addEffect(std::move(tint));
+        auto blur = createEffect(EffectType::Blur);
+        driveParams(*blur);
+        s.right->effects().addEffect(std::move(blur));
+        auto frame = renderBoth(s.scene, seconds(2));
+        ASSERT_TRUE(frame);
+        expectGolden(*frame, "dissolve_between_effected_clips");
+        expectNv12MatchesBgra(s.scene, seconds(2), *frame);
+    }
+}
+
+TEST(GoldenFrames, FrameBlendingOnASlowedClip)
+{
+    REQUIRE_GPU();
+    const std::pair<TimeInterpolation, const char*> modes[] = {
+        {TimeInterpolation::FrameBlending, "frame_blending"},
+        {TimeInterpolation::OpticalFlow, "optical_flow"},
+    };
+    for (const auto& [mode, name] : modes) {
+        SCOPED_TRACE(name);
+        Scene scene;
+        auto* v1 = scene.seq().addVideoTrack("V1");
+        auto* clip = addIndexedVideo(*v1, 30, 0, frames(80), 10, 0.5);
+        clip->setTimeInterpolation(mode);
+        // Sequence frame 3 lands halfway between source frames 11 and 12.
+        auto frame = renderBoth(scene, frames(3));
+        ASSERT_TRUE(frame);
+        expectGolden(*frame, std::string(name) + "_half_speed");
+        expectRoundTrip(scene, frames(3), *frame);
+    }
+}
+
+TEST(GoldenFrames, OneSidedCrossDissolvesAtHeadAndTail)
+{
+    REQUIRE_GPU();
+    Scene scene;
+    auto* v1 = scene.seq().addVideoTrack("V1");
+    auto* clip = addImage(*v1, g_harness->bars, seconds(1), seconds(2));
+    Transition in;
+    in.type = TransitionType::CrossDissolve;
+    in.duration = seconds(0.5);
+    in.rightClipId = clip->id();
+    in.editPointTick = clip->timelineIn();
+    v1->addTransition(in);
+    Transition out;
+    out.type = TransitionType::CrossDissolve;
+    out.duration = seconds(0.5);
+    out.leftClipId = clip->id();
+    out.editPointTick = clip->timelineOut();
+    v1->addTransition(out);
+
+    auto head = renderBoth(scene, clip->timelineIn());
+    ASSERT_TRUE(head);
+    EXPECT_LT(meanLuma(*head), 8.0) << "the first frame of a dissolve-in is not black";
+    auto in25 = renderBoth(scene, clip->timelineIn() + seconds(0.25));
+    ASSERT_TRUE(in25);
+    expectGolden(*in25, "cross_dissolve_in_middle");
+    auto out25 = renderBoth(scene, clip->timelineOut() - seconds(0.25));
+    ASSERT_TRUE(out25);
+    expectGolden(*out25, "cross_dissolve_out_middle");
+    expectRoundTrip(scene, clip->timelineIn() + seconds(0.25), *in25);
+}
+
+// Masks from projects older than format v30 are kept in sequence-frame space
+// and placed through the clip transform at render time.
+TEST(GoldenFrames, LegacySequenceSpaceMask)
+{
+    REQUIRE_GPU();
+    Scene scene;
+    const auto tracks = scene.videoTracks(2);
+    addImage(*tracks[0], g_harness->checker, 0, seconds(4));
+    auto* top = addImage(*tracks[1], g_harness->bars, 0, seconds(4));
+    top->scaleX().writeValue(0, 0.7f);
+    top->scaleY().writeValue(0, 0.7f);
+    top->positionX().writeValue(0, 40.0f);
+    OpacityMask legacy;
+    legacy.shape = MaskShape::Ellipse;
+    legacy.coordinateSpace = MaskCoordinateSpace::LegacySequenceFrame;
+    legacy.base.centerX = 0.45f;
+    legacy.base.width = 0.5f;
+    legacy.base.height = 0.6f;
+    top->addMask(legacy);
+    // A source-space mask on the same clip is drawn with it.
+    OpacityMask local;
+    local.shape = MaskShape::Rectangle;
+    local.base.centerX = 0.75f;
+    local.base.width = 0.2f;
+    local.base.height = 0.3f;
+    top->addMask(local);
+    // No save and load here: loading upgrades legacy masks to source space.
+    auto frame = renderBoth(scene, seconds(1));
+    ASSERT_TRUE(frame);
+    expectGolden(*frame, "mask_legacy_and_source_space");
+}
+
+// An unchanged stack of still sources is composited once and reused until
+// the layer state changes or the cache is invalidated.
+TEST(GoldenFrames, StaticFramesAreReusedUntilAnEdit)
+{
+    REQUIRE_GPU();
+    Scene scene;
+    const auto tracks = scene.videoTracks(2);
+    addImage(*tracks[0], g_harness->checker, 0, seconds(4));
+    auto* top = addImage(*tracks[1], g_harness->bars, 0, seconds(4));
+    top->scaleX().writeValue(0, 0.5f);
+    top->scaleY().writeValue(0, 0.5f);
+    scene.publish();
+
+    std::string why;
+    auto first = renderPreview(scene, seconds(1), &why);
+    ASSERT_TRUE(first) << why;
+    auto again = renderPreview(scene, seconds(1), &why);
+    ASSERT_TRUE(again) << why;
+    EXPECT_EQ(again.get(), first.get()) << "an unchanged still frame was composited again";
+    auto later = renderPreview(scene, seconds(2), &why);
+    ASSERT_TRUE(later) << why;
+    EXPECT_EQ(later.get(), first.get())
+        << "the same still picture at another tick was composited again";
+
+    top->opacity().writeValue(0, 0.5f);
+    scene.publish();
+    auto edited = renderPreview(scene, seconds(1), &why);
+    ASSERT_TRUE(edited) << why;
+    EXPECT_NE(edited.get(), first.get()) << "an edit reused the old composite";
+    EXPECT_FALSE(samePixels(*edited, *first));
+
+    g_harness->preview->requestCacheInvalidation();
+    auto refreshed = renderPreview(scene, seconds(1), &why);
+    ASSERT_TRUE(refreshed) << why;
+    EXPECT_NE(refreshed.get(), edited.get()) << "an invalidation kept the old composite";
+    EXPECT_TRUE(samePixels(*refreshed, *edited));
+}
