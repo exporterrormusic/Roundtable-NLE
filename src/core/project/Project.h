@@ -16,6 +16,7 @@
 #include <filesystem>
 
 #include "project/Settings.h"
+#include "timeline/Marker.h"
 
 namespace rt {
 
@@ -153,6 +154,24 @@ public:
     [[nodiscard]] const std::vector<BinItem>& binItems() const noexcept { return m_binItems; }
     void setBinItems(std::vector<BinItem> items) { m_binItems = std::move(items); }
 
+    // ── Clip markers (Premiere's Source Monitor markers) ────────────────
+    /// Markers on one media file, shown in the Source Monitor whenever that
+    /// file is loaded there. Times are source ticks, sorted.
+    struct SourceMarkers {
+        std::filesystem::path path;
+        std::vector<Marker>   markers;
+    };
+
+    [[nodiscard]] const std::vector<SourceMarkers>& sourceMarkers() const noexcept { return m_sourceMarkers; }
+    void setSourceMarkers(std::vector<SourceMarkers> all) { m_sourceMarkers = std::move(all); }
+
+    /// One file's markers (empty when it has none).
+    [[nodiscard]] std::vector<Marker> sourceMarkersFor(const std::filesystem::path& media) const;
+
+    /// Replace one file's markers; they are kept sorted by time, and an
+    /// empty list removes the file's entry.
+    void setSourceMarkersFor(const std::filesystem::path& media, std::vector<Marker> markers);
+
     // ── AudioSync state (opaque blob serialized by the AudioSync panel) ─
     [[nodiscard]] const std::vector<uint8_t>& audioSyncBlob() const noexcept { return m_audioSyncBlob; }
     void setAudioSyncBlob(std::vector<uint8_t> blob) { m_audioSyncBlob = std::move(blob); }
@@ -176,6 +195,7 @@ private:
     std::vector<std::filesystem::path> m_binFiles;
     std::vector<BinFolder>         m_binFolders;
     std::vector<BinItem>           m_binItems;   // v14+ rich bin model
+    std::vector<SourceMarkers>     m_sourceMarkers;
     std::vector<uint8_t>           m_audioSyncBlob;
 };
 

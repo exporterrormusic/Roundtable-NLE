@@ -381,7 +381,8 @@ void SourceMonitor::startSequenceAudio()
     m_seqAudioPlayback->setAudioEngine(m_audioEngine);
     m_seqAudioPlayback->setPlaybackController(m_controller.get());
     m_seqAudioPlayback->invalidateSources();
-    m_seqAudioPlayback->loadSources(/*allowBlockingMisses=*/true);
+    if (!m_muted)   // Mute Source Monitor: play on, but with no sources
+        m_seqAudioPlayback->loadSources(/*allowBlockingMisses=*/true);
 
     // Match audio speed to controller shuttle speed
     double speed = m_controller->shuttleSpeed();
@@ -419,7 +420,7 @@ void SourceMonitor::loadSourceAudio()
         return;
 
     AudioTrackSource src;
-    src.trackId     = 9999;
+    src.trackId     = kSourceAudioTrackId;
     src.samples     = m_audioSamples->data();
     src.totalFrames = static_cast<int64_t>(m_audioSamples->size() / m_audioChannels);
     src.startFrame  = 0;
@@ -427,7 +428,7 @@ void SourceMonitor::loadSourceAudio()
     src.sampleRate  = 48000;
     src.volume      = 1.0f;
     src.pan         = 0.0f;
-    src.muted       = false;
+    src.muted       = m_muted;
     src.solo        = false;
 
     m_audioEngine->setTrackSources({src});
@@ -435,7 +436,7 @@ void SourceMonitor::loadSourceAudio()
 
 void SourceMonitor::scrubAudioAt(int64_t tick)
 {
-    if (!m_audioEngine)
+    if (!m_audioEngine || m_muted)
         return;
 
     const int64_t frame = static_cast<int64_t>(
@@ -476,7 +477,7 @@ void SourceMonitor::scrubAudioAt(int64_t tick)
     }
 
     AudioTrackSource src;
-    src.trackId = 9999;
+    src.trackId = kSourceAudioTrackId;
     src.startFrame = 0;
     src.sampleRate = 48000;
     src.volume = 1.0f;

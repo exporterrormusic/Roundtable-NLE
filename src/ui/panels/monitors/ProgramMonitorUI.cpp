@@ -23,6 +23,7 @@
 #include "cache/FrameCache.h"
 #include "timeline/Timeline.h"
 
+#include <QAction>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QSettings>
@@ -184,14 +185,16 @@ void ProgramMonitor::setupUI()
     }
     mainLayout->addWidget(viewSpacer);
 
-    // ── Mini-timeline scrub bar ─────────────────────────────────────────
+    // ── Premiere's Program Monitor controls (see MonitorUiKit.h) ─────────
+    //   info row    timecode · Fit · · · Full · wrench · duration
+    //   mini ruler
+    //   button row  marker/in/out | playback | Lift, Extract | Export Frame
     m_miniTimeline = new MiniTimeline(this);
 
-    // ── Info/control bar (Premiere Pro style — above mini timeline) ──────
-    QHBoxLayout* controlLayout = nullptr;
-    auto* controlBar = monitorui::makeControlBar(this, &controlLayout);
+    QHBoxLayout* infoLayout = nullptr;
+    auto* infoRow = monitorui::makeInfoRow(this, &infoLayout);
 
-    // Timecode display (left side, Premiere Pro style; click to edit)
+    // Timecode display (left side; click to edit)
     m_timecodeLabel = monitorui::makeTimecodeLabel(this);
     m_timecodeLabel->installEventFilter(this);
 
@@ -219,33 +222,32 @@ void ProgramMonitor::setupUI()
         m_timecodeLabel->show();
     });
 
-    controlLayout->addWidget(m_timecodeLabel, 0, Qt::AlignVCenter);
-    controlLayout->addWidget(m_timecodeEdit, 0, Qt::AlignVCenter);
-    controlLayout->addSpacing(rt::UiScale::px(12));
+    infoLayout->addWidget(m_timecodeLabel, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_timecodeEdit, 0, Qt::AlignVCenter);
 
-    // Premiere-style single monitor row: playback controls share this bar
-    // with timecode and display controls, below the permanent mini-timeline.
-    auto transport = monitorui::makeTransportBar(controlBar, controlLayout);
-    m_btnGoStart     = transport.goStart;
-    m_btnStepBack    = transport.stepBack;
-    m_btnPlayPause   = transport.playPause;
-    m_btnStop        = transport.stop;
-    m_btnStepForward = transport.stepForward;
-    m_btnGoEnd       = transport.goEnd;
-    m_btnLoop        = transport.loop;
-    m_shuttleSpeedLabel = transport.shuttleSpeed;
-
-    m_dropIndicator = new QLabel(controlBar);
+    m_dropIndicator = new QLabel(infoRow);
     m_dropIndicator->setFixedSize(10, 10);
     m_dropIndicator->setToolTip(tr("Dropped frames"));
     m_dropIndicator->hide();
-    controlLayout->addWidget(m_dropIndicator);
+    infoLayout->addWidget(m_dropIndicator, 0, Qt::AlignVCenter);
 
     // Fit mode / zoom presets combo box
     m_fitModeCombo = monitorui::makeFitModeCombo(this);
-    controlLayout->addWidget(m_fitModeCombo, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_fitModeCombo, 0, Qt::AlignVCenter);
 
-    controlLayout->addStretch();
+    m_shuttleSpeedLabel = monitorui::makeShuttleSpeedLabel(infoRow);
+    infoLayout->addWidget(m_shuttleSpeedLabel, 0, Qt::AlignVCenter);
+
+    infoLayout->addStretch();
+
+    // Dropped frame counter (Premiere Pro style yellow indicator)
+    m_droppedFrameLabel = new QLabel(this);
+    m_droppedFrameLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
+        "QLabel { font-size: 10px; font-weight: bold; color: %1; padding: 0 4px; background: transparent; }")
+        .arg(Theme::hex(Theme::colors().warning))));
+    m_droppedFrameLabel->setToolTip(tr("Dropped frames during playback"));
+    m_droppedFrameLabel->hide(); // Hidden until drops occur
+    infoLayout->addWidget(m_droppedFrameLabel, 0, Qt::AlignVCenter);
 
     // Playback resolution dropdown.  Indices:
     //   0 = Full         — manual divisor 1
@@ -278,7 +280,7 @@ void ProgramMonitor::setupUI()
         m_playbackResDivisor  = m_playbackResAdaptive ? 2 : kDivisors[savedIdx];
         m_playbackResCombo->setCurrentIndex(savedIdx);
     }
-    controlLayout->addWidget(m_playbackResCombo, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_playbackResCombo, 0, Qt::AlignVCenter);
 
     // Connect playback resolution selection
     connect(m_playbackResCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -327,39 +329,28 @@ void ProgramMonitor::setupUI()
         updateDisplay();
     });
 
-    // Resolution/framerate overlay label (hidden — Premiere doesn't show inline)
-    m_resOverlayLabel = new QLabel(QStringLiteral("1920\u00d71080 \u2022 24fps"), this);
-    m_resOverlayLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-size: 10px; color: %1; padding: 0 4px; background: transparent; }")
-        .arg(Theme::hex(Theme::colors().textTertiary))));
-    m_resOverlayLabel->hide();
+    // Wrench: the settings menu (Loop, Safe Margins), as in Premiere.
+    auto settings = monitorui::makeSettingsMenu(infoRow);
+    m_btnSettings    = settings.button;
+    m_actLoop        = settings.loop;
+    m_actSafeMargins = settings.safeMargins;
+    infoLayout->addWidget(m_btnSettings, 0, Qt::AlignVCenter);
 
-    // Dropped frame counter (Premiere Pro style yellow indicator)
-    m_droppedFrameLabel = new QLabel(this);
-    m_droppedFrameLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-size: 10px; font-weight: bold; color: %1; padding: 0 4px; background: transparent; }")
-        .arg(Theme::hex(Theme::colors().warning))));
-    m_droppedFrameLabel->setToolTip(tr("Dropped frames during playback"));
-    m_droppedFrameLabel->hide(); // Hidden until drops occur
-    controlLayout->addWidget(m_droppedFrameLabel, 0, Qt::AlignVCenter);
-
-    // Safe Area toggle button (visible, Premiere Pro style icon)
-    m_btnSafeArea = monitorui::makeSafeAreaButton(this);
-    controlLayout->addWidget(m_btnSafeArea, 0, Qt::AlignVCenter);
-
-    connect(m_btnSafeArea, &QPushButton::toggled, this, [this](bool checked) {
+    connect(m_actLoop, &QAction::toggled, this, [this](bool checked) {
+        if (m_controller) m_controller->setLoopEnabled(checked);
+    });
+    connect(m_actSafeMargins, &QAction::toggled, this, [this](bool checked) {
         m_viewport->setSafeAreasVisible(checked);
         if (m_transformOverlay)
             m_transformOverlay->setSafeAreasVisible(checked);
     });
 
-    // Export frame button (large, Premiere Pro style)
-    m_btnExportFrame = monitorui::makeExportFrameButton(this);
-    controlLayout->addWidget(m_btnExportFrame, 0, Qt::AlignVCenter);
-
-    connect(m_btnExportFrame, &QPushButton::clicked, this, [this]() {
-        emit exportFrameRequested();
-    });
+    // Resolution/framerate overlay label (hidden — Premiere doesn't show inline)
+    m_resOverlayLabel = new QLabel(QStringLiteral("1920×1080 • 24fps"), this);
+    m_resOverlayLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
+        "QLabel { font-size: 10px; color: %1; padding: 0 4px; background: transparent; }")
+        .arg(Theme::hex(Theme::colors().textTertiary))));
+    m_resOverlayLabel->hide();
 
     // Zoom percentage label (hidden — shown in status bar instead)
     m_zoomLabel = monitorui::makeZoomLabel(this);
@@ -381,7 +372,7 @@ void ProgramMonitor::setupUI()
 
     // Duration timecode display (right side, Premiere Pro style)
     m_durationLabel = monitorui::makeDurationLabel(this);
-    controlLayout->addWidget(m_durationLabel, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_durationLabel, 0, Qt::AlignVCenter);
 
     // Hidden checkable button for grid (used by settings menu)
     m_btnGrid = new QPushButton(this);
@@ -392,19 +383,50 @@ void ProgramMonitor::setupUI()
             m_transformOverlay->setGridVisible(checked);
     });
 
+    // ── Button row ───────────────────────────────────────────────────────
+    QHBoxLayout* buttonLayout = nullptr;
+    auto* buttonRow = monitorui::makeButtonRow(this, &buttonLayout);
+
+    const auto marks = monitorui::addMarkGroup(buttonRow, buttonLayout);
+    m_btnAddMarker = marks.addMarker;
+    m_btnMarkIn    = marks.markIn;
+    m_btnMarkOut   = marks.markOut;
+    monitorui::addButtonGroupGap(buttonLayout);
+
+    const auto playback = monitorui::addPlaybackGroup(buttonRow, buttonLayout);
+    m_btnGoToIn      = playback.goToIn;
+    m_btnStepBack    = playback.stepBack;
+    m_btnPlayPause   = playback.playPause;
+    m_btnStepForward = playback.stepForward;
+    m_btnGoToOut     = playback.goToOut;
+    monitorui::addButtonGroupGap(buttonLayout);
+
+    m_btnLift = monitorui::makeRowButton(buttonRow, TransportButton::Lift, tr("Lift"),
+                                         {}, QStringLiteral(";"));
+    m_btnExtract = monitorui::makeRowButton(buttonRow, TransportButton::Extract, tr("Extract"),
+                                            {}, QStringLiteral("'"));
+    buttonLayout->addWidget(m_btnLift, 0, Qt::AlignVCenter);
+    buttonLayout->addWidget(m_btnExtract, 0, Qt::AlignVCenter);
+    monitorui::addButtonGroupGap(buttonLayout);
+
+    m_btnExportFrame = monitorui::makeRowButton(buttonRow, TransportButton::Screenshot,
+                                                tr("Export Frame"), {},
+                                                QStringLiteral("Ctrl+Shift+E"));
+    buttonLayout->addWidget(m_btnExportFrame, 0, Qt::AlignVCenter);
+    monitorui::finishButtonRow(buttonLayout);
+
     // Give the mini-timeline a distinct background so it's clearly visible
     m_miniTimeline->setMinimumHeight(rt::UiScale::px(56));
+    mainLayout->addWidget(infoRow);
     mainLayout->addWidget(m_miniTimeline);
-    mainLayout->addWidget(controlBar);
+    mainLayout->addWidget(buttonRow);
 
-    // Unified-row transport connections.
-    connect(m_btnLoop, &QPushButton::toggled, this, [this](bool checked) {
-        if (m_controller) m_controller->setLoopEnabled(checked);
-    });
-
-    // Connect transport buttons
-    connect(m_btnGoStart, &QPushButton::clicked, this, [this]() {
-        if (m_controller) m_controller->goToStart();
+    // Button-row connections.
+    connect(m_btnAddMarker, &QPushButton::clicked, this, &ProgramMonitor::addMarkerRequested);
+    connect(m_btnMarkIn, &QPushButton::clicked, this, &ProgramMonitor::inPointRequested);
+    connect(m_btnMarkOut, &QPushButton::clicked, this, &ProgramMonitor::outPointRequested);
+    connect(m_btnGoToIn, &QPushButton::clicked, this, [this]() {
+        if (m_controller) m_controller->goToInPoint();
     });
     connect(m_btnStepBack, &QPushButton::clicked, this, [this]() {
         if (m_controller) m_controller->stepBackward();
@@ -412,16 +434,20 @@ void ProgramMonitor::setupUI()
     connect(m_btnPlayPause, &QPushButton::clicked, this, [this]() {
         if (m_controller) m_controller->togglePlayPause();
     });
-    connect(m_btnStop, &QPushButton::clicked, this, [this]() {
-        if (m_controller) m_controller->stop();
-    });
     connect(m_btnStepForward, &QPushButton::clicked, this, [this]() {
         if (m_controller) m_controller->stepForward();
     });
-    connect(m_btnGoEnd, &QPushButton::clicked, this, [this]() {
-        if (m_controller) m_controller->goToEnd();
+    connect(m_btnGoToOut, &QPushButton::clicked, this, [this]() {
+        if (m_controller) m_controller->goToOutPoint();
     });
+    connect(m_btnLift, &QPushButton::clicked, this, &ProgramMonitor::liftRequested);
+    connect(m_btnExtract, &QPushButton::clicked, this, &ProgramMonitor::extractRequested);
+    connect(m_btnExportFrame, &QPushButton::clicked, this, &ProgramMonitor::exportFrameRequested);
+}
 
+void ProgramMonitor::setShortcutManager(const ShortcutManager* shortcuts)
+{
+    monitorui::applyShortcutTooltips(this, shortcuts);
 }
 
 } // namespace rt

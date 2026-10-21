@@ -557,6 +557,8 @@ std::unique_ptr<Project> makeEverythingProject()
     p->setBinFiles({"media/never-on-disk/interview.mp4", "media/never-on-disk/interview.mp4"});
     p->setBinFolders({{"Footage", false, {"media/never-on-disk/interview.mp4"}},
                       {"Sequences", true, {"B-Roll"}}});
+    p->setSourceMarkersFor("media/never-on-disk/interview.mp4",
+                           {{3 * kSec, "Laugh", 0xFFFF0000u}, {kSec, "Take 2", 0xFF00FF00u}});
     p->setAudioSyncBlob({0x41, 0x53, 0x00, 0x01, 0xFE, 0x7F});
     AssetEntry asset;
     asset.type = AssetType::Audio;
@@ -636,6 +638,43 @@ TEST(ProjectFormat, EverythingProjectSavesTheSameBytesAfterAReload)
         EXPECT_EQ(hashTimelineState(*loaded->sequence(i)),
                   hashTimelineState(*project->sequence(i)))
             << "sequence " << i;
+}
+
+TEST(ProjectFormat, SourceMonitorClipMarkersSurviveASaveAndReload)
+{
+    const ProjectSerializer serializer;
+    const auto loaded = serializer.deserialize(serializer.serialize(*makeEverythingProject()));
+    ASSERT_NE(loaded, nullptr);
+
+    const auto markers = loaded->sourceMarkersFor("media/never-on-disk/interview.mp4");
+    ASSERT_EQ(markers.size(), 2u);
+    EXPECT_EQ(markers[0].time, kSec);           // kept sorted by time
+    EXPECT_EQ(markers[0].label, "Take 2");
+    EXPECT_EQ(markers[0].color, 0xFF00FF00u);
+    EXPECT_EQ(markers[1].time, 3 * kSec);
+    EXPECT_EQ(markers[1].label, "Laugh");
+    EXPECT_TRUE(loaded->sourceMarkersFor("media/never-on-disk/other.mp4").empty());
+}
+
+TEST(ProjectFormat, ClipMarkersAreKeptPerMediaFile)
+{
+    Project project;
+    project.setSourceMarkersFor("media/a.mp4", {{2 * kSec, "b", 0xFF4444FFu}, {kSec, "a", 0xFF4444FFu}});
+    project.setSourceMarkersFor("media/b.mp4", {{kSec, "other", 0xFF4444FFu}});
+    ASSERT_EQ(project.sourceMarkers().size(), 2u);
+
+    // The same file spelled differently finds the same markers.
+    const auto a = project.sourceMarkersFor("media/./a.mp4");
+    ASSERT_EQ(a.size(), 2u);
+    EXPECT_EQ(a[0].label, "a");
+
+    // Replacing keeps one entry per file; an empty list removes the entry.
+    project.setSourceMarkersFor("media/a.mp4", {{kSec, "only", 0xFF4444FFu}});
+    EXPECT_EQ(project.sourceMarkersFor("media/a.mp4").size(), 1u);
+    project.setSourceMarkersFor("media/a.mp4", {});
+    EXPECT_TRUE(project.sourceMarkersFor("media/a.mp4").empty());
+    ASSERT_EQ(project.sourceMarkers().size(), 1u);
+    EXPECT_EQ(project.sourceMarkers()[0].path, std::filesystem::path("media/b.mp4"));
 }
 
 TEST(ProjectFormat, EverythingProjectUsesEveryClipType)

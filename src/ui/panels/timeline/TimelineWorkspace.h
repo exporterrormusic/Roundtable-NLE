@@ -67,6 +67,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <map>
 #include <memory>
@@ -135,6 +136,7 @@ class CompositeService;
 class SnapshotSync;
 class ExportRenderSession;
 struct OpacityMask;
+struct Marker;
 class DockLayoutManager;
 class DropController;
 class ClipBindingController;
@@ -292,6 +294,18 @@ public:
     void warmAudioCacheAsync();
     /// Sync the ProgramMonitor MiniTimeline in/out from the Timeline.
     void syncProgramMonitorInOut();
+    /// Add Marker at the playhead (M, or the Program Monitor button).
+    void addSequenceMarkerAtPlayhead();
+    /// Lift / Extract the sequence In-Out range (; and ', or the Program
+    /// Monitor buttons). No-op without both points.
+    void liftInOutRange();
+    void extractInOutRange();
+    /// Source Monitor clip markers: show the project's markers for the
+    /// loaded file, and change them as one undo step (no-op when `edit`
+    /// adds or removes nothing, or no media file is loaded).
+    void refreshSourceMonitorMarkers();
+    void editSourceClipMarkers(const QString& description,
+                               const std::function<void(std::vector<Marker>&)>& edit);
     /// Rebuild the Program Monitor transform overlay (shim → OverlayController).
     void updateTransformOverlay();
     /// Deferred overlay re-sync via QTimer (shim → OverlayController).

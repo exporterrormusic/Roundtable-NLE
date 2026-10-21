@@ -8,6 +8,14 @@
 
 #include "CompositeService.h"
 #include "Constants.h"
+#include "command/CommandStack.h"
+#include "command/LambdaCommand.h"
+#include "command/commands/MarkerCommands.h"
+#include "edit/EditSession.h"
+#include "timeline/EditOperations.h"
+#include "panels/timeline/TimelinePanel.h"
+#include "playback/PlaybackController.h"
+#include "widgets/DockTitleBar.h"
 #include "Settings.h"
 #include "cache/FrameCache.h"
 #include "panels/monitors/ProgramMonitor.h"
@@ -20,6 +28,7 @@
 #include "timeline/Timeline.h"
 
 #include <QDockWidget>
+#include <QPointer>
 #include <QStringList>
 #include <QTimer>
 
@@ -75,6 +84,42 @@ void TimelineWorkspace::createMonitorDocks()
         setSourceTransportActive(true);
     });
 
+    // The tab reads "Source: <clip>" (Premiere), and the clip's markers
+    // come from the project, whenever the loaded clip changes.
+    connect(m_sourceMonitor, &SourceMonitor::clipChanged,
+            this, [this]() {
+        if (m_destroying.load(std::memory_order_acquire)) return;
+        refreshSourceMonitorMarkers();
+        if (QDockWidget* dock = m_dockWidgets.value(QStringLiteral("Source Monitor"))) {
+            const QString title = m_sourceMonitor->panelTitle();
+            dock->setWindowTitle(title);
+            if (auto* bar = qobject_cast<DockTitleBar*>(dock->titleBarWidget()))
+                bar->setTitle(title);
+        }
+    });
+
+    // Clip markers: Add Marker (button or M) and the ruler menu.
+    connect(m_sourceMonitor, &SourceMonitor::addMarkerRequested,
+            this, [this](int64_t tick) {
+        editSourceClipMarkers(tr("Add Marker"), [tick](std::vector<Marker>& markers) {
+            const bool taken = std::any_of(markers.begin(), markers.end(),
+                                           [tick](const Marker& m) { return m.time == tick; });
+            if (!taken) markers.push_back({tick, "Marker"});
+        });
+    });
+    connect(m_sourceMonitor, &SourceMonitor::clearMarkerRequested,
+            this, [this](int64_t tick) {
+        editSourceClipMarkers(tr("Clear Marker"), [tick](std::vector<Marker>& markers) {
+            std::erase_if(markers, [tick](const Marker& m) { return m.time == tick; });
+        });
+    });
+    connect(m_sourceMonitor, &SourceMonitor::clearAllMarkersRequested,
+            this, [this]() {
+        editSourceClipMarkers(tr("Clear All Markers"),
+                              [](std::vector<Marker>& markers) { markers.clear(); });
+    });
+    m_sourceMonitor->setShortcutManager(m_shortcutManager);
+
     makeDock("Source Monitor", m_sourceMonitor);
 
     // -- Program Monitor --------------------------------------------------
@@ -85,6 +130,13 @@ void TimelineWorkspace::createMonitorDocks()
     if (m_playbackController) m_programMonitor->setController(m_playbackController);
     connect(m_programMonitor, &ProgramMonitor::exportFrameRequested,
             this, &TimelineWorkspace::exportCurrentFrame);
+    connect(m_programMonitor, &ProgramMonitor::addMarkerRequested,
+            this, &TimelineWorkspace::addSequenceMarkerAtPlayhead);
+    connect(m_programMonitor, &ProgramMonitor::liftRequested,
+            this, &TimelineWorkspace::liftInOutRange);
+    connect(m_programMonitor, &ProgramMonitor::extractRequested,
+            this, &TimelineWorkspace::extractInOutRange);
+    m_programMonitor->setShortcutManager(m_shortcutManager);
     auto* programMonitorDock = makeDock("Program Monitor", m_programMonitor);
     connect(programMonitorDock, &QDockWidget::topLevelChanged,
             m_programMonitor, [monitor = m_programMonitor](bool) {
@@ -93,6 +145,78 @@ void TimelineWorkspace::createMonitorDocks()
             monitor->resetViewState();
         });
     });
+}
+
+// ── Monitor button-row edits (also the M, ; and ' keys) ─────────────────────
+
+void TimelineWorkspace::addSequenceMarkerAtPlayhead()
+{
+    if (!m_timeline || !m_playbackController || !m_commandStack) return;
+    const int64_t tick = m_playbackController->currentTick();
+    executeTimelineEdit(m_commandStack, m_timeline,
+                        std::make_unique<AddMarkerCommand>(m_timeline, tick, "Marker"));
+    if (m_timelinePanel) m_timelinePanel->update();
+}
+
+void TimelineWorkspace::liftInOutRange()
+{
+    if (!m_timeline || !m_commandStack) return;
+    const int64_t inPt = m_timeline->inPoint();
+    const int64_t outPt = m_timeline->outPoint();
+    if (inPt < 0 || outPt < 0 || outPt <= inPt) return;
+    if (auto cmd = EditOperations::liftInOut(*m_timeline, inPt, outPt)) {
+        executeTimelineEdit(m_commandStack, m_timeline, std::move(cmd));
+        applyEditImpact();
+    }
+}
+
+void TimelineWorkspace::extractInOutRange()
+{
+    if (!m_timeline || !m_commandStack) return;
+    const int64_t inPt = m_timeline->inPoint();
+    const int64_t outPt = m_timeline->outPoint();
+    if (inPt < 0 || outPt < 0 || outPt <= inPt) return;
+    if (auto cmd = EditOperations::extractInOut(*m_timeline, inPt, outPt)) {
+        executeTimelineEdit(m_commandStack, m_timeline, std::move(cmd));
+        applyEditImpact();
+    }
+}
+
+// ── Source Monitor clip markers ─────────────────────────────────────────────
+
+void TimelineWorkspace::refreshSourceMonitorMarkers()
+{
+    if (!m_sourceMonitor) return;
+    const auto& media = m_sourceMonitor->mediaPath();
+    m_sourceMonitor->setClipMarkers(m_project && !media.empty()
+                                        ? m_project->sourceMarkersFor(media)
+                                        : std::vector<Marker>{});
+}
+
+void TimelineWorkspace::editSourceClipMarkers(
+    const QString& description, const std::function<void(std::vector<Marker>&)>& edit)
+{
+    if (!m_project || !m_commandStack || !m_sourceMonitor) return;
+    const std::filesystem::path media = m_sourceMonitor->mediaPath();
+    if (media.empty()) return;
+
+    const std::vector<Marker> before = m_project->sourceMarkersFor(media);
+    std::vector<Marker> after = before;
+    edit(after);
+    if (after.size() == before.size()) return;   // nothing added or removed
+
+    // Not a timeline edit, so the stack is called directly. The project is
+    // resolved when the step runs (the stack is cleared when projects change).
+    QPointer<TimelineWorkspace> self(this);
+    auto apply = [self, media](const std::vector<Marker>& markers) {
+        if (!self || !self->m_project) return;
+        self->m_project->setSourceMarkersFor(media, markers);
+        self->refreshSourceMonitorMarkers();
+    };
+    m_commandStack->execute(std::make_unique<LambdaCommand>(
+        description.toStdString(),
+        [apply, after]() { apply(after); },
+        [apply, before]() { apply(before); }));
 }
 
 // Spine character animation dropped from the Library: parse the URI

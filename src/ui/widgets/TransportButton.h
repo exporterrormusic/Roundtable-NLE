@@ -1,9 +1,11 @@
 /*
  * TransportButton.h — Custom-painted transport control button.
  *
- * Renders transport icons (play, pause, stop, step, go-to-start/end)
- * using QPainter geometric shapes instead of Unicode symbols, ensuring
- * reliable rendering regardless of installed fonts.
+ * Renders the monitor button-row icons (Premiere's set: Add Marker, Mark
+ * In/Out, Go to In/Out, Step Back/Forward 1 Frame, Play-Stop, Lift, Extract,
+ * Export Frame, Mute, the wrench) using QPainter geometric shapes instead of
+ * Unicode symbols, ensuring reliable rendering regardless of installed fonts.
+ * A checkable button draws in the accent colour while checked.
  *
  * Usage:
  *   auto* btn = new TransportButton(TransportButton::Play, parent);
@@ -23,7 +25,9 @@ namespace rt {
 class TransportButton : public QPushButton
 {
 public:
-    enum Icon { GoStart, StepBack, Play, Pause, Stop, StepForward, GoEnd, Screenshot };
+    enum Icon { GoStart, StepBack, Play, Pause, Stop, StepForward, GoEnd, Screenshot,
+                AddMarker, MarkIn, MarkOut, GoToIn, GoToOut, Lift, Extract,
+                Speaker, Settings };
 
     explicit TransportButton(Icon icon, QWidget* parent = nullptr)
         : QPushButton(parent), m_icon(icon)
@@ -35,7 +39,7 @@ public:
             "QPushButton { background: transparent; border: none; }"));
     }
 
-    void setTransportIcon(Icon icon) { m_icon = icon; update(); }
+    void setTransportIcon(Icon icon) { if (m_icon == icon) return; m_icon = icon; update(); }
     [[nodiscard]] Icon transportIcon() const { return m_icon; }
 
 protected:
@@ -58,7 +62,11 @@ protected:
         }
 
         // Icon color
-        QColor color = underMouse() ? tc.textBright : tc.textSecondary;
+        QColor color = (isCheckable() && isChecked()) ? tc.accent
+                     : underMouse()                   ? tc.textBright
+                     : !isEnabled()                   ? tc.textDisabled
+                                                      : tc.textSecondary;
+        m_color = color;
         p.setPen(Qt::NoPen);
         p.setBrush(color);
 
@@ -75,6 +83,15 @@ protected:
         case StepForward: drawStepFwd(p, cx, cy, s); break;
         case GoEnd:       drawGoEnd(p, cx, cy, s);       break;
         case Screenshot:  drawScreenshot(p, cx, cy, s);  break;
+        case AddMarker:   drawAddMarker(p, cx, cy, s);   break;
+        case MarkIn:      drawBrace(p, cx + s * 0.2, cy, s, +1); break;
+        case MarkOut:     drawBrace(p, cx - s * 0.2, cy, s, -1); break;
+        case GoToIn:      drawGoToIn(p, cx, cy, s);      break;
+        case GoToOut:     drawGoToOut(p, cx, cy, s);     break;
+        case Lift:        drawLiftExtract(p, cx, cy, s, /*gap=*/true);  break;
+        case Extract:     drawLiftExtract(p, cx, cy, s, /*gap=*/false); break;
+        case Speaker:     drawSpeaker(p, cx, cy, s);     break;
+        case Settings:    drawWrench(p, cx, cy, s);      break;
         }
     }
 
@@ -91,22 +108,16 @@ private:
         p.drawPath(tri);
     }
 
-    // ◀◀  — two left-pointing triangles
+    // ◀| — Premiere's Step Back 1 Frame: left-pointing triangle + bar
     void drawStepBack(QPainter& p, qreal cx, qreal cy, qreal s)
     {
-        QPainterPath t1;
-        t1.moveTo(cx,     cy - s);
-        t1.lineTo(cx - s, cy);
-        t1.lineTo(cx,     cy + s);
-        t1.closeSubpath();
-        p.drawPath(t1);
-
-        QPainterPath t2;
-        t2.moveTo(cx + s, cy - s);
-        t2.lineTo(cx,     cy);
-        t2.lineTo(cx + s, cy + s);
-        t2.closeSubpath();
-        p.drawPath(t2);
+        QPainterPath tri;
+        tri.moveTo(cx + s * 0.3,  cy - s);
+        tri.lineTo(cx - s * 0.85, cy);
+        tri.lineTo(cx + s * 0.3,  cy + s);
+        tri.closeSubpath();
+        p.drawPath(tri);
+        p.drawRect(QRectF(cx + s * 0.55, cy - s, 2, s * 2));
     }
 
     // ▶  — right-pointing triangle
@@ -136,22 +147,16 @@ private:
         p.drawRect(QRectF(cx - half, cy - half, half * 2, half * 2));
     }
 
-    // ▶▶ — two right-pointing triangles
+    // |▶ — Premiere's Step Forward 1 Frame: bar + right-pointing triangle
     void drawStepFwd(QPainter& p, qreal cx, qreal cy, qreal s)
     {
-        QPainterPath t1;
-        t1.moveTo(cx - s, cy - s);
-        t1.lineTo(cx,     cy);
-        t1.lineTo(cx - s, cy + s);
-        t1.closeSubpath();
-        p.drawPath(t1);
-
-        QPainterPath t2;
-        t2.moveTo(cx,     cy - s);
-        t2.lineTo(cx + s, cy);
-        t2.lineTo(cx,     cy + s);
-        t2.closeSubpath();
-        p.drawPath(t2);
+        p.drawRect(QRectF(cx - s * 0.55 - 2, cy - s, 2, s * 2));
+        QPainterPath tri;
+        tri.moveTo(cx - s * 0.3,  cy - s);
+        tri.lineTo(cx + s * 0.85, cy);
+        tri.lineTo(cx - s * 0.3,  cy + s);
+        tri.closeSubpath();
+        p.drawPath(tri);
     }
 
     // ▶| — right-pointing triangle + vertical bar
@@ -176,18 +181,147 @@ private:
         // Lens — circle in center
         qreal r = s * 0.42;
         p.setBrush(Qt::NoBrush);
-        QColor color = underMouse() ? Theme::colors().textBright : Theme::colors().textSecondary;
-        p.setPen(QPen(color, 1.5));
+        p.setPen(QPen(Theme::colors().surface0, 1.5));
         p.drawEllipse(QPointF(cx, cy + s * 0.15), r, r);
         p.setPen(Qt::NoPen);
-        p.setBrush(color);
+        p.setBrush(m_color);
         // Viewfinder bump on top
         qreal vw = s * 0.6;
         qreal vh = s * 0.3;
         p.drawRect(QRectF(cx - vw / 2, cy - bh / 2 + s * 0.15 - vh, vw, vh));
     }
 
-    Icon m_icon{Play};
+    // Outline pen for the stroked icons (braces, arrows, waves, wrench).
+    QPen strokePen(qreal width = 1.5) const
+    {
+        return QPen(m_color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+    }
+
+    // Premiere's marker: a filled pentagon pointing down.
+    void drawAddMarker(QPainter& p, qreal cx, qreal cy, qreal s)
+    {
+        QPainterPath m;
+        m.moveTo(cx - s * 0.7, cy - s * 0.85);
+        m.lineTo(cx + s * 0.7, cy - s * 0.85);
+        m.lineTo(cx + s * 0.7, cy + s * 0.3);
+        m.lineTo(cx,           cy + s * 0.9);
+        m.lineTo(cx - s * 0.7, cy + s * 0.3);
+        m.closeSubpath();
+        p.drawPath(m);
+    }
+
+    // "{" (dir +1, Mark In) or "}" (dir -1, Mark Out) centred on x.
+    void drawBrace(QPainter& p, qreal x, qreal cy, qreal s, int dir)
+    {
+        const qreal w = s * 0.45 * dir;
+        QPainterPath b;
+        b.moveTo(x + w, cy - s);
+        b.quadTo(x, cy - s, x, cy - s * 0.6);
+        b.lineTo(x, cy - s * 0.25);
+        b.quadTo(x, cy, x - w, cy);
+        b.quadTo(x, cy, x, cy + s * 0.25);
+        b.lineTo(x, cy + s * 0.6);
+        b.quadTo(x, cy + s, x + w, cy + s);
+        p.save();
+        p.setPen(strokePen());
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(b);
+        p.restore();
+    }
+
+    // Horizontal arrow from x0 to x1; the head sits at x1.
+    void drawArrow(QPainter& p, qreal x0, qreal x1, qreal cy, qreal s)
+    {
+        const qreal dir = (x1 > x0) ? 1.0 : -1.0;
+        p.save();
+        p.setPen(strokePen());
+        p.drawLine(QPointF(x0, cy), QPointF(x1 - dir * s * 0.3, cy));
+        p.restore();
+        QPainterPath head;
+        head.moveTo(x1, cy);
+        head.lineTo(x1 - dir * s * 0.6, cy - s * 0.5);
+        head.lineTo(x1 - dir * s * 0.6, cy + s * 0.5);
+        head.closeSubpath();
+        p.drawPath(head);
+    }
+
+    // {← — Premiere's Go to In
+    void drawGoToIn(QPainter& p, qreal cx, qreal cy, qreal s)
+    {
+        drawBrace(p, cx - s * 0.75, cy, s, +1);
+        drawArrow(p, cx + s * 1.05, cx - s * 0.2, cy, s);
+    }
+
+    // →} — Premiere's Go to Out
+    void drawGoToOut(QPainter& p, qreal cx, qreal cy, qreal s)
+    {
+        drawArrow(p, cx - s * 1.05, cx + s * 0.2, cy, s);
+        drawBrace(p, cx + s * 0.75, cy, s, -1);
+    }
+
+    // A clip lifted up out of the track. Lift leaves the gap in the track;
+    // Extract closes it.
+    void drawLiftExtract(QPainter& p, qreal cx, qreal cy, qreal s, bool gap)
+    {
+        const qreal y = cy + s * 0.45, h = s * 0.5;
+        if (gap) {
+            p.drawRect(QRectF(cx - s * 1.1, y, s * 0.65, h));
+            p.drawRect(QRectF(cx + s * 0.45, y, s * 0.65, h));
+        } else {
+            p.drawRect(QRectF(cx - s * 1.1, y, s * 1.05, h));
+            p.drawRect(QRectF(cx + s * 0.05, y, s * 1.05, h));
+        }
+        p.save();
+        p.setPen(strokePen());
+        p.drawLine(QPointF(cx, cy + s * 0.2), QPointF(cx, cy - s * 0.5));
+        p.restore();
+        QPainterPath head;
+        head.moveTo(cx, cy - s);
+        head.lineTo(cx - s * 0.5, cy - s * 0.4);
+        head.lineTo(cx + s * 0.5, cy - s * 0.4);
+        head.closeSubpath();
+        p.drawPath(head);
+    }
+
+    // Speaker with sound waves; crossed out while checked (muted).
+    void drawSpeaker(QPainter& p, qreal cx, qreal cy, qreal s)
+    {
+        QPainterPath body;
+        body.moveTo(cx - s,        cy - s * 0.35);
+        body.lineTo(cx - s * 0.5,  cy - s * 0.35);
+        body.lineTo(cx + s * 0.05, cy - s * 0.85);
+        body.lineTo(cx + s * 0.05, cy + s * 0.85);
+        body.lineTo(cx - s * 0.5,  cy + s * 0.35);
+        body.lineTo(cx - s,        cy + s * 0.35);
+        body.closeSubpath();
+        p.drawPath(body);
+        p.save();
+        p.setPen(strokePen(1.3));
+        p.setBrush(Qt::NoBrush);
+        if (isCheckable() && isChecked()) {
+            p.drawLine(QPointF(cx + s * 0.4, cy - s * 0.4), QPointF(cx + s * 1.1, cy + s * 0.4));
+            p.drawLine(QPointF(cx + s * 0.4, cy + s * 0.4), QPointF(cx + s * 1.1, cy - s * 0.4));
+        } else {
+            p.drawArc(QRectF(cx - s * 0.2, cy - s * 0.45, s * 0.8, s * 0.9), -50 * 16, 100 * 16);
+            p.drawArc(QRectF(cx - s * 0.35, cy - s * 0.85, s * 1.4, s * 1.7), -50 * 16, 100 * 16);
+        }
+        p.restore();
+    }
+
+    // Premiere's Settings wrench: open jaw at the top right, handle down-left.
+    void drawWrench(QPainter& p, qreal cx, qreal cy, qreal s)
+    {
+        p.save();
+        p.setBrush(Qt::NoBrush);
+        p.setPen(strokePen(2.2));
+        p.drawLine(QPointF(cx - s * 0.8, cy + s * 0.8), QPointF(cx + s * 0.1, cy - s * 0.1));
+        p.setPen(strokePen(1.8));
+        p.drawArc(QRectF(cx - s * 0.05, cy - s * 0.95, s * 0.9, s * 0.9), 90 * 16, 270 * 16);
+        p.restore();
+    }
+
+    Icon   m_icon{Play};
+    QColor m_color;   ///< Icon colour of the paint in progress
 };
 
 } // namespace rt

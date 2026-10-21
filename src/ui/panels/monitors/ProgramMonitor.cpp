@@ -807,8 +807,10 @@ void ProgramMonitor::updateDisplay()
             m_timeline->setPlayheadPosition(tick);
     }
 
+    // Premiere's Play-Stop Toggle shows a stop square while playing.
     if (m_btnPlayPause) {
-        m_btnPlayPause->setText(playing ? QStringLiteral("\u23F8") : QStringLiteral("\u25B6"));
+        m_btnPlayPause->setTransportIcon(playing ? TransportButton::Stop
+                                                 : TransportButton::Play);
     }
 
     auto updateShuttleLabel = [this, playing]() {

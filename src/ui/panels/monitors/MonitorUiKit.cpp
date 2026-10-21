@@ -5,23 +5,38 @@
 
 #include "panels/monitors/MonitorUiKit.h"
 
+#include "ShortcutManager.h"
 #include "Theme.h"
 #include "UiScale.h"
 #include "widgets/TransportButton.h"
 
+#include <QAction>
 #include <QComboBox>
-#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPainter>
-#include <QPixmap>
+#include <QMenu>
 #include <QPushButton>
 #include <QRegularExpressionValidator>
 #include <QWidget>
 
 namespace rt {
 namespace monitorui {
+
+namespace {
+// Row-button properties read by applyShortcutTooltips().
+constexpr const char* kMonitorButtonNameProperty = "rtMonitorButtonName";
+constexpr const char* kMonitorButtonActionProperty   = "rtMonitorButtonAction";
+constexpr const char* kMonitorButtonKeyProperty   = "rtMonitorButtonKey";
+constexpr const char* kMonitorTooltipsWatchedProperty = "rtMonitorTooltipsWatched";
+
+QString monitorRowStyle(const char* objectName)
+{
+    return QStringLiteral("#%1 { background: %2; }")
+        .arg(QLatin1String(objectName))
+        .arg(Theme::hex(Theme::colors().surface0));
+}
+} // namespace
 
 QString comboStyle()
 {
@@ -36,46 +51,6 @@ QString comboStyle()
         .arg(Theme::typography().sizeXs));
 }
 
-QString checkedButtonStyle()
-{
-    return rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: 1px solid %1; "
-        "border-radius: 2px; padding: 2px; } "
-        "QPushButton:hover { background: %2; } "
-        "QPushButton:checked { background: %3; border-color: %3; }")
-        .arg(Theme::hex(Theme::colors().controlBorder))
-        .arg(Theme::hex(Theme::colors().controlBgHover))
-        .arg(Theme::hex(Theme::colors().accent)));
-}
-
-QString exportButtonStyle()
-{
-    return rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QPushButton { background: %1; border: 1px solid %2; "
-        "border-radius: 2px; color: %3; font-size: %5px; padding: 1px; } "
-        "QPushButton:hover { background: %4; }")
-        .arg(Theme::hex(Theme::colors().surface2))
-        .arg(Theme::hex(Theme::colors().controlBorder))
-        .arg(Theme::hex(Theme::colors().textBright))
-        .arg(Theme::hex(Theme::colors().controlBgHover))
-        .arg(Theme::typography().sizeSmall));
-}
-
-QString loopButtonStyle()
-{
-    return rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: 1px solid %1; "
-        "border-radius: 2px; color: %2; font-size: 10px; font-weight: 600; "
-        "padding: 1px 5px; } "
-        "QPushButton:hover { background: %3; } "
-        "QPushButton:checked { background: %4; color: %5; border-color: %4; }")
-        .arg(Theme::hex(Theme::colors().controlBorder))
-        .arg(Theme::hex(Theme::colors().textSecondary))
-        .arg(Theme::hex(Theme::colors().controlBgHover))
-        .arg(Theme::hex(Theme::colors().accent))
-        .arg(Theme::hex(Theme::colors().textBright)));
-}
-
 QWidget* makeViewSpacer(QWidget* parent, int heightPx)
 {
     auto* spacer = new QWidget(parent);
@@ -86,22 +61,108 @@ QWidget* makeViewSpacer(QWidget* parent, int heightPx)
     return spacer;
 }
 
-QWidget* makeControlBar(QWidget* parent, QHBoxLayout** outLayout)
+QWidget* makeInfoRow(QWidget* parent, QHBoxLayout** outLayout)
 {
-    auto* controlBar = new QWidget(parent);
-    controlBar->setObjectName(QStringLiteral("ControlBar"));
-    rt::UiScale::setScaledFixedHeight(controlBar, 34);
-    controlBar->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "#ControlBar { background: %1; border-top: 1px solid %2; border-bottom: 1px solid %2; }")
-        .arg(Theme::hex(Theme::colors().surface0))
-        .arg(Theme::hex(Theme::colors().border))));
+    auto* row = new QWidget(parent);
+    row->setObjectName(QStringLiteral("MonitorInfoRow"));
+    rt::UiScale::setScaledFixedHeight(row, 30);
+    row->setStyleSheet(monitorRowStyle("MonitorInfoRow"));
 
-    auto* layout = new QHBoxLayout(controlBar);
-    layout->setContentsMargins(rt::UiScale::px(6), rt::UiScale::px(4),
-                               rt::UiScale::px(6), rt::UiScale::px(4));
-    layout->setSpacing(rt::UiScale::px(4));
+    auto* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(rt::UiScale::px(8), rt::UiScale::px(3),
+                               rt::UiScale::px(8), rt::UiScale::px(3));
+    layout->setSpacing(rt::UiScale::px(6));
     if (outLayout) *outLayout = layout;
-    return controlBar;
+    return row;
+}
+
+QWidget* makeButtonRow(QWidget* parent, QHBoxLayout** outLayout)
+{
+    auto* row = new QWidget(parent);
+    row->setObjectName(QStringLiteral("MonitorButtonRow"));
+    rt::UiScale::setScaledFixedHeight(row, 34);
+    row->setStyleSheet(monitorRowStyle("MonitorButtonRow"));
+
+    auto* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(rt::UiScale::px(8), rt::UiScale::px(4),
+                               rt::UiScale::px(8), rt::UiScale::px(4));
+    layout->setSpacing(rt::UiScale::px(2));
+    layout->addStretch();
+    if (outLayout) *outLayout = layout;
+    return row;
+}
+
+void addButtonGroupGap(QHBoxLayout* layout)
+{
+    layout->addSpacing(rt::UiScale::px(20));
+}
+
+void finishButtonRow(QHBoxLayout* layout)
+{
+    layout->addStretch();
+}
+
+TransportButton* makeRowButton(QWidget* parent, int icon, const QString& name,
+                               const QString& actionId, const QString& fixedKey)
+{
+    auto* btn = new TransportButton(static_cast<TransportButton::Icon>(icon), parent);
+    rt::UiScale::setScaledFixedSize(btn, 30, 24);
+    btn->setProperty(kMonitorButtonNameProperty, name);
+    btn->setProperty(kMonitorButtonActionProperty, actionId);
+    btn->setProperty(kMonitorButtonKeyProperty, fixedKey);
+    btn->setToolTip(fixedKey.isEmpty() ? name
+                                       : QStringLiteral("%1 (%2)").arg(name, fixedKey));
+    return btn;
+}
+
+void applyShortcutTooltips(QWidget* root, const ShortcutManager* shortcuts)
+{
+    if (!root) return;
+    for (auto* btn : root->findChildren<QPushButton*>()) {
+        const QString name = btn->property(kMonitorButtonNameProperty).toString();
+        if (name.isEmpty()) continue;
+        QString key = btn->property(kMonitorButtonKeyProperty).toString();
+        const QString actionId = btn->property(kMonitorButtonActionProperty).toString();
+        if (shortcuts && !actionId.isEmpty()) {
+            if (const ShortcutAction* a = shortcuts->action(actionId))
+                key = a->currentKey.toString(QKeySequence::NativeText);
+        }
+        btn->setToolTip(key.isEmpty() ? name : QStringLiteral("%1 (%2)").arg(name, key));
+    }
+
+    if (shortcuts && !root->property(kMonitorTooltipsWatchedProperty).toBool()) {
+        root->setProperty(kMonitorTooltipsWatchedProperty, true);
+        QObject::connect(shortcuts, &ShortcutManager::shortcutChanged, root,
+                         [root, shortcuts]() { applyShortcutTooltips(root, shortcuts); });
+    }
+}
+
+SettingsMenuKit makeSettingsMenu(QWidget* parent)
+{
+    SettingsMenuKit kit;
+    kit.button = makeRowButton(parent, TransportButton::Settings, QObject::tr("Settings"));
+    kit.menu = new QMenu(kit.button);
+    kit.loop = kit.menu->addAction(QObject::tr("Loop"));
+    kit.loop->setCheckable(true);
+    kit.safeMargins = kit.menu->addAction(QObject::tr("Safe Margins"));
+    kit.safeMargins->setCheckable(true);
+    kit.button->setMenu(kit.menu);
+    return kit;
+}
+
+QLabel* makeShuttleSpeedLabel(QWidget* parent)
+{
+    auto* label = new QLabel(parent);
+    label->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
+        "QLabel { font-family: 'Consolas', monospace; font-size: %1px; "
+        "font-weight: 600; color: %2; background: transparent; "
+        "padding: 0px 8px; }")
+        .arg(Theme::typography().sizeXs)
+        .arg(Theme::hex(Theme::colors().warning))));
+    rt::UiScale::setScaledMinimumWidth(label, 50);
+    label->setAlignment(Qt::AlignCenter);
+    label->hide();
+    return label;
 }
 
 QLabel* makeTimecodeLabel(QWidget* parent)
@@ -113,7 +174,7 @@ QLabel* makeTimecodeLabel(QWidget* parent)
         "padding: 0px 6px 0px 0px; }")
         .arg(Theme::typography().sizeSmall)
         .arg(Theme::hex(Theme::colors().accent))));
-    rt::UiScale::setScaledFixedWidth(label, 96);
+    rt::UiScale::setScaledFixedWidth(label, 112);   // 11 monospace digits + padding
     label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     label->setCursor(Qt::IBeamCursor);
     label->setToolTip(QObject::tr("Click to enter timecode"));
@@ -131,7 +192,7 @@ QLineEdit* makeTimecodeEdit(QWidget* parent)
         .arg(Theme::hex(Theme::colors().surface2))
         .arg(Theme::typography().sizeSmall)
         .arg(Theme::hex(Theme::colors().accent))));
-    rt::UiScale::setScaledFixedWidth(edit, 96);
+    rt::UiScale::setScaledFixedWidth(edit, 112);
     edit->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     edit->setValidator(new QRegularExpressionValidator(
         QRegularExpression(QStringLiteral("\\d{0,2}:?\\d{0,2}:?\\d{0,2}:?\\d{0,2}")), edit));
@@ -153,6 +214,7 @@ QComboBox* makeFitModeCombo(QWidget* parent)
     combo->addItem(QObject::tr("200%"));    // 7
     combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     combo->setFocusPolicy(Qt::NoFocus);
+    combo->setToolTip(QObject::tr("Select Zoom Level"));
     combo->setStyleSheet(comboStyle());
     rt::UiScale::setScaledMinimumWidth(combo, 64);
     rt::UiScale::setScaledFixedHeight(combo, 24);
@@ -170,65 +232,11 @@ QComboBox* makePlaybackResCombo(QWidget* parent, bool withAuto)
         combo->addItem(QObject::tr("Auto"));
     combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     combo->setFocusPolicy(Qt::NoFocus);
-    combo->setToolTip(QObject::tr("Playback Resolution"));
+    combo->setToolTip(QObject::tr("Select Playback Resolution"));
     combo->setStyleSheet(comboStyle());
     rt::UiScale::setScaledMinimumWidth(combo, 58);
     rt::UiScale::setScaledFixedHeight(combo, 24);
     return combo;
-}
-
-QIcon makeSafeAreaIcon(QColor fg)
-{
-    QPixmap px(24, 24);
-    px.fill(Qt::transparent);
-    QPainter ip(&px);
-    ip.setRenderHint(QPainter::Antialiasing, false);
-    ip.setPen(QPen(fg, 1.5));
-    ip.setBrush(Qt::NoBrush);
-    ip.drawRect(QRectF(1.5, 1.5, 21, 21));   // outer frame
-    ip.drawRect(QRectF(5.5, 5.5, 13, 13));    // action-safe
-    ip.setPen(QPen(fg, 1.0, Qt::DashLine));
-    ip.drawRect(QRectF(8.5, 8.5, 7, 7));      // title-safe
-    ip.end();
-    return QIcon(px);
-}
-
-QPushButton* makeSafeAreaButton(QWidget* parent)
-{
-    auto* btn = new QPushButton(parent);
-    btn->setIcon(makeSafeAreaIcon(Theme::colors().textSecondary));
-    btn->setIconSize(QSize(rt::UiScale::px(16), rt::UiScale::px(16)));
-    btn->setCheckable(true);
-    rt::UiScale::setScaledFixedSize(btn, 24, 22);
-    btn->setFocusPolicy(Qt::NoFocus);
-    btn->setToolTip(QObject::tr("Toggle Safe Area Overlay"));
-    btn->setStyleSheet(checkedButtonStyle());
-    return btn;
-}
-
-QPushButton* makeExportFrameButton(QWidget* parent)
-{
-    auto* btn = new QPushButton(parent);
-    btn->setToolTip(QObject::tr("Export Frame (Ctrl+Shift+E)"));
-    QPixmap px(20, 20);
-    px.fill(Qt::transparent);
-    QPainter painter(&px);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(QPen(Theme::colors().textSecondary, 1.4,
-                        Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRoundedRect(QRectF(3.0, 6.0, 14.0, 10.0), 1.5, 1.5);
-    painter.drawEllipse(QRectF(7.5, 8.0, 5.0, 5.0));
-    painter.drawLine(QPointF(6.0, 6.0), QPointF(8.0, 4.0));
-    painter.drawLine(QPointF(8.0, 4.0), QPointF(12.0, 4.0));
-    painter.drawLine(QPointF(12.0, 4.0), QPointF(14.0, 6.0));
-    painter.end();
-    btn->setIcon(QIcon(px));
-    btn->setIconSize(QSize(rt::UiScale::px(16), rt::UiScale::px(16)));
-    rt::UiScale::setScaledFixedSize(btn, 28, 22);
-    btn->setFocusPolicy(Qt::NoFocus);
-    btn->setStyleSheet(exportButtonStyle());
-    return btn;
 }
 
 QLabel* makeZoomLabel(QWidget* parent)
@@ -250,83 +258,46 @@ QLabel* makeDurationLabel(QWidget* parent)
     auto* label = new QLabel(QStringLiteral("00:00:00:00"), parent);
     label->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
         "QLabel { font-family: 'Consolas', monospace; font-size: %2px; "
-        "color: %1; background: transparent; padding: 0px 8px 0px 6px; }")
+        "color: %1; background: transparent; padding: 0px 0px 0px 6px; }")
         .arg(Theme::hex(Theme::colors().textSecondary))
         .arg(Theme::typography().sizeSmall)));
-    rt::UiScale::setScaledFixedWidth(label, 96);
+    rt::UiScale::setScaledFixedWidth(label, 112);   // 11 monospace digits + padding
     label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     return label;
 }
 
-QFrame* makeVDivider(QWidget* parent)
+PlaybackGroupKit addPlaybackGroup(QWidget* parent, QHBoxLayout* layout)
 {
-    auto* divider = new QFrame(parent);
-    divider->setFrameShape(QFrame::VLine);
-    rt::UiScale::setScaledFixedHeight(divider, 16);
-    divider->setStyleSheet(QStringLiteral(
-        "QFrame { color: %1; }").arg(Theme::hex(Theme::colors().border)));
-    return divider;
+    PlaybackGroupKit kit;
+    kit.goToIn = makeRowButton(parent, TransportButton::GoToIn, QObject::tr("Go to In"),
+                               QString::fromLatin1(ShortcutManager::kGoIn));
+    kit.stepBack = makeRowButton(parent, TransportButton::StepBack,
+                                 QObject::tr("Step Back 1 Frame"),
+                                 QString::fromLatin1(ShortcutManager::kFrameBack));
+    kit.playPause = makeRowButton(parent, TransportButton::Play, QObject::tr("Play-Stop Toggle"),
+                                  QString::fromLatin1(ShortcutManager::kPlayPause));
+    kit.stepForward = makeRowButton(parent, TransportButton::StepForward,
+                                    QObject::tr("Step Forward 1 Frame"),
+                                    QString::fromLatin1(ShortcutManager::kFrameForward));
+    kit.goToOut = makeRowButton(parent, TransportButton::GoToOut, QObject::tr("Go to Out"),
+                                QString::fromLatin1(ShortcutManager::kGoOut));
+    for (auto* b : {kit.goToIn, kit.stepBack, kit.playPause, kit.stepForward, kit.goToOut})
+        layout->addWidget(b, 0, Qt::AlignVCenter);
+    return kit;
 }
 
-TransportBarKit makeTransportBar(QWidget* parent, QHBoxLayout* layout)
+MarkGroupKit addMarkGroup(QWidget* parent, QHBoxLayout* layout)
 {
-    TransportBarKit kit;
-    kit.bar = parent;
-    kit.layout = layout;
-
-    kit.goStart     = new TransportButton(TransportButton::GoStart, kit.bar);
-    kit.stepBack    = new TransportButton(TransportButton::StepBack, kit.bar);
-    kit.playPause   = new TransportButton(TransportButton::Play, kit.bar);
-    kit.stop        = new TransportButton(TransportButton::Stop, kit.bar);
-    kit.stepForward = new TransportButton(TransportButton::StepForward, kit.bar);
-    kit.goEnd       = new TransportButton(TransportButton::GoEnd, kit.bar);
-
-    rt::UiScale::setScaledFixedSize(kit.goStart, 20, 20);
-    kit.goStart->setToolTip(QObject::tr("Go to Start"));
-    rt::UiScale::setScaledFixedSize(kit.stepBack, 20, 20);
-    kit.stepBack->setToolTip(QObject::tr("Step Back"));
-    rt::UiScale::setScaledFixedSize(kit.playPause, 24, 24);
-    kit.playPause->setToolTip(QObject::tr("Play/Pause"));
-    rt::UiScale::setScaledFixedSize(kit.stop, 20, 20);
-    kit.stop->setToolTip(QObject::tr("Stop"));
-    rt::UiScale::setScaledFixedSize(kit.stepForward, 20, 20);
-    kit.stepForward->setToolTip(QObject::tr("Step Forward"));
-    rt::UiScale::setScaledFixedSize(kit.goEnd, 20, 20);
-    kit.goEnd->setToolTip(QObject::tr("Go to End"));
-
-    kit.layout->addWidget(kit.goStart, 0, Qt::AlignVCenter);
-    kit.layout->addWidget(kit.stepBack, 0, Qt::AlignVCenter);
-    kit.layout->addWidget(kit.playPause, 0, Qt::AlignVCenter);
-    kit.layout->addWidget(kit.stop, 0, Qt::AlignVCenter);
-    kit.layout->addWidget(kit.stepForward, 0, Qt::AlignVCenter);
-    kit.layout->addWidget(kit.goEnd, 0, Qt::AlignVCenter);
-
-    // Divider + loop toggle
-    kit.layout->addSpacing(rt::UiScale::px(4));
-    kit.layout->addWidget(makeVDivider(kit.bar), 0, Qt::AlignVCenter);
-    kit.layout->addSpacing(rt::UiScale::px(4));
-
-    kit.loop = new QPushButton(QObject::tr("Loop"), kit.bar);
-    kit.loop->setCheckable(true);
-    rt::UiScale::setScaledFixedHeight(kit.loop, 22);
-    kit.loop->setFocusPolicy(Qt::NoFocus);
-    kit.loop->setToolTip(QObject::tr("Toggle Loop Playback"));
-    kit.loop->setStyleSheet(loopButtonStyle());
-    kit.layout->addWidget(kit.loop, 0, Qt::AlignVCenter);
-
-    // Shuttle speed display label
-    kit.shuttleSpeed = new QLabel(kit.bar);
-    kit.shuttleSpeed->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { font-family: 'Consolas', monospace; font-size: %1px; "
-        "font-weight: 600; color: %2; background: transparent; "
-        "padding: 0px 8px; }")
-        .arg(Theme::typography().sizeXs)
-        .arg(Theme::hex(Theme::colors().warning))));
-    rt::UiScale::setScaledMinimumWidth(kit.shuttleSpeed, 50);
-    kit.shuttleSpeed->setAlignment(Qt::AlignCenter);
-    kit.shuttleSpeed->hide();
-    kit.layout->addWidget(kit.shuttleSpeed, 0, Qt::AlignVCenter);
-
+    // M, I and O are fixed keys (ShortcutControllerKeys), not rebindable.
+    MarkGroupKit kit;
+    kit.addMarker = makeRowButton(parent, TransportButton::AddMarker, QObject::tr("Add Marker"),
+                                  {}, QStringLiteral("M"));
+    kit.markIn = makeRowButton(parent, TransportButton::MarkIn, QObject::tr("Mark In"),
+                               {}, QStringLiteral("I"));
+    kit.markOut = makeRowButton(parent, TransportButton::MarkOut, QObject::tr("Mark Out"),
+                                {}, QStringLiteral("O"));
+    for (auto* b : {kit.addMarker, kit.markIn, kit.markOut})
+        layout->addWidget(b, 0, Qt::AlignVCenter);
     return kit;
 }
 

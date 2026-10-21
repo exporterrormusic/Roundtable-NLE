@@ -45,6 +45,7 @@ Project::Project(Project&& o) noexcept
     , m_binFiles(std::move(o.m_binFiles))
     , m_binFolders(std::move(o.m_binFolders))
     , m_binItems(std::move(o.m_binItems))
+    , m_sourceMarkers(std::move(o.m_sourceMarkers))
 {}
 
 Project& Project::operator=(Project&& o) noexcept
@@ -64,8 +65,41 @@ Project& Project::operator=(Project&& o) noexcept
         m_binFiles        = std::move(o.m_binFiles);
         m_binFolders      = std::move(o.m_binFolders);
         m_binItems        = std::move(o.m_binItems);
+        m_sourceMarkers   = std::move(o.m_sourceMarkers);
     }
     return *this;
+}
+
+// ── Clip markers ────────────────────────────────────────────────────────────
+
+namespace {
+bool sameMediaFile(const std::filesystem::path& a, const std::filesystem::path& b)
+{
+    return a.lexically_normal() == b.lexically_normal();
+}
+} // namespace
+
+std::vector<Marker> Project::sourceMarkersFor(const std::filesystem::path& media) const
+{
+    for (const auto& entry : m_sourceMarkers)
+        if (sameMediaFile(entry.path, media))
+            return entry.markers;
+    return {};
+}
+
+void Project::setSourceMarkersFor(const std::filesystem::path& media, std::vector<Marker> markers)
+{
+    std::stable_sort(markers.begin(), markers.end());
+    auto it = std::find_if(m_sourceMarkers.begin(), m_sourceMarkers.end(),
+                           [&](const SourceMarkers& e) { return sameMediaFile(e.path, media); });
+    if (markers.empty()) {
+        if (it != m_sourceMarkers.end()) m_sourceMarkers.erase(it);
+        return;
+    }
+    if (it != m_sourceMarkers.end())
+        it->markers = std::move(markers);
+    else
+        m_sourceMarkers.push_back({media, std::move(markers)});
 }
 
 // ── Sequence accessors ──────────────────────────────────────────────────────

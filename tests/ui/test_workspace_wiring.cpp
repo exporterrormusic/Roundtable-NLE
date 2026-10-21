@@ -36,6 +36,10 @@
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
 #include "widgets/MiniTimeline.h"
+#include "cache/FrameCache.h"
+#include "panels/monitors/SourceMonitor.h"
+#include "playback/MediaPool.h"
+#include "../gpu/IndexedVideoFixture.h"
 
 #include <QApplication>
 #include <QDockWidget>
@@ -768,4 +772,55 @@ TEST(WorkspaceWiring, ShotSwitchUndoAffectsItsOwnSequenceAfterSwitchingSequences
 
     rig.ws.reset();
     fs::remove_all(dir);
+}
+
+// ── Source Monitor clip markers ─────────────────────────────────────────────
+
+TEST(WorkspaceWiring, SourceClipMarkersAreUndoableAndBelongToTheFile)
+{
+    ensureApp();
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "rt_workspace_clip_markers.mp4";
+    if (!rt_test::writeIndexedVideo(path.string()))
+        GTEST_SKIP() << "no MPEG-4 encoder in this FFmpeg";
+    // The pool outlives the workspace: the Source Monitor holds it.
+    auto cache = std::make_shared<rt::FrameCache>(64ull * 1024 * 1024);
+    rt::MediaPool pool(cache);
+    const uint64_t handle = pool.open(path.string());
+    ASSERT_NE(handle, 0u);
+
+    Rig rig;
+    rt::SourceMonitor* source = rig.ws->sourceMonitor();
+    ASSERT_NE(source, nullptr);
+    QDockWidget* dock = rig.ws->dockForPanel(QStringLiteral("Source Monitor"));
+    ASSERT_NE(dock, nullptr);
+
+    source->loadClip(handle, &pool);
+    EXPECT_EQ(dock->windowTitle(), QStringLiteral("Source: rt_workspace_clip_markers.mp4"));
+    ASSERT_FALSE(source->mediaPath().empty());
+
+    source->requestAddMarker();
+    EXPECT_EQ(rig.project.sourceMarkersFor(source->mediaPath()).size(), 1u);
+    EXPECT_EQ(source->clipMarkers().size(), 1u);
+    EXPECT_EQ(rig.stack.undoCount(), 1u);
+
+    source->requestAddMarker();   // one there already: no second marker, no step
+    EXPECT_EQ(rig.stack.undoCount(), 1u);
+
+    ASSERT_TRUE(rig.stack.undo());
+    EXPECT_TRUE(rig.project.sourceMarkersFor(source->mediaPath()).empty());
+    EXPECT_TRUE(source->clipMarkers().empty());
+    ASSERT_TRUE(rig.stack.redo());
+    EXPECT_EQ(source->clipMarkers().size(), 1u);
+
+    // Clearing the monitor hides them; loading the file again shows them.
+    source->clearClip();
+    EXPECT_TRUE(source->clipMarkers().empty());
+    EXPECT_EQ(dock->windowTitle(), QStringLiteral("Source Monitor"));
+    source->loadClip(handle, &pool);
+    EXPECT_EQ(source->clipMarkers().size(), 1u);
+
+    source->clearClip();
+    rig.ws.reset();
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
 }

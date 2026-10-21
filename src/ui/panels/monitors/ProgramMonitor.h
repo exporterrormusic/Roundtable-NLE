@@ -11,19 +11,15 @@
  *   - Overlay displays timecode and safe areas
  *   - Click-to-select elements in the frame (future: transform gizmo)
  *
- * Layout:
- *   ┌─────────────────────────────────┐
- *   │  "Program" label                │
- *   ├─────────────────────────────────┤
- *   │                                 │
- *   │         Viewport                │
- *   │    (composited frame)           │
- *   │                                 │
- *   ├─────────────────────────────────┤
- *   │  [MiniTimeline scrub bar]       │
- *   ├─────────────────────────────────┤
- *   │  Fit ▼ | SafeArea | TC display │
- *   └─────────────────────────────────┘
+ * Layout (Premiere's Program Monitor, see MonitorUiKit.h):
+ *   ┌──────────────────────────────────────────────────────┐
+ *   │                    Viewport                          │
+ *   │               (composited frame)                     │
+ *   ├──────────────────────────────────────────────────────┤
+ *   │ 00:00:12:03  Fit ▼            Full ▼  🔧  00:03:20:11 │  info row
+ *   │ [MiniTimeline scrub bar]                             │
+ *   │   ⬟ { }   {← ◀| ▶ |▶ →}   Lift Extract   📷          │  button row
+ *   └──────────────────────────────────────────────────────┘
  */
 
 #pragma once
@@ -48,10 +44,12 @@
 #include <thread>
 #include <vector>
 
+class QAction;
 class QStackedLayout;
 
 namespace rt {
 
+class ShortcutManager;
 class TransportButton;
 class Viewport;
 class VulkanViewport;
@@ -76,6 +74,9 @@ public:
 
     /// Attach the main playback controller (shared with TransportBar).
     void setController(PlaybackController* controller);
+
+    /// Button-row tooltips show the user's current keys from `shortcuts`.
+    void setShortcutManager(const ShortcutManager* shortcuts);
 
     /// Attach the timeline data model.
     void setTimeline(Timeline* timeline);
@@ -231,6 +232,13 @@ signals:
     /// Emitted when user presses O to set out-point at current playhead.
     void outPointRequested();
 
+    /// Button row: Add Marker at the playhead (same as M on the timeline).
+    void addMarkerRequested();
+
+    /// Button row: Lift / Extract the sequence In–Out range (same as ; and ').
+    void liftRequested();
+    void extractRequested();
+
 private slots:
     void onPollTimer();
     void onScrub(int64_t tick);
@@ -258,28 +266,30 @@ private:
     QLabel*           m_durationLabel{nullptr};
     QLabel*           m_zoomLabel{nullptr};
     QComboBox*        m_fitModeCombo{nullptr};
-    QPushButton*      m_btnSafeArea{nullptr};
     QPushButton*      m_btnGrid{nullptr};
     QComboBox*        m_playbackResCombo{nullptr};
-    QPushButton*      m_btnExportFrame{nullptr};
-    QPushButton*      m_btnSettings{nullptr};
-    TransportButton*  m_btnScreenshot{nullptr};
+    TransportButton*  m_btnSettings{nullptr};       ///< Wrench: settings menu
+    QAction*          m_actLoop{nullptr};           ///< Settings menu: Loop
+    QAction*          m_actSafeMargins{nullptr};    ///< Settings menu: Safe Margins
     QLabel*           m_resOverlayLabel{nullptr};
     QLabel*           m_droppedFrameLabel{nullptr};  ///< Dropped frame counter display
 
-    // New UI widgets
-    QPushButton*      m_btnLoop{nullptr};           ///< Loop playback toggle
     QLineEdit*        m_timecodeEdit{nullptr};       ///< Editable timecode field (hidden until click)
     QLabel*           m_shuttleSpeedLabel{nullptr};  ///< Shuttle speed display (e.g. "2x")
     QLabel*           m_dropIndicator{nullptr};     ///< Frame drop indicator (green/yellow/red dot)
 
-    // Transport buttons (Premiere Pro style)
-    TransportButton*  m_btnGoStart{nullptr};
+    // Button row (Premiere's Program Monitor defaults)
+    TransportButton*  m_btnAddMarker{nullptr};
+    TransportButton*  m_btnMarkIn{nullptr};
+    TransportButton*  m_btnMarkOut{nullptr};
+    TransportButton*  m_btnGoToIn{nullptr};
     TransportButton*  m_btnStepBack{nullptr};
     TransportButton*  m_btnPlayPause{nullptr};
-    TransportButton*  m_btnStop{nullptr};
     TransportButton*  m_btnStepForward{nullptr};
-    TransportButton*  m_btnGoEnd{nullptr};
+    TransportButton*  m_btnGoToOut{nullptr};
+    TransportButton*  m_btnLift{nullptr};
+    TransportButton*  m_btnExtract{nullptr};
+    TransportButton*  m_btnExportFrame{nullptr};
 
     QTimer*           m_pollTimer{nullptr};
 

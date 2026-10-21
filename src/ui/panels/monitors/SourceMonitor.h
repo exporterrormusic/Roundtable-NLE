@@ -10,22 +10,21 @@
  *   - Drag from source to timeline (insert/overwrite edit)
  *   - Internal PlaybackController manages independent transport (play/pause/scrub)
  *
- * Layout:
- *   ┌─────────────────────────────────┐
- *   │  Clip name label               │
- *   ├─────────────────────────────────┤
- *   │                                 │
- *   │         Viewport                │
- *   │       (frame display)           │
- *   │                                 │
- *   ├─────────────────────────────────┤
- *   │  [MiniTimeline scrub bar]       │
- *   ├─────────────────────────────────┤
- *   │  ◀I  ▶O  ⏮ ◀ ▶⏸ ▶ ⏭  TC      │
- *   └─────────────────────────────────┘
+ * Layout (Premiere's Source Monitor, see MonitorUiKit.h). The clip name is
+ * in the panel tab ("Source: clip.mp4", via panelTitle()/clipChanged).
+ *   ┌──────────────────────────────────────────────────────┐
+ *   │                    Viewport                          │
+ *   │                 (frame display)                      │
+ *   ├──────────────────────────────────────────────────────┤
+ *   │ 00:00:02:21  Fit ▼     🎞 〰      Full ▼  🔧  00:00:01:22 │  info row
+ *   │ [MiniTimeline scrub bar + clip markers]              │
+ *   │   ⬟ { }   {← ◀| ▶ |▶ →}   📷 🔊                      │  button row
+ *   └──────────────────────────────────────────────────────┘
  */
 
 #pragma once
+
+#include "timeline/Marker.h"
 
 #include <QComboBox>
 #include <QLabel>
@@ -36,11 +35,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+class QAction;
 class QStackedLayout;
 
 namespace rt {
@@ -48,6 +49,7 @@ namespace rt {
 class AudioEngine;
 class AudioPlaybackService;
 class AVSyncClock;
+class ShortcutManager;
 class TransportButton;
 class Viewport;
 class MiniTimeline;
@@ -191,6 +193,34 @@ public:
 
     void setClipName(const QString& name);
 
+    /// Panel tab title, as Premiere: "Source: <clip>", or "Source Monitor"
+    /// when nothing is loaded.
+    [[nodiscard]] QString panelTitle() const;
+
+    // ── Clip markers (Premiere's Source Monitor markers) ────────────────
+
+    /// The loaded media file; empty for a sequence, a Spine preview, or
+    /// nothing loaded. Clip markers belong to this file.
+    [[nodiscard]] const std::filesystem::path& mediaPath() const noexcept { return m_mediaPath; }
+
+    /// Markers drawn on the ruler (source ticks). The workspace supplies the
+    /// project's markers for mediaPath() whenever clipChanged() fires.
+    void setClipMarkers(const std::vector<Marker>& markers);
+    [[nodiscard]] const std::vector<Marker>& clipMarkers() const noexcept { return m_clipMarkers; }
+
+    /// Add Marker at the playhead (the button, or M while this monitor is
+    /// the transport target). Emits addMarkerRequested for a media clip.
+    void requestAddMarker();
+
+    // ── Mute Source Monitor ─────────────────────────────────────────────
+
+    /// Silences source playback and scrubbing (the button-row speaker).
+    void setMuted(bool muted);
+    [[nodiscard]] bool isMuted() const noexcept { return m_muted; }
+
+    /// Button-row tooltips show the user's current keys from `shortcuts`.
+    void setShortcutManager(const ShortcutManager* shortcuts);
+
     QSize sizeHint() const override;
 
 signals:
@@ -225,6 +255,17 @@ signals:
     /// Emitted when the user scrubs the source monitor's mini-timeline,
     /// so the timeline can halt its own playback for mutual exclusion.
     void scrubbed();
+
+    /// The loaded clip changed (loaded or cleared): panelTitle() and
+    /// mediaPath() are current, and the clip's markers need supplying.
+    void clipChanged();
+
+    /// Add a marker at `tick` (source ticks) to mediaPath()'s markers.
+    void addMarkerRequested(int64_t tick);
+
+    /// Ruler context menu: clear mediaPath()'s marker at `tick`, or all of them.
+    void clearMarkerRequested(int64_t tick);
+    void clearAllMarkersRequested();
 
 public:
     /// Set the MediaPool reference for drag-drop loading.
@@ -279,8 +320,17 @@ private:
     /// still image; no video button for a .wav).
     void refreshDragButtons(bool hasVideo, bool hasAudio);
 
+    /// Ruler right-click: Clear Current Marker / Clear All Markers.
+    void showRulerContextMenu(const QPoint& globalPos);
+
+    /// AudioEngine track id of the source clip's audio (one source only).
+    static constexpr uint64_t kSourceAudioTrackId = 9999;
+
     // Widgets
-    QLabel*           m_clipLabel{nullptr};
+    QString           m_clipName;               ///< Shown in the panel tab
+    std::filesystem::path m_mediaPath;          ///< See mediaPath()
+    std::vector<Marker> m_clipMarkers;
+    bool              m_muted{false};
     Viewport*         m_viewport{nullptr};
     WaveformDisplayWidget* m_waveformWidget{nullptr};
     QStackedLayout*   m_viewStack{nullptr};
@@ -290,18 +340,22 @@ private:
     QLabel*           m_durationLabel{nullptr};
     QLabel*           m_zoomLabel{nullptr};
     QLabel*           m_shuttleSpeedLabel{nullptr};
-    TransportButton*  m_btnGoStart{nullptr};
+    // Button row (Premiere's Source Monitor defaults)
+    TransportButton*  m_btnAddMarker{nullptr};
+    TransportButton*  m_btnMarkIn{nullptr};
+    TransportButton*  m_btnMarkOut{nullptr};
+    TransportButton*  m_btnGoToIn{nullptr};
     TransportButton*  m_btnStepBack{nullptr};
     TransportButton*  m_btnPlayPause{nullptr};
-    TransportButton*  m_btnStop{nullptr};
     TransportButton*  m_btnStepForward{nullptr};
-    TransportButton*  m_btnGoEnd{nullptr};
-    TransportButton*  m_btnScreenshot{nullptr};
-    QPushButton*      m_btnLoop{nullptr};
-    QPushButton*      m_btnExportFrame{nullptr};
+    TransportButton*  m_btnGoToOut{nullptr};
+    TransportButton*  m_btnExportFrame{nullptr};
+    TransportButton*  m_btnMute{nullptr};
+    TransportButton*  m_btnSettings{nullptr};   ///< Wrench: settings menu
+    QAction*          m_actLoop{nullptr};       ///< Settings menu: Loop
+    QAction*          m_actSafeMargins{nullptr}; ///< Settings menu: Safe Margins
     QComboBox*        m_playbackResCombo{nullptr};
     QComboBox*        m_fitModeCombo{nullptr};
-    QPushButton*      m_btnSafeArea{nullptr};
     QPushButton*      m_btnDragVideo{nullptr};
     QPushButton*      m_btnDragAudio{nullptr};
     QPoint            m_dragBtnStartPos;

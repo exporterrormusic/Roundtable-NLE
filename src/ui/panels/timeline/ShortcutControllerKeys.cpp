@@ -542,13 +542,13 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
     }
 
     // ── M = Add marker at playhead ───────────────────────────────────────
+    // Routes to the Source Monitor (a clip marker) when it is the transport
+    // target, like I and O, as Premiere does.
     if (noMod && key == Qt::Key_M) {
-        if (m_ws->timeline() && m_ws->playbackController() && m_ws->commandStack()) {
-            int64_t tick = m_ws->playbackController()->currentTick();
-            executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), 
-                std::make_unique<AddMarkerCommand>(m_ws->timeline(), tick, "Marker"));
-            if (m_ws->timelinePanel()) m_ws->timelinePanel()->update();
-        }
+        if (m_ws->sourceMonitor() && m_ws->sourceMonitor()->hasClip() && m_ws->sourceTransportActive())
+            m_ws->sourceMonitor()->requestAddMarker();
+        else
+            m_ws->addSequenceMarkerAtPlayhead();
         event->accept(); return;
     }
 
@@ -583,33 +583,13 @@ void ShortcutController::handleKeyPress(QKeyEvent* event)
 
     // ── ; = Lift (remove I/O range, leave gap) ───────────────────────
     if (noMod && key == Qt::Key_Semicolon) {
-        if (m_ws->timeline() && m_ws->commandStack()) {
-            int64_t inPt = m_ws->timeline()->inPoint();
-            int64_t outPt = m_ws->timeline()->outPoint();
-            if (inPt >= 0 && outPt >= 0 && outPt > inPt) {
-                auto cmd = EditOperations::liftInOut(*m_ws->timeline(), inPt, outPt);
-                if (cmd) {
-                    executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
-                    m_ws->applyEditImpact();
-                }
-            }
-        }
+        m_ws->liftInOutRange();
         event->accept(); return;
     }
 
     // ── ' = Extract (remove I/O range, close gaps) ───────────────────
     if (noMod && key == Qt::Key_Apostrophe) {
-        if (m_ws->timeline() && m_ws->commandStack()) {
-            int64_t inPt = m_ws->timeline()->inPoint();
-            int64_t outPt = m_ws->timeline()->outPoint();
-            if (inPt >= 0 && outPt >= 0 && outPt > inPt) {
-                auto cmd = EditOperations::extractInOut(*m_ws->timeline(), inPt, outPt);
-                if (cmd) {
-                    executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
-                    m_ws->applyEditImpact();
-                }
-            }
-        }
+        m_ws->extractInOutRange();
         event->accept(); return;
     }
 

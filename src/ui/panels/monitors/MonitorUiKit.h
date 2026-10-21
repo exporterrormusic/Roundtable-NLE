@@ -1,46 +1,81 @@
 /*
  * MonitorUiKit — shared widget builders for ProgramMonitor / SourceMonitor.
  *
- * The two monitors share Premiere-style chrome: the control bar, timecode
- * label/edit pair, fit-mode and playback-resolution combos, safe-area
- * button, export-frame button, zoom/duration labels, and the transport
- * bar.  These used to be duplicated verbatim in ProgramMonitorUI.cpp and
- * SourceMonitorUI.cpp (~160 duplicated blocks).  The kit builds the
- * widgets; each monitor keeps its own signal connections and behavior.
+ * Both monitors follow Premiere's layout. Under the picture, top to bottom:
+ *
+ *   info row    timecode · zoom (Fit) · [middle] · resolution (Full) · wrench · duration
+ *   mini ruler  MiniTimeline
+ *   button row  centred groups of TransportButtons
+ *
+ *   Program: Add Marker, Mark In, Mark Out | Go to In, Step Back, Play,
+ *            Step Forward, Go to Out | Lift, Extract | Export Frame
+ *   Source:  Add Marker, Mark In, Mark Out | Go to In, Step Back, Play,
+ *            Step Forward, Go to Out | Export Frame, Mute
+ *
+ * The wrench opens the monitor's settings menu (Loop, Safe Margins). The
+ * kit builds the widgets; each monitor keeps its own signal connections and
+ * behavior.
  */
 
 #pragma once
 
-#include <QColor>
-#include <QIcon>
 #include <QString>
 
+class QAction;
 class QComboBox;
-class QFrame;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
-class QPushButton;
+class QMenu;
 class QWidget;
 
 namespace rt {
 
+class ShortcutManager;
 class TransportButton;
 
 namespace monitorui {
 
 // ── Shared style sheets (already UiScale-scaled) ────────────────────────
 [[nodiscard]] QString comboStyle();
-[[nodiscard]] QString checkedButtonStyle();
-[[nodiscard]] QString exportButtonStyle();
-[[nodiscard]] QString loopButtonStyle();
 
 // ── Individual controls ─────────────────────────────────────────────────
 /// Thin background-colored spacer between viewport and controls.
 [[nodiscard]] QWidget* makeViewSpacer(QWidget* parent, int heightPx);
 
-/// "#ControlBar" container + its HBox layout (Premiere-style info bar).
-[[nodiscard]] QWidget* makeControlBar(QWidget* parent, QHBoxLayout** outLayout);
+/// Info row container (timecode, combos, wrench, duration) + its layout.
+[[nodiscard]] QWidget* makeInfoRow(QWidget* parent, QHBoxLayout** outLayout);
+
+/// Button row container + its layout, with the left stretch already added:
+/// the caller adds its groups (addButtonGroupGap() between them), then
+/// finishButtonRow().
+[[nodiscard]] QWidget* makeButtonRow(QWidget* parent, QHBoxLayout** outLayout);
+void addButtonGroupGap(QHBoxLayout* layout);
+void finishButtonRow(QHBoxLayout* layout);
+
+/// One button-row button. `name` is Premiere's button name; the tooltip is
+/// "name (key)", the key coming from `actionId`'s current binding (see
+/// applyShortcutTooltips) or `fixedKey` for keys that are not rebindable.
+[[nodiscard]] TransportButton* makeRowButton(QWidget* parent, int icon,
+                                             const QString& name,
+                                             const QString& actionId = {},
+                                             const QString& fixedKey = {});
+
+/// Re-reads every row button's key from `shortcuts` (and again whenever a
+/// binding changes) so the tooltips show the user's own keys.
+void applyShortcutTooltips(QWidget* root, const ShortcutManager* shortcuts);
+
+/// The wrench and its settings menu (Loop, Safe Margins; both checkable).
+struct SettingsMenuKit {
+    TransportButton* button{nullptr};
+    QMenu*           menu{nullptr};
+    QAction*         loop{nullptr};
+    QAction*         safeMargins{nullptr};
+};
+[[nodiscard]] SettingsMenuKit makeSettingsMenu(QWidget* parent);
+
+/// Shuttle speed readout ("2x"), hidden until shuttling.
+[[nodiscard]] QLabel* makeShuttleSpeedLabel(QWidget* parent);
 
 /// Accent-blue monospace timecode display (click-to-edit pattern: the caller
 /// installs its event filter and pairs it with makeTimecodeEdit()).
@@ -56,41 +91,31 @@ namespace monitorui {
 /// Playback resolution combo: Full, 1/2, 1/4, 1/8 (+ Auto when withAuto).
 [[nodiscard]] QComboBox* makePlaybackResCombo(QWidget* parent, bool withAuto);
 
-/// Premiere-style nested-rectangles safe-margins icon.
-[[nodiscard]] QIcon makeSafeAreaIcon(QColor fg);
-
-/// Checkable safe-area toggle button (caller connects toggled()).
-[[nodiscard]] QPushButton* makeSafeAreaButton(QWidget* parent);
-
-/// Line-icon export-frame button (caller connects clicked()).
-[[nodiscard]] QPushButton* makeExportFrameButton(QWidget* parent);
-
 /// Hidden zoom-percentage label (updated from viewZoomChanged).
 [[nodiscard]] QLabel* makeZoomLabel(QWidget* parent);
 
 /// Right-aligned duration timecode label.
 [[nodiscard]] QLabel* makeDurationLabel(QWidget* parent);
 
-/// Slim vertical divider used inside the transport bar.
-[[nodiscard]] QFrame* makeVDivider(QWidget* parent);
-
-// ── Transport bar ────────────────────────────────────────────────────────
-/// Shared playback controls appended to an existing monitor control row.
-/// Export Frame remains a single distinct action in that same row.
-struct TransportBarKit {
-    QWidget*         bar{nullptr};
-    QHBoxLayout*     layout{nullptr};
-    TransportButton* goStart{nullptr};
+// ── The playback group shared by both button rows ───────────────────────
+/// Go to In, Step Back 1 Frame, Play-Stop Toggle, Step Forward 1 Frame,
+/// Go to Out, appended to `layout`.
+struct PlaybackGroupKit {
+    TransportButton* goToIn{nullptr};
     TransportButton* stepBack{nullptr};
     TransportButton* playPause{nullptr};
-    TransportButton* stop{nullptr};
     TransportButton* stepForward{nullptr};
-    TransportButton* goEnd{nullptr};
-    QPushButton*     loop{nullptr};
-    QLabel*          shuttleSpeed{nullptr};
+    TransportButton* goToOut{nullptr};
 };
-[[nodiscard]] TransportBarKit makeTransportBar(QWidget* parent,
-                                               QHBoxLayout* layout);
+[[nodiscard]] PlaybackGroupKit addPlaybackGroup(QWidget* parent, QHBoxLayout* layout);
+
+/// Add Marker, Mark In, Mark Out, appended to `layout`.
+struct MarkGroupKit {
+    TransportButton* addMarker{nullptr};
+    TransportButton* markIn{nullptr};
+    TransportButton* markOut{nullptr};
+};
+[[nodiscard]] MarkGroupKit addMarkGroup(QWidget* parent, QHBoxLayout* layout);
 
 } // namespace monitorui
 } // namespace rt

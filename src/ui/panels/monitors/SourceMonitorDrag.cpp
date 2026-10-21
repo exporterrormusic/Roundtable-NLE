@@ -38,6 +38,7 @@
 #include <QDropEvent>
 #include <QDrag>
 #include <QMimeData>
+#include <QContextMenuEvent>
 #include <QMouseEvent>
 #include <QComboBox>
 #include <QSettings>
@@ -58,6 +59,12 @@ bool SourceMonitor::eventFilter(QObject* watched, QEvent* event)
 {
     // Grab keyboard focus when user clicks anywhere in the Source Monitor
     // (viewport, mini-timeline, waveform) so JKL/Space route here.
+    // Right-click on the ruler: Premiere's marker commands.
+    if (watched == m_miniTimeline && event->type() == QEvent::ContextMenu) {
+        showRulerContextMenu(static_cast<QContextMenuEvent*>(event)->globalPos());
+        return true;
+    }
+
     if (event->type() == QEvent::MouseButtonPress ||
         event->type() == QEvent::MouseButtonDblClick) {
         // Timecode label click → show editable timecode entry
@@ -177,8 +184,7 @@ void SourceMonitor::startSourceDrag(SourceDragMode mode)
                           QByteArray(modeStr));
 
     // Create a clean drag pixmap (Premiere-style pill)
-    QString label = m_clipLabel ? m_clipLabel->text()
-                                : QStringLiteral("Source");
+    QString label = m_clipName.isEmpty() ? QStringLiteral("Source") : m_clipName;
     if (mode == SourceDragMode::VideoOnly)      label += QStringLiteral(" (V)");
     else if (mode == SourceDragMode::AudioOnly) label += QStringLiteral(" (A)");
     QFontMetrics fm(font());

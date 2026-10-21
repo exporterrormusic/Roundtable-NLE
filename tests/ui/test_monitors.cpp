@@ -24,6 +24,10 @@
 #include <QScrollBar>
 #include <QShortcut>
 #include <QSignalSpy>
+#include <QAction>
+#include <QComboBox>
+#include <QMenu>
+#include <QPushButton>
 #include <QThread>
 #include <QTest>
 #include <QTextLayout>
@@ -47,6 +51,8 @@
 #include "viewport/TransformOverlayWidget.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/monitors/ProgramMonitor.h"
+#include "ShortcutManager.h"
+#include "widgets/TransportButton.h"
 #include "panels/monitors/ScopesPanel.h"
 #include "../support/StallGuard.h"
 #include "playback/PlaybackController.h"
@@ -2696,6 +2702,179 @@ TEST_F(SourceMonitorTest, FullSequencePreviewRequestsFullCanvasAndTier)
     EXPECT_TRUE(capturedStill);
 }
 
+// ── Premiere's monitor layout (see MonitorUiKit.h) ──────────────────────────
+
+namespace {
+
+using B = TransportButton;
+
+/// The button-row icons of a monitor, left to right.
+std::vector<int> buttonRowIcons(QWidget* monitor)
+{
+    std::vector<int> icons;
+    auto* row = monitor->findChild<QWidget*>(QStringLiteral("MonitorButtonRow"));
+    if (!row || !row->layout()) return icons;
+    for (int i = 0; i < row->layout()->count(); ++i)
+        if (auto* b = dynamic_cast<TransportButton*>(row->layout()->itemAt(i)->widget()))
+            icons.push_back(b->transportIcon());
+    return icons;
+}
+
+TransportButton* monitorButton(QWidget* monitor, TransportButton::Icon icon)
+{
+    for (auto* w : monitor->findChildren<QPushButton*>())
+        if (auto* b = dynamic_cast<TransportButton*>(w); b && b->transportIcon() == icon)
+            return b;
+    return nullptr;
+}
+
+/// Under the picture: info row, then the ruler, then the button row.
+void expectPremiereRowOrder(QWidget* monitor)
+{
+    auto* layout = monitor->layout();
+    ASSERT_NE(layout, nullptr);
+    const int info = layout->indexOf(monitor->findChild<QWidget*>(QStringLiteral("MonitorInfoRow")));
+    const int ruler = layout->indexOf(monitor->findChild<MiniTimeline*>());
+    const int buttons = layout->indexOf(monitor->findChild<QWidget*>(QStringLiteral("MonitorButtonRow")));
+    EXPECT_GE(info, 0);
+    EXPECT_EQ(ruler, info + 1);
+    EXPECT_EQ(buttons, ruler + 1);
+}
+
+/// The info row's widgets, left to right.
+std::vector<QWidget*> infoRowWidgets(QWidget* monitor)
+{
+    std::vector<QWidget*> widgets;
+    auto* row = monitor->findChild<QWidget*>(QStringLiteral("MonitorInfoRow"));
+    if (!row || !row->layout()) return widgets;
+    for (int i = 0; i < row->layout()->count(); ++i)
+        if (QWidget* w = row->layout()->itemAt(i)->widget()) widgets.push_back(w);
+    return widgets;
+}
+
+int indexIn(const std::vector<QWidget*>& widgets, const QWidget* w)
+{
+    const auto it = std::find(widgets.begin(), widgets.end(), w);
+    return it == widgets.end() ? -1 : static_cast<int>(it - widgets.begin());
+}
+
+QComboBox* comboStartingWith(QWidget* monitor, const QString& firstItem)
+{
+    for (auto* c : monitor->findChildren<QComboBox*>())
+        if (c->count() > 0 && c->itemText(0) == firstItem) return c;
+    return nullptr;
+}
+
+/// Info row: timecode, zoom (Fit) ... resolution (Full), wrench, duration.
+void expectPremiereInfoRow(QWidget* monitor)
+{
+    const auto widgets = infoRowWidgets(monitor);
+    const int fit = indexIn(widgets, comboStartingWith(monitor, QStringLiteral("Fit")));
+    const int full = indexIn(widgets, comboStartingWith(monitor, QStringLiteral("Full")));
+    const int wrench = indexIn(widgets, monitorButton(monitor, B::Settings));
+    ASSERT_GE(fit, 1);   // the playhead timecode comes first
+    EXPECT_GT(full, fit);
+    EXPECT_EQ(wrench, full + 1);
+    EXPECT_EQ(static_cast<int>(widgets.size()) - 1, wrench + 1);   // duration last
+}
+
+std::shared_ptr<CachedFrame> noFrame(int64_t, uint32_t, uint32_t, bool, ResolutionTier, bool)
+{
+    return nullptr;
+}
+
+} // namespace
+
+TEST_F(SourceMonitorTest, ControlsAreLaidOutLikePremiere)
+{
+    expectPremiereRowOrder(sm.get());
+    expectPremiereInfoRow(sm.get());
+    const std::vector<int> expected = {B::AddMarker, B::MarkIn, B::MarkOut,
+                                       B::GoToIn, B::StepBack, B::Play, B::StepForward, B::GoToOut,
+                                       B::Screenshot, B::Speaker};
+    EXPECT_EQ(buttonRowIcons(sm.get()), expected);
+}
+
+TEST_F(SourceMonitorTest, TabTitleNamesTheLoadedClip)
+{
+    QSignalSpy changed(sm.get(), &SourceMonitor::clipChanged);
+    EXPECT_EQ(sm->panelTitle(), QStringLiteral("Source Monitor"));
+
+    sm->loadSequence(0, QStringLiteral("Seq A"), 48000, 30.0, 1920, 1080, noFrame);
+    EXPECT_EQ(sm->panelTitle(), QStringLiteral("Source: Seq A"));
+    EXPECT_TRUE(sm->mediaPath().empty());   // a sequence holds no clip markers
+
+    sm->clearClip();
+    EXPECT_EQ(sm->panelTitle(), QStringLiteral("Source Monitor"));
+    EXPECT_GE(changed.count(), 2);
+}
+
+TEST_F(SourceMonitorTest, AddMarkerNeedsAMediaFile)
+{
+    QSignalSpy add(sm.get(), &SourceMonitor::addMarkerRequested);
+    sm->requestAddMarker();   // nothing loaded
+    sm->loadSequence(0, QStringLiteral("Seq A"), 48000, 30.0, 1920, 1080, noFrame);
+    sm->requestAddMarker();   // a sequence, not a file
+    EXPECT_EQ(add.count(), 0);
+}
+
+TEST_F(SourceMonitorTest, PlayButtonShowsStopWhilePlaying)
+{
+    sm->loadSequence(0, QStringLiteral("Seq A"), 480000, 30.0, 1920, 1080, noFrame);
+    auto* play = monitorButton(sm.get(), B::Play);
+    ASSERT_NE(play, nullptr);
+    sm->controller()->play();
+    EXPECT_EQ(play->transportIcon(), B::Stop);
+    sm->controller()->pause();
+    EXPECT_EQ(play->transportIcon(), B::Play);
+}
+
+TEST_F(SourceMonitorTest, MuteButtonMutesTheSourceMonitor)
+{
+    auto* mute = monitorButton(sm.get(), B::Speaker);
+    ASSERT_NE(mute, nullptr);
+    ASSERT_TRUE(mute->isCheckable());
+    mute->click();
+    EXPECT_TRUE(sm->isMuted());
+    sm->setMuted(false);
+    EXPECT_FALSE(mute->isChecked());
+}
+
+TEST_F(SourceMonitorTest, WrenchMenuHoldsLoopAndSafeMargins)
+{
+    auto* wrench = monitorButton(sm.get(), B::Settings);
+    ASSERT_NE(wrench, nullptr);
+    ASSERT_NE(wrench->menu(), nullptr);
+    QStringList names;
+    for (QAction* a : wrench->menu()->actions()) names << a->text();
+    EXPECT_EQ(names, (QStringList{QStringLiteral("Loop"), QStringLiteral("Safe Margins")}));
+
+    wrench->menu()->actions().at(0)->trigger();
+    EXPECT_TRUE(sm->controller()->isLoopEnabled());
+}
+
+TEST_F(SourceMonitorTest, ButtonTooltipsShowTheUsersCurrentKeys)
+{
+    ShortcutManager shortcuts;
+    shortcuts.registerNLEDefaults();
+    sm->setShortcutManager(&shortcuts);
+
+    // I is a fixed key; Go to In is rebindable and follows the binding.
+    auto* markIn = monitorButton(sm.get(), B::MarkIn);
+    auto* goToIn = monitorButton(sm.get(), B::GoToIn);
+    ASSERT_NE(markIn, nullptr);
+    ASSERT_NE(goToIn, nullptr);
+    EXPECT_EQ(markIn->toolTip(), QStringLiteral("Mark In (I)"));
+    const QString key = shortcuts.action(QString::fromLatin1(ShortcutManager::kGoIn))
+                            ->currentKey.toString(QKeySequence::NativeText);
+    EXPECT_EQ(goToIn->toolTip(), QStringLiteral("Go to In (%1)").arg(key));
+
+    const QKeySequence rebound(Qt::CTRL | Qt::ALT | Qt::Key_F12);
+    shortcuts.setShortcut(QString::fromLatin1(ShortcutManager::kGoIn), rebound);
+    EXPECT_EQ(goToIn->toolTip(), QStringLiteral("Go to In (%1)")
+                                     .arg(rebound.toString(QKeySequence::NativeText)));
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  ProgramMonitor tests
 // ═════════════════════════════════════════════════════════════════════════════
@@ -2723,6 +2902,37 @@ protected:
 
     std::unique_ptr<ProgramMonitor> pm;
 };
+
+TEST_F(ProgramMonitorTest, ControlsAreLaidOutLikePremiere)
+{
+    expectPremiereRowOrder(pm.get());
+    expectPremiereInfoRow(pm.get());
+    const std::vector<int> expected = {B::AddMarker, B::MarkIn, B::MarkOut,
+                                       B::GoToIn, B::StepBack, B::Play, B::StepForward, B::GoToOut,
+                                       B::Lift, B::Extract, B::Screenshot};
+    EXPECT_EQ(buttonRowIcons(pm.get()), expected);
+}
+
+TEST_F(ProgramMonitorTest, EditButtonsAskTheWorkspace)
+{
+    QSignalSpy marker(pm.get(), &ProgramMonitor::addMarkerRequested);
+    QSignalSpy in(pm.get(), &ProgramMonitor::inPointRequested);
+    QSignalSpy out(pm.get(), &ProgramMonitor::outPointRequested);
+    QSignalSpy lift(pm.get(), &ProgramMonitor::liftRequested);
+    QSignalSpy extract(pm.get(), &ProgramMonitor::extractRequested);
+    QSignalSpy frame(pm.get(), &ProgramMonitor::exportFrameRequested);
+    for (auto icon : {B::AddMarker, B::MarkIn, B::MarkOut, B::Lift, B::Extract, B::Screenshot}) {
+        auto* button = monitorButton(pm.get(), icon);
+        ASSERT_NE(button, nullptr) << icon;
+        button->click();
+    }
+    EXPECT_EQ(marker.count(), 1);
+    EXPECT_EQ(in.count(), 1);
+    EXPECT_EQ(out.count(), 1);
+    EXPECT_EQ(lift.count(), 1);
+    EXPECT_EQ(extract.count(), 1);
+    EXPECT_EQ(frame.count(), 1);
+}
 
 TEST_F(ProgramMonitorTest, DefaultState)
 {

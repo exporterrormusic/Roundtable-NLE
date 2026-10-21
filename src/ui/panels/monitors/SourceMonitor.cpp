@@ -41,8 +41,10 @@
 #include <QDropEvent>
 #include <QDrag>
 #include <QMimeData>
+#include <QAction>
 #include <QMouseEvent>
 #include <QComboBox>
+#include <QMenu>
 #include <QSettings>
 #include <QPainter>
 #include <QPointer>
@@ -125,7 +127,8 @@ void SourceMonitor::loadClip(uint64_t mediaHandle, MediaPool* pool)
         m_miniTimeline->setDuration(m_clipDuration);
         m_miniTimeline->setFrameRate(m_fps);
 
-        // Set clip name from file path
+        // Set clip name from file path; clip markers belong to that file.
+        m_mediaPath = path;
         setClipName(QString::fromStdString(pathToUtf8(path.filename())));
     }
 
@@ -205,6 +208,7 @@ void SourceMonitor::loadSequence(size_t sequenceIndex, const QString& name,
     m_controller->setStandaloneDuration(m_clipDuration);
     m_miniTimeline->setDuration(m_clipDuration);
     m_miniTimeline->setFrameRate(m_fps);
+    m_mediaPath.clear();
     setClipName(name);
 
     // Reset the sequence audio service so the first play rebuilds sources
@@ -271,6 +275,7 @@ void SourceMonitor::loadSpineClip(SpineClip* spineClip, CompositeService* compos
     m_controller->setStandaloneDuration(m_clipDuration);
     m_miniTimeline->setDuration(m_clipDuration);
     m_miniTimeline->setFrameRate(m_fps);
+    m_mediaPath.clear();
     setClipName(QString::fromStdString(spineClip->label()));
     
     m_controller->seekTo(0);
@@ -341,7 +346,8 @@ void SourceMonitor::clearClip()
     m_viewStack->setCurrentIndex(0);
     m_miniTimeline->setDuration(0);
     m_miniTimeline->clearInOutPoints();
-    m_clipLabel->setText(tr("No clip loaded"));
+    m_mediaPath.clear();
+    setClipName(QString());
     m_timecodeLabel->setText(QStringLiteral("00:00:00:00"));
 
     // Nothing loaded — neither stream is draggable.
@@ -476,7 +482,73 @@ void SourceMonitor::updateWaveformSelection()
 
 void SourceMonitor::setClipName(const QString& name)
 {
-    m_clipLabel->setText(name);
+    m_clipName = name;
+    emit clipChanged();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Clip markers
+// ═════════════════════════════════════════════════════════════════════════════
+
+void SourceMonitor::setClipMarkers(const std::vector<Marker>& markers)
+{
+    m_clipMarkers = markers;
+    std::vector<MarkerCue> cues;
+    cues.reserve(markers.size());
+    for (const Marker& m : markers)
+        cues.push_back({m.time, m.color});
+    m_miniTimeline->setMarkers(cues);
+}
+
+void SourceMonitor::requestAddMarker()
+{
+    if (!m_hasClip || m_mediaPath.empty()) return;
+    emit addMarkerRequested(currentTick());
+}
+
+void SourceMonitor::showRulerContextMenu(const QPoint& globalPos)
+{
+    if (!m_hasClip || m_mediaPath.empty()) return;
+    const int64_t tick = currentTick();
+    const bool markerAtPlayhead = std::any_of(
+        m_clipMarkers.begin(), m_clipMarkers.end(),
+        [tick](const Marker& m) { return m.time == tick; });
+
+    QMenu menu(this);
+    QAction* add = menu.addAction(tr("Add Marker"));
+    menu.addSeparator();
+    QAction* clearCurrent = menu.addAction(tr("Clear Current Marker"));
+    clearCurrent->setEnabled(markerAtPlayhead);
+    QAction* clearAll = menu.addAction(tr("Clear All Markers"));
+    clearAll->setEnabled(!m_clipMarkers.empty());
+
+    QAction* chosen = menu.exec(globalPos);
+    if (chosen == add)               requestAddMarker();
+    else if (chosen == clearCurrent) emit clearMarkerRequested(tick);
+    else if (chosen == clearAll)     emit clearAllMarkersRequested();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Mute Source Monitor
+// ═════════════════════════════════════════════════════════════════════════════
+
+void SourceMonitor::setMuted(bool muted)
+{
+    if (m_muted == muted) return;
+    m_muted = muted;
+    if (m_btnMute && m_btnMute->isChecked() != muted)
+        m_btnMute->setChecked(muted);
+
+    // Apply to audio that is already playing.
+    if (!m_audioEngine || !m_sourceAudioActive) return;
+    if (!m_isSequence) {
+        m_audioEngine->updateSourceLevels(kSourceAudioTrackId, 1.0f, 0.0f, muted);
+    } else if (muted) {
+        m_audioEngine->clearTrackSources();
+    } else if (m_seqAudioPlayback) {
+        m_seqAudioPlayback->invalidateSources();
+        m_seqAudioPlayback->loadSources(/*allowBlockingMisses=*/false);
+    }
 }
 
 QSize SourceMonitor::sizeHint() const
@@ -551,7 +623,7 @@ void SourceMonitor::onPollTimer()
     // For sequence playback, periodically refresh the audio decode window
     // so audio keeps playing past the initial 16-second look-ahead — same
     // mechanism the main timeline uses via scheduleAudioPlaybackWindowRefresh.
-    if (m_isSequence && m_sourceAudioActive && m_seqAudioPlayback &&
+    if (m_isSequence && m_sourceAudioActive && !m_muted && m_seqAudioPlayback &&
         m_seqAudioPlayback->needsPlaybackWindowRefresh() &&
         !m_seqAudioWindowRefreshScheduled) {
         m_seqAudioWindowRefreshScheduled = true;

@@ -245,6 +245,7 @@ struct BinStateRecord
 {
     std::vector<Project::BinItem>   items;
     std::vector<Project::BinFolder> folders;
+    std::vector<Project::SourceMarkers> sourceMarkers;   ///< clip markers
 };
 
 } // namespace rt
@@ -253,6 +254,7 @@ namespace rt::record {
 
 template <> struct SchemaOf<Project::BinItem> { static const Schema<Project::BinItem>& get(); };
 template <> struct SchemaOf<Project::BinFolder> { static const Schema<Project::BinFolder>& get(); };
+template <> struct SchemaOf<Project::SourceMarkers> { static const Schema<Project::SourceMarkers>& get(); };
 template <> struct SchemaOf<AssetEntry> { static const Schema<AssetEntry>& get(); };
 
 #define RT_MEMBER(Type, id, name) \
@@ -277,6 +279,16 @@ const Schema<Project::BinFolder>& SchemaOf<Project::BinFolder>::get()
         RT_MEMBER(F, 1, name),
         RT_MEMBER(F, 2, expanded),
         RT_MEMBER(F, 3, childKeys),
+    });
+    return s;
+}
+
+const Schema<Project::SourceMarkers>& SchemaOf<Project::SourceMarkers>::get()
+{
+    using M = Project::SourceMarkers;
+    static const Schema<M> s("SourceMarkers", {
+        RT_MEMBER(M, 1, path),
+        RT_MEMBER(M, 2, markers),
     });
     return s;
 }
@@ -462,6 +474,7 @@ const Schema<BinStateRecord>& binStateSchema()
     static const Schema<BinStateRecord> s("BinState", {
         member<BinStateRecord>(1, "items", [](BinStateRecord& b) -> auto& { return b.items; }),
         member<BinStateRecord>(2, "folders", [](BinStateRecord& b) -> auto& { return b.folders; }),
+        member<BinStateRecord>(3, "sourceMarkers", [](BinStateRecord& b) -> auto& { return b.sourceMarkers; }),
     });
     return s;
 }
@@ -544,6 +557,7 @@ std::vector<uint8_t> ProjectSerializer::serialize(const Project& project,
                 bin.items.push_back({synthId++, f, std::string{}, 0xFF888888u});
         }
         bin.folders = project.binFolders();
+        bin.sourceMarkers = project.sourceMarkers();
         RecordWriter w(log);
         binStateSchema().write(w, bin);
         section(Section_BinState, w.data());
@@ -695,6 +709,7 @@ std::unique_ptr<Project> ProjectSerializer::deserializeRecords(const std::vector
             project->setBinItems(std::move(bin.items));
             project->setBinFiles(std::move(files));
             project->setBinFolders(std::move(bin.folders));
+            project->setSourceMarkers(std::move(bin.sourceMarkers));
             break;
         }
 

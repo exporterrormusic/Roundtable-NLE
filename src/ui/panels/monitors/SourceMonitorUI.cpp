@@ -23,6 +23,7 @@
 #include "audio/AudioPlaybackService.h"
 #include "playback/AVSyncClock.h"
 
+#include <QAction>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QStackedLayout>
@@ -93,7 +94,12 @@ SourceMonitor::SourceMonitor(QWidget* parent)
     // (covers both button clicks and keyboard shortcuts)
     m_controller->onStateChanged = [this](PlayState state) {
         if (m_destroying.load(std::memory_order_acquire)) return;
-        if (state == PlayState::Playing || state == PlayState::Shuttling) {
+        // Premiere's Play-Stop Toggle shows a stop square while playing.
+        const bool playing = (state == PlayState::Playing || state == PlayState::Shuttling);
+        if (m_btnPlayPause)
+            m_btnPlayPause->setTransportIcon(playing ? TransportButton::Stop
+                                                     : TransportButton::Play);
+        if (playing) {
             // The scrub target is already committed to the controller. Do not
             // let a queued scrub burst replace the audio we are starting now.
             m_scrubPending = false;
@@ -182,18 +188,8 @@ void SourceMonitor::setupUI()
     setMinimumWidth(rt::UiScale::px(200));
     setMinimumHeight(rt::UiScale::px(180));
 
-    // ── Clip name label ──────────────────────────────────
-    m_clipLabel = new QLabel(tr("No clip loaded"), this);
-    rt::UiScale::setScaledFixedHeight(m_clipLabel, 28);
-    m_clipLabel->setAlignment(Qt::AlignCenter);
-    m_clipLabel->setTextFormat(Qt::PlainText);
-    m_clipLabel->setStyleSheet(rt::UiScale::scaleStyleSheet(QStringLiteral(
-        "QLabel { background: %1; color: %2; "
-        "font-size: %3px; padding: 4px 8px; }")
-        .arg(Theme::hex(Theme::colors().surface1))
-        .arg(Theme::hex(Theme::colors().textSecondary))
-        .arg(Theme::typography().sizeXs)));
-    mainLayout->addWidget(m_clipLabel);
+    // The clip name lives in the panel tab ("Source: clip.mp4"), as in
+    // Premiere — see panelTitle() / clipChanged().
 
     // ── Viewport / Waveform stacked area ──────────────────────────────
     auto* viewContainer = new QWidget(this);
@@ -229,12 +225,14 @@ void SourceMonitor::setupUI()
     // Spacer between viewport and controls — prevents video spill
     mainLayout->addWidget(monitorui::makeViewSpacer(this, 4));
 
-    // ── Mini-timeline scrub bar ─────────────────────────────────────────
+    // ── Premiere's Source Monitor controls (see MonitorUiKit.h) ──────────
+    //   info row    timecode · Fit · drag video / drag audio · Full · wrench · duration
+    //   mini ruler  (with the clip's markers)
+    //   button row  marker/in/out | playback | Export Frame, Mute
     m_miniTimeline = new MiniTimeline(this);
 
-    // ── Info/control bar (Premiere Pro style — above mini timeline) ──────
-    QHBoxLayout* controlLayout = nullptr;
-    auto* controlBar = monitorui::makeControlBar(this, &controlLayout);
+    QHBoxLayout* infoLayout = nullptr;
+    auto* infoRow = monitorui::makeInfoRow(this, &infoLayout);
 
     // Timecode display (left side, Premiere Pro style; click to edit)
     m_timecodeLabel = monitorui::makeTimecodeLabel(this);
@@ -264,12 +262,39 @@ void SourceMonitor::setupUI()
         m_timecodeLabel->show();
     });
 
-    controlLayout->addWidget(m_timecodeLabel, 0, Qt::AlignVCenter);
-    controlLayout->addWidget(m_timecodeEdit, 0, Qt::AlignVCenter);
-    controlLayout->addSpacing(rt::UiScale::px(12));
+    infoLayout->addWidget(m_timecodeLabel, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_timecodeEdit, 0, Qt::AlignVCenter);
+
+    // Fit mode / zoom presets combo box, right after the timecode.
+    m_fitModeCombo = monitorui::makeFitModeCombo(this);
+    infoLayout->addWidget(m_fitModeCombo, 0, Qt::AlignVCenter);
+
+    connect(m_fitModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+        switch (index) {
+        case 0: m_viewport->setFitMode(ViewportFitMode::Fit);  break;
+        case 1: m_viewport->setFitMode(ViewportFitMode::Fill); break;
+        default: {
+            static constexpr float zoomLevels[] = { 0.25f, 0.50f, 0.75f, 1.0f, 1.5f, 2.0f };
+            int zi = index - 2;
+            if (zi >= 0 && zi < static_cast<int>(std::size(zoomLevels))) {
+                m_viewport->setFitMode(ViewportFitMode::Actual);
+                m_viewport->setViewZoom(zoomLevels[zi]);
+            }
+            break;
+        }
+        }
+        if (index <= 1)
+            m_viewport->resetZoomPan();
+    });
+
+    m_shuttleSpeedLabel = monitorui::makeShuttleSpeedLabel(infoRow);
+    infoLayout->addWidget(m_shuttleSpeedLabel, 0, Qt::AlignVCenter);
+
+    infoLayout->addStretch();
 
     // ── Premiere-style "drag video only" / "drag audio only" buttons ────
-    // Sit just left of the zoom combo. Click-drag one to drop only that
+    // In the middle of the info row. Click-drag one to drop only that
     // stream of the loaded clip/sequence into the timeline (respecting the
     // source in/out points).
     auto dragBtnStyle = rt::UiScale::scaleStyleSheet(QStringLiteral(
@@ -322,7 +347,7 @@ void SourceMonitor::setupUI()
     m_btnDragVideo->setStyleSheet(dragBtnStyle);
     m_btnDragVideo->setEnabled(false);  // nothing loaded yet
     m_btnDragVideo->installEventFilter(this);
-    controlLayout->addWidget(m_btnDragVideo, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_btnDragVideo, 0, Qt::AlignVCenter);
 
     m_btnDragAudio = new QPushButton(this);
     m_btnDragAudio->setIcon(makeWaveformIcon(Theme::colors().textSecondary));
@@ -334,44 +359,9 @@ void SourceMonitor::setupUI()
     m_btnDragAudio->setStyleSheet(dragBtnStyle);
     m_btnDragAudio->setEnabled(false);  // nothing loaded yet
     m_btnDragAudio->installEventFilter(this);
-    controlLayout->addWidget(m_btnDragAudio, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_btnDragAudio, 0, Qt::AlignVCenter);
 
-    // Premiere-style single monitor row: playback controls share this bar
-    // with timecode and display controls, below the permanent mini-timeline.
-    auto transport = monitorui::makeTransportBar(controlBar, controlLayout);
-    m_btnGoStart     = transport.goStart;
-    m_btnStepBack    = transport.stepBack;
-    m_btnPlayPause   = transport.playPause;
-    m_btnStop        = transport.stop;
-    m_btnStepForward = transport.stepForward;
-    m_btnGoEnd       = transport.goEnd;
-    m_btnLoop        = transport.loop;
-    m_shuttleSpeedLabel = transport.shuttleSpeed;
-
-    controlLayout->addStretch();
-
-    // Fit mode / zoom presets combo box. Added to the layout later, next
-    // to the playback-resolution combo on the right side of the bar.
-    m_fitModeCombo = monitorui::makeFitModeCombo(this);
-
-    connect(m_fitModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int index) {
-        switch (index) {
-        case 0: m_viewport->setFitMode(ViewportFitMode::Fit);  break;
-        case 1: m_viewport->setFitMode(ViewportFitMode::Fill); break;
-        default: {
-            static constexpr float zoomLevels[] = { 0.25f, 0.50f, 0.75f, 1.0f, 1.5f, 2.0f };
-            int zi = index - 2;
-            if (zi >= 0 && zi < static_cast<int>(std::size(zoomLevels))) {
-                m_viewport->setFitMode(ViewportFitMode::Actual);
-                m_viewport->setViewZoom(zoomLevels[zi]);
-            }
-            break;
-        }
-        }
-        if (index <= 1)
-            m_viewport->resetZoomPan();
-    });
+    infoLayout->addStretch();
 
     // Playback resolution dropdown
     m_playbackResCombo = monitorui::makePlaybackResCombo(this, /*withAuto=*/false);
@@ -381,22 +371,20 @@ void SourceMonitor::setupUI()
     // never connected, so it did nothing — updateFrameDisplay reads its index.)
     connect(m_playbackResCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateFrameDisplay(); });
-    // Zoom level sits directly next to the playback-resolution combo.
-    controlLayout->addWidget(m_fitModeCombo, 0, Qt::AlignVCenter);
-    controlLayout->addWidget(m_playbackResCombo, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_playbackResCombo, 0, Qt::AlignVCenter);
 
-    // Safe Area toggle button (Premiere Pro style icon)
-    m_btnSafeArea = monitorui::makeSafeAreaButton(this);
-    controlLayout->addWidget(m_btnSafeArea, 0, Qt::AlignVCenter);
-    connect(m_btnSafeArea, &QPushButton::toggled, this, [this](bool checked) {
-        m_viewport->setSafeAreasVisible(checked);
+    // Wrench: the settings menu (Loop, Safe Margins), as in Premiere.
+    auto settings = monitorui::makeSettingsMenu(infoRow);
+    m_btnSettings    = settings.button;
+    m_actLoop        = settings.loop;
+    m_actSafeMargins = settings.safeMargins;
+    infoLayout->addWidget(m_btnSettings, 0, Qt::AlignVCenter);
+
+    connect(m_actLoop, &QAction::toggled, this, [this](bool checked) {
+        if (m_controller) m_controller->setLoopEnabled(checked);
     });
-
-    // Export frame button (large, Premiere Pro style)
-    m_btnExportFrame = monitorui::makeExportFrameButton(this);
-    controlLayout->addWidget(m_btnExportFrame, 0, Qt::AlignVCenter);
-    connect(m_btnExportFrame, &QPushButton::clicked, this, [this]() {
-        exportViewportFrame();
+    connect(m_actSafeMargins, &QAction::toggled, this, [this](bool checked) {
+        m_viewport->setSafeAreasVisible(checked);
     });
 
     // Zoom percentage label (hidden — matches Premiere layout)
@@ -408,21 +396,49 @@ void SourceMonitor::setupUI()
 
     // Duration timecode display (right side)
     m_durationLabel = monitorui::makeDurationLabel(this);
-    controlLayout->addWidget(m_durationLabel, 0, Qt::AlignVCenter);
+    infoLayout->addWidget(m_durationLabel, 0, Qt::AlignVCenter);
 
-    // ── Mini-timeline scrub bar ─────────────────────────────────────────
+    // ── Button row ───────────────────────────────────────────────────────
+    QHBoxLayout* buttonLayout = nullptr;
+    auto* buttonRow = monitorui::makeButtonRow(this, &buttonLayout);
+
+    const auto marks = monitorui::addMarkGroup(buttonRow, buttonLayout);
+    m_btnAddMarker = marks.addMarker;
+    m_btnMarkIn    = marks.markIn;
+    m_btnMarkOut   = marks.markOut;
+    monitorui::addButtonGroupGap(buttonLayout);
+
+    const auto playback = monitorui::addPlaybackGroup(buttonRow, buttonLayout);
+    m_btnGoToIn      = playback.goToIn;
+    m_btnStepBack    = playback.stepBack;
+    m_btnPlayPause   = playback.playPause;
+    m_btnStepForward = playback.stepForward;
+    m_btnGoToOut     = playback.goToOut;
+    monitorui::addButtonGroupGap(buttonLayout);
+
+    m_btnExportFrame = monitorui::makeRowButton(buttonRow, TransportButton::Screenshot,
+                                                tr("Export Frame"), {},
+                                                QStringLiteral("Ctrl+Shift+E"));
+    m_btnMute = monitorui::makeRowButton(buttonRow, TransportButton::Speaker,
+                                         tr("Mute Source Monitor"));
+    m_btnMute->setCheckable(true);
+    buttonLayout->addWidget(m_btnExportFrame, 0, Qt::AlignVCenter);
+    buttonLayout->addWidget(m_btnMute, 0, Qt::AlignVCenter);
+    monitorui::finishButtonRow(buttonLayout);
+
     m_miniTimeline->setMinimumHeight(rt::UiScale::px(56));
+    mainLayout->addWidget(infoRow);
     mainLayout->addWidget(m_miniTimeline);
-    mainLayout->addWidget(controlBar);
+    mainLayout->addWidget(buttonRow);
 
-    // Unified-row transport connections.
-    connect(m_btnLoop, &QPushButton::toggled, this, [this](bool checked) {
-        if (m_controller) m_controller->setLoopEnabled(checked);
-    });
-
-    // Connect transport buttons
-    connect(m_btnGoStart, &QPushButton::clicked, this, [this]() {
-        if (m_hasClip) { m_controller->goToStart(); updateFrameDisplay(); }
+    // Button-row connections.
+    connect(m_btnAddMarker, &QPushButton::clicked, this, &SourceMonitor::requestAddMarker);
+    connect(m_btnMarkIn, &QPushButton::clicked, this, &SourceMonitor::markIn);
+    connect(m_btnMarkOut, &QPushButton::clicked, this, &SourceMonitor::markOut);
+    connect(m_btnGoToIn, &QPushButton::clicked, this, [this]() {
+        if (!m_hasClip) return;
+        m_controller->seekTo(hasInPoint() ? inPoint() : 0);
+        updateFrameDisplay();
     });
     connect(m_btnStepBack, &QPushButton::clicked, this, [this]() {
         if (m_hasClip) { m_controller->stepBackward(); updateFrameDisplay(); }
@@ -431,22 +447,38 @@ void SourceMonitor::setupUI()
         if (m_hasClip)
             m_controller->togglePlayPause();
     });
-    connect(m_btnStop, &QPushButton::clicked, this, [this]() {
-        if (m_hasClip) { m_controller->stop(); updateFrameDisplay(); }
-    });
     connect(m_btnStepForward, &QPushButton::clicked, this, [this]() {
         if (m_hasClip) { m_controller->stepForward(); updateFrameDisplay(); }
     });
-    connect(m_btnGoEnd, &QPushButton::clicked, this, [this]() {
-        if (m_hasClip) { m_controller->goToEnd(); updateFrameDisplay(); }
+    connect(m_btnGoToOut, &QPushButton::clicked, this, [this]() {
+        if (!m_hasClip) return;
+        m_controller->seekTo(hasOutPoint() ? outPoint() : m_clipDuration);
+        updateFrameDisplay();
     });
+    connect(m_btnExportFrame, &QPushButton::clicked, this, [this]() {
+        exportViewportFrame();
+    });
+    connect(m_btnMute, &QPushButton::toggled, this, &SourceMonitor::setMuted);
 
-    // Install event filter on transport bar and its children so that
-    // clicking playback buttons (which have Qt::NoFocus) or the bar
+    // Install event filter on both control rows and their children so that
+    // clicking playback buttons (which have Qt::NoFocus) or a row's
     // background still grabs keyboard focus for JKL/Space shortcuts.
-    controlBar->installEventFilter(this);
-    for (auto* child : controlBar->findChildren<QWidget*>())
-        child->installEventFilter(this);
+    for (auto* row : {infoRow, buttonRow}) {
+        row->installEventFilter(this);
+        for (auto* child : row->findChildren<QWidget*>())
+            child->installEventFilter(this);
+    }
+}
+
+QString SourceMonitor::panelTitle() const
+{
+    return m_clipName.isEmpty() ? tr("Source Monitor")
+                                : tr("Source: %1").arg(m_clipName);
+}
+
+void SourceMonitor::setShortcutManager(const ShortcutManager* shortcuts)
+{
+    monitorui::applyShortcutTooltips(this, shortcuts);
 }
 
 void SourceMonitor::exportViewportFrame()

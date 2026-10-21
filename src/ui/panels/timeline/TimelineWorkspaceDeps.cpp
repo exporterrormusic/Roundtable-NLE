@@ -19,6 +19,7 @@
 #include "spine/AnimationVideoCache.h"
 
 #include "panels/characters/CharactersPanel.h"
+#include "panels/monitors/ProgramMonitor.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "panels/properties/PropertiesPanel.h"
 #include "panels/timeline/TimelinePanel.h"
@@ -54,7 +55,11 @@ void TimelineWorkspace::setCommandStack(CommandStack* stack)
     if (EditSession* edits = stack ? stack->editSession() : nullptr)
         edits->setActiveSequence(m_timeline);
 }
-void TimelineWorkspace::setShortcutManager(ShortcutManager* mgr) { m_shortcutManager = mgr; }
+void TimelineWorkspace::setShortcutManager(ShortcutManager* mgr) {
+    m_shortcutManager = mgr;
+    if (m_programMonitor) m_programMonitor->setShortcutManager(mgr);
+    if (m_sourceMonitor) m_sourceMonitor->setShortcutManager(mgr);
+}
 
 void TimelineWorkspace::setAudioEngine(AudioEngine* engine) {
     m_audioEngine = engine;
@@ -146,6 +151,7 @@ void TimelineWorkspace::setProject(Project* project)
     if (m_sourceMonitor) m_sourceMonitor->setSequenceProject(project);
     if (m_voiceGenerationService) m_voiceGenerationService->setProject(project);
     refreshSequenceTabs();
+    refreshSourceMonitorMarkers();   // clip markers belong to the project
 }
 
 void TimelineWorkspace::setVoiceGenerationService(VoiceGenerationService* service) noexcept
