@@ -856,6 +856,26 @@ TEST(LeafSchemas, AnEffectOfAnUnknownTypeIsLeftOut)
     EXPECT_TRUE(r.ok());
 }
 
+TEST(LeafSchemas, AFieldForAnotherEffectTypeIsSkipped)
+{
+    // A damaged type byte loaded a LUT's record as a plain effect, and the
+    // LUT path setter then wrote LUT data into it (memory damage, then a
+    // crash or a hang). Fields for another type must be skipped on read.
+    LUT lut;
+    ASSERT_TRUE(lut.loadCubeFile(pathToUtf8(writeCubeFile())));
+    std::vector<uint8_t> bytes = effectBytes(lut);
+    ASSERT_GE(bytes.size(), 2u);
+    ASSERT_EQ(bytes[0], 0x08);   // field 1 (type), varint
+    ASSERT_EQ(bytes[1], static_cast<uint8_t>(EffectType::LUT));
+    bytes[1] = static_cast<uint8_t>(EffectType::FillRightWithLeft);
+
+    record::RecordReader r(bytes);
+    const auto back = record::readEffect(r);
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(back->effectType(), EffectType::FillRightWithLeft);
+    EXPECT_TRUE(r.ok());
+}
+
 TEST(LeafSchemas, TheAudioFxChainKeepsEveryProcessor)
 {
     const auto project = makeEverythingProject();

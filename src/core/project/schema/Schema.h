@@ -223,8 +223,9 @@ struct FieldDef
     void (*write)(RecordWriter& w, uint32_t id, const T& object);
     /// False: the field's kind doesn't fit (skipped as unknown).
     bool (*read)(RecordReader& r, T& object);
-    /// When set, the field is written only for objects it applies to (a
-    /// LUT path only on a LUT effect).
+    /// When set, the field is written and read only for objects it applies
+    /// to (a LUT path only on a LUT effect). Its read may then assume the
+    /// object's type, so a damaged file's field for another type is skipped.
     bool (*applies)(const T& object) = nullptr;
 };
 
@@ -266,7 +267,7 @@ FieldDef<T> custom(uint32_t id, const char* name,
     return {id, name, write, read};
 }
 
-/// `def`, written only for objects where `applies` holds.
+/// `def`, written and read only for objects where `applies` holds.
 template <class T>
 FieldDef<T> when(bool (*applies)(const T&), FieldDef<T> def)
 {
@@ -358,6 +359,8 @@ public:
         while (r.next()) {
             const FieldDef<T>* f = find(r.id());
             if (!f) continue;              // unknown (newer build): skipped
+            if (f->applies && !f->applies(object))
+                continue;                  // another type's field (damaged file): skipped
             (void)f->read(r, object);      // wrong kind: skipped, default kept
         }
         return r.ok();
