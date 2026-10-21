@@ -393,20 +393,10 @@ void FullWaveformWidget::wheelEvent(QWheelEvent* event)
         double ratio = (cursorTime - m_viewStart) / viewDur;
         m_viewStart = cursorTime - ratio * newDur;
         m_viewEnd   = m_viewStart + newDur;
-    } else if (event->modifiers() & Qt::ShiftModifier) {
-        // Shift + wheel: horizontal scroll (pan left/right)
-        double panAmount = viewDur * 0.15;
-        if (event->angleDelta().y() > 0)
-            panAmount = -panAmount;
-
-        m_viewStart += panAmount;
-        m_viewEnd   += panAmount;
     } else {
-        // Plain wheel: vertical pan (scroll up = earlier, scroll down = later)
-        double panAmount = viewDur * 0.15;
-        if (event->angleDelta().y() > 0)
-            panAmount = -panAmount;
-
+        // Plain or Shift + wheel: pan (wheel up = earlier). 15% of the view
+        // per notch, by the fraction of a notch the wheel actually turned.
+        const double panAmount = -viewDur * 0.15 * event->angleDelta().y() / 120.0;
         m_viewStart += panAmount;
         m_viewEnd   += panAmount;
     }

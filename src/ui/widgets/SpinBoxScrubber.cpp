@@ -145,8 +145,9 @@ bool SpinBoxScrubber::eventFilter(QObject* obj, QEvent* event)
         }
 
         double rate = ratePerPixel(m_box);
-        if (me->modifiers() & Qt::ShiftModifier)        rate *= kFineMultiplier;
-        else if (me->modifiers() & Qt::ControlModifier) rate *= kCoarseMultiplier;
+        // Premiere's hot text: Shift = bigger steps, Ctrl = finer steps.
+        if (me->modifiers() & Qt::ShiftModifier)        rate *= kCoarseMultiplier;
+        else if (me->modifiers() & Qt::ControlModifier) rate *= kFineMultiplier;
 
         double lo = 0.0, hi = 0.0;
         if (auto* s = qobject_cast<QSpinBox*>(m_box.data())) {

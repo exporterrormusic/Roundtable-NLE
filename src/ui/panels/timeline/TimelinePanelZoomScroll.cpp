@@ -179,9 +179,11 @@ void TimelinePanel::wheelEvent(QWheelEvent* event)
     }
     else if (event->modifiers() & Qt::ShiftModifier)
     {
-        // Shift+wheel = resize all track heights (Premiere Pro style)
+        // Shift+wheel = resize all track heights (Premiere Pro style).
+        // 10 px per notch (120 units); smooth wheels and touchpads send
+        // fractions of a notch and move by that fraction.
         if (!m_timeline) { event->accept(); return; }
-        float delta = (event->angleDelta().y() > 0) ? 10.0f : -10.0f;
+        const float delta = 10.0f * static_cast<float>(event->angleDelta().y()) / 120.0f;
         constexpr float kMinHeight = 30.0f;
         constexpr float kMaxHeight = 300.0f;
         for (size_t i = 0; i < m_timeline->trackCount(); ++i) {
@@ -199,8 +201,9 @@ void TimelinePanel::wheelEvent(QWheelEvent* event)
         // the user hovers directly over the vertical scroll bar; that widget
         // receives wheel events itself and is not intercepted by this panel's
         // event filter (which only covers the QScrollArea and its viewport,
-        // not the scroll bar child).
-        double delta = (event->angleDelta().y() > 0) ? -50.0 : 50.0;
+        // not the scroll bar child).  50 px per notch, by the fraction of a
+        // notch the wheel actually turned.
+        const double delta = -50.0 * event->angleDelta().y() / 120.0;
         m_layoutEngine.setScrollX(m_layoutEngine.scrollX() + delta);
         onScrollChanged();
         event->accept();

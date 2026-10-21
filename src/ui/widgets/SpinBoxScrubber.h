@@ -6,7 +6,7 @@
  *
  * Installed once on qApp. Behaviour on an UNFOCUSED field:
  *   - hover shows the ↔ cursor
- *   - press + drag horizontally scrubs (Shift fine, Ctrl coarse)
+ *   - press + drag horizontally scrubs (Shift coarse, Ctrl fine, as in Premiere)
  *   - press + release without dragging is an ordinary click (caret / edit)
  * A field that already has focus behaves as a normal text box (drag
  * selects text). ScrubbySpinBox has its own handling and is skipped.

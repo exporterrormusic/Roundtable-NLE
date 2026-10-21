@@ -770,11 +770,10 @@ void MiniWaveformWidget::wheelEvent(QWheelEvent* event)
         (void)shiftHeld;
         event->accept();
 
+        // 15% of the view per notch, by the fraction of a notch turned.
         double viewDur = m_viewEnd - m_viewStart;
         double dur = fileDuration();
-        double panAmount = viewDur * 0.15;
-        if (event->angleDelta().y() > 0)
-            panAmount = -panAmount;
+        const double panAmount = -viewDur * 0.15 * event->angleDelta().y() / 120.0;
 
         m_viewStart += panAmount;
         m_viewEnd   += panAmount;

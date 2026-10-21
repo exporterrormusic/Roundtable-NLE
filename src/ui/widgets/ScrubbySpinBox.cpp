@@ -280,11 +280,12 @@ void ScrubbySpinBox::mouseMoveEvent(QMouseEvent* event)
     // Rate for the CURRENT modifiers applied to this move only, so
     // pressing/releasing Shift or Ctrl mid-drag changes the speed from
     // here on rather than re-scaling the whole drag (which jumped).
+    // Premiere's hot text: Shift = bigger steps, Ctrl = finer steps.
     double step = m_scrubStep;
     if (event->modifiers() & Qt::ShiftModifier)
-        step *= m_fineMultiplier;
-    else if (event->modifiers() & Qt::ControlModifier)
         step *= m_coarseMultiplier;
+    else if (event->modifiers() & Qt::ControlModifier)
+        step *= m_fineMultiplier;
 
     m_accumulator += dx * step;
     const double newVal = std::clamp(m_startValue + m_accumulator, minimum(), maximum());

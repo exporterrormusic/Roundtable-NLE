@@ -5,8 +5,8 @@
  *
  * A QDoubleSpinBox subclass that supports:
  *   - Click and drag left/right to scrub the value (cursor: ↔ on hover)
- *   - Shift+drag for fine adjust (10x slower)
- *   - Ctrl+drag for coarse adjust (10x faster); modifiers change the rate
+ *   - Shift+drag for coarse adjust (10x faster), as in Premiere
+ *   - Ctrl+drag for fine adjust (10x slower); modifiers change the rate
  *     from the current point, mid-drag, without jumping the value
  *   - Cursor hidden while scrubbing, unlimited travel (wraps at the screen
  *     edge), reappears where the drag started — see ScrubGesture
@@ -43,11 +43,11 @@ public:
     void setScrubStep(double step) noexcept { m_scrubStep = step; }
     [[nodiscard]] double scrubStep() const noexcept { return m_scrubStep; }
 
-    /// Set the multiplier for fine mode (shift+drag). Default 0.1.
+    /// Set the multiplier for fine mode (ctrl+drag). Default 0.1.
     void setFineMultiplier(double m) noexcept { m_fineMultiplier = m; }
     [[nodiscard]] double fineMultiplier() const noexcept { return m_fineMultiplier; }
 
-    /// Set the multiplier for coarse mode (ctrl+drag). Default 10.0.
+    /// Set the multiplier for coarse mode (shift+drag). Default 10.0.
     void setCoarseMultiplier(double m) noexcept { m_coarseMultiplier = m; }
     [[nodiscard]] double coarseMultiplier() const noexcept { return m_coarseMultiplier; }
 

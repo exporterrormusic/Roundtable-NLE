@@ -911,6 +911,34 @@ TEST(ScrubbySpinBox, SetMultipliers)
     EXPECT_DOUBLE_EQ(spin.coarseMultiplier(), 20.0);
 }
 
+TEST(ScrubbySpinBox, ShiftScrubsInBigStepsAndCtrlInFineOnes)
+{
+    // Premiere's hot text: Shift-drag = bigger steps, Ctrl-drag = finer.
+    auto scrub = [](Qt::KeyboardModifiers modifiers) {
+        rt::ScrubbySpinBox spin;
+        spin.setRange(-100000.0, 100000.0);
+        spin.setDecimals(3);
+        spin.setScrubStep(1.0);
+        spin.setValue(0.0);
+        auto send = [&](QEvent::Type type, int x, Qt::MouseButtons buttons) {
+            const QPointF global(400 + x, 400);
+            QMouseEvent event(type, QPointF(10 + x, 10), global, Qt::LeftButton,
+                              buttons, modifiers);
+            QApplication::sendEvent(&spin, &event);
+        };
+        send(QEvent::MouseButtonPress, 0, Qt::LeftButton);
+        send(QEvent::MouseMove, 5, Qt::LeftButton);    // past the drag threshold
+        send(QEvent::MouseMove, 25, Qt::LeftButton);   // 20 px of scrub
+        send(QEvent::MouseButtonRelease, 25, Qt::NoButton);
+        return spin.value();
+    };
+
+    const double plain = scrub(Qt::NoModifier);
+    ASSERT_GT(plain, 0.0);
+    EXPECT_NEAR(scrub(Qt::ShiftModifier), plain * 10.0, 1e-6);
+    EXPECT_NEAR(scrub(Qt::ControlModifier), plain * 0.1, 1e-6);
+}
+
 TEST(ScrubbySpinBox, IntegerMode)
 {
     rt::ScrubbySpinBox spin;

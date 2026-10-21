@@ -24,6 +24,7 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QWheelEvent>
 
 #include <memory>
 
@@ -1006,4 +1007,42 @@ TEST(TimelineDrags, EscapeAfterACrossTrackMoveRestoresTheTransition)
     EXPECT_EQ(rig.state(), before);
     EXPECT_EQ(rig.timeline.track(scene.v1)->transitionCount(), 1u);
     EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+// ── Wheel: scroll and track height follow how far the wheel turned ────────
+
+namespace {
+void sendWheel(DragRig& rig, QPointF pos, int angle, Qt::KeyboardModifiers modifiers)
+{
+    QWheelEvent event(pos, rig.panel->mapToGlobal(pos), QPoint(), QPoint(0, angle),
+                      Qt::NoButton, modifiers, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(rig.panel.get(), &event);
+}
+} // namespace
+
+TEST(TimelineWheel, ScrollMovesByTheFractionOfANotchTurned)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    rig.addClip(v1, 0, 60 * kSecond);
+    rig.show();
+    rig.panel->layoutEngine().setScrollX(1000.0);
+    const QPointF at = rig.pointAt(kSecond, rig.indexOf(v1));
+
+    sendWheel(rig, at, 120, Qt::NoModifier);   // one notch up: 50 px earlier
+    EXPECT_DOUBLE_EQ(rig.panel->layoutEngine().scrollX(), 950.0);
+    sendWheel(rig, at, -30, Qt::NoModifier);   // a quarter notch down (smooth wheel)
+    EXPECT_DOUBLE_EQ(rig.panel->layoutEngine().scrollX(), 962.5);
+}
+
+TEST(TimelineWheel, ShiftWheelTrackHeightMovesByTheFractionOfANotchTurned)
+{
+    DragRig rig;
+    Track* v1 = rig.videoTrack("V1");
+    rig.addClip(v1, 0, 10 * kSecond);
+    rig.show();
+    const float before = v1->height();
+
+    sendWheel(rig, rig.pointAt(kSecond, rig.indexOf(v1)), 60, Qt::ShiftModifier);
+    EXPECT_FLOAT_EQ(v1->height(), before + 5.0f);   // half a notch of 10 px
 }
