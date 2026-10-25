@@ -15,6 +15,7 @@
 
 #include "TimelineDragTool.h"
 #include "timeline/EditOperations.h"
+#include "timeline/Track.h"
 #include "timeline/Transition.h"
 
 #include <QPointF>
@@ -56,6 +57,7 @@ public:
 
 private:
     void moveTo(const QMouseEvent& event, QPointF pos, int64_t tickDelta);
+    int clampTrackDelta(int requestedDelta, TrackType section) const;
     void restoreOrigins();
 
     TimelinePanel& m_panel;

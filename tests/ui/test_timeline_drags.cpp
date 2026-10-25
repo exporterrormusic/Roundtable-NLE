@@ -19,6 +19,7 @@
 #include "timeline/Track.h"
 #include "timeline/Transition.h"
 #include "timeline/VideoClip.h"
+#include "timeline/AudioClip.h"
 #include "Constants.h"
 
 #include <QApplication>
@@ -65,6 +66,15 @@ struct DragRig
     ~DragRig() { panel.reset(); }
 
     Track* videoTrack(const char* name) { return timeline.addVideoTrack(name); }
+
+    Clip* addAudioClip(Track* track, int64_t in, int64_t duration)
+    {
+        auto clip = std::make_unique<AudioClip>();
+        clip->setTimelineIn(in);
+        clip->setDuration(duration);
+        clip->setSourceDuration(10 * kSecond);
+        return track->addClip(std::move(clip));
+    }
 
     /// A clip at [in, in + duration) whose source starts at `sourceIn` and
     /// has ten seconds of media, so trims have room either way.
@@ -256,6 +266,271 @@ TEST(TimelineDrags, GroupMoveClampsAtTimeZero)
     EXPECT_EQ(clipById(rig.timeline, a)->timelineIn(), 0);
     EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), kSecond);
     rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, VideoGroupStopsAtBottomVideoTrackWithoutDeletingClips)
+{
+    DragRig rig;
+    Track* upper = rig.videoTrack("V2");
+    Track* lower = rig.videoTrack("V1");
+    Track* audio = rig.timeline.addAudioTrack("A1");
+    const uint64_t a = rig.addClip(upper, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(lower, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(upper), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(lower), b}, true);
+    const uint64_t before = rig.state();
+    const QPointF to = rig.pointAt(kSecond + kSecond / 2, rig.indexOf(audio));
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(upper)), to,
+             Qt::NoModifier, false);
+    EXPECT_EQ(rig.state(), before) << "live group must stop together at the boundary";
+    rig.mouse(QEvent::MouseButtonRelease, to, Qt::NoButton);
+    EXPECT_NE(clipById(rig.timeline, a), nullptr);
+    EXPECT_NE(clipById(rig.timeline, b), nullptr);
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(TimelineDrags, AudioGroupStopsAtTopAudioTrackWithoutDeletingClips)
+{
+    DragRig rig;
+    Track* video = rig.videoTrack("V1");
+    Track* upper = rig.timeline.addAudioTrack("A1");
+    Track* lower = rig.timeline.addAudioTrack("A2");
+    const uint64_t a = rig.addAudioClip(upper, kSecond, kSecond)->id();
+    const uint64_t b = rig.addAudioClip(lower, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(upper), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(lower), b}, true);
+    const uint64_t before = rig.state();
+    const QPointF to = rig.pointAt(kSecond + kSecond / 2, rig.indexOf(video));
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(lower)), to,
+             Qt::NoModifier, false);
+    EXPECT_EQ(rig.state(), before) << "live group must stop together at the boundary";
+    rig.mouse(QEvent::MouseButtonRelease, to, Qt::NoButton);
+    EXPECT_NE(clipById(rig.timeline, a), nullptr);
+    EXPECT_NE(clipById(rig.timeline, b), nullptr);
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(TimelineDrags, VideoGroupMovesOnlyAsFarAsItsLowestClipCanGo)
+{
+    DragRig rig;
+    Track* top = rig.videoTrack("V3");
+    Track* middle = rig.videoTrack("V2");
+    Track* bottom = rig.videoTrack("V1");
+    Track* audio = rig.timeline.addAudioTrack("A1");
+    const uint64_t a = rig.addClip(top, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(middle, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(top), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(middle), b}, true);
+    const uint64_t before = rig.state();
+    const QPointF to = rig.pointAt(2 * kSecond, rig.indexOf(audio));
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(top)), to,
+             Qt::ControlModifier, false);
+    auto checkPositions = [&] {
+        size_t ta = SIZE_MAX, tb = SIZE_MAX;
+        ASSERT_NE(clipById(rig.timeline, a, &ta), nullptr);
+        ASSERT_NE(clipById(rig.timeline, b, &tb), nullptr);
+        EXPECT_EQ(ta, rig.indexOf(middle));
+        EXPECT_EQ(tb, rig.indexOf(bottom));
+        EXPECT_EQ(clipById(rig.timeline, a)->timelineIn(), kSecond + kSecond / 2);
+        EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), kSecond + kSecond / 2);
+    };
+    checkPositions();
+    rig.mouse(QEvent::MouseButtonRelease, to, Qt::NoButton, Qt::ControlModifier);
+    checkPositions();
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, AudioGroupMovesOnlyAsFarAsItsHighestClipCanGo)
+{
+    DragRig rig;
+    Track* video = rig.videoTrack("V1");
+    Track* top = rig.timeline.addAudioTrack("A1");
+    Track* middle = rig.timeline.addAudioTrack("A2");
+    Track* bottom = rig.timeline.addAudioTrack("A3");
+    const uint64_t a = rig.addAudioClip(middle, kSecond, kSecond)->id();
+    const uint64_t b = rig.addAudioClip(bottom, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(middle), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(bottom), b}, true);
+    const uint64_t before = rig.state();
+    const QPointF to = rig.pointAt(2 * kSecond, rig.indexOf(video));
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(bottom)), to,
+             Qt::ControlModifier, false);
+    auto checkPositions = [&] {
+        size_t ta = SIZE_MAX, tb = SIZE_MAX;
+        ASSERT_NE(clipById(rig.timeline, a, &ta), nullptr);
+        ASSERT_NE(clipById(rig.timeline, b, &tb), nullptr);
+        EXPECT_EQ(ta, rig.indexOf(top));
+        EXPECT_EQ(tb, rig.indexOf(middle));
+        EXPECT_EQ(clipById(rig.timeline, a)->timelineIn(), kSecond + kSecond / 2);
+        EXPECT_EQ(clipById(rig.timeline, b)->timelineIn(), kSecond + kSecond / 2);
+    };
+    checkPositions();
+    rig.mouse(QEvent::MouseButtonRelease, to, Qt::NoButton, Qt::ControlModifier);
+    checkPositions();
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, GroupCanReturnFromBoundaryAndCancelWithoutLosingClips)
+{
+    DragRig rig;
+    Track* top = rig.videoTrack("V3");
+    Track* middle = rig.videoTrack("V2");
+    Track* bottom = rig.videoTrack("V1");
+    Track* audio = rig.timeline.addAudioTrack("A1");
+    const uint64_t a = rig.addClip(middle, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(bottom, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(middle), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(bottom), b}, true);
+    const uint64_t before = rig.state();
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(middle)),
+             rig.pointAt(kSecond + kSecond / 2, rig.indexOf(audio)), Qt::NoModifier, false);
+    EXPECT_EQ(rig.state(), before);
+    rig.mouse(QEvent::MouseMove, rig.pointAt(kSecond + kSecond / 2, rig.indexOf(top)), Qt::LeftButton);
+    size_t ta = SIZE_MAX, tb = SIZE_MAX;
+    ASSERT_NE(clipById(rig.timeline, a, &ta), nullptr);
+    ASSERT_NE(clipById(rig.timeline, b, &tb), nullptr);
+    EXPECT_EQ(ta, rig.indexOf(top));
+    EXPECT_EQ(tb, rig.indexOf(middle));
+    rig.escape();
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
+}
+
+TEST(TimelineDrags, LinkedClipTakesItsVideoUpWhileItsAudioStaysOnA1)
+{
+    // Premiere: dragging a linked clip from V1 to V2 leaves its audio on A1.
+    DragRig rig;
+    Track* topVideo = rig.videoTrack("V2");
+    Track* video = rig.videoTrack("V1");
+    Track* audio = rig.timeline.addAudioTrack("A1");
+    rig.timeline.addAudioTrack("A2");
+    const uint64_t v = rig.addClip(video, kSecond, kSecond)->id();
+    const uint64_t a = rig.addAudioClip(audio, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(video), v}, false);
+    rig.panel->selection().selectClip({rig.indexOf(audio), a}, true);
+    const uint64_t before = rig.state();
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(video)),
+             rig.pointAt(kSecond + kSecond / 2, rig.indexOf(topVideo)));
+    size_t tv = SIZE_MAX, ta = SIZE_MAX;
+    ASSERT_NE(clipById(rig.timeline, v, &tv), nullptr);
+    ASSERT_NE(clipById(rig.timeline, a, &ta), nullptr);
+    EXPECT_EQ(tv, rig.indexOf(topVideo));
+    EXPECT_EQ(ta, rig.indexOf(audio));
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, StackRaisedPastTheTopAudioTrackKeepsEveryClip)
+{
+    // A video with its audio on A1 and A2, all selected, grabbed by the A2
+    // clip and dragged up into the video tracks: the audio stops together
+    // at the top (each clip keeps its own track), the video goes up.
+    DragRig rig;
+    Track* topVideo = rig.videoTrack("V2");
+    Track* video = rig.videoTrack("V1");
+    Track* upper = rig.timeline.addAudioTrack("A1");
+    Track* lower = rig.timeline.addAudioTrack("A2");
+    const uint64_t v = rig.addClip(video, kSecond, kSecond)->id();
+    const uint64_t a1 = rig.addAudioClip(upper, kSecond, kSecond)->id();
+    const uint64_t a2 = rig.addAudioClip(lower, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(video), v}, false);
+    rig.panel->selection().selectClip({rig.indexOf(upper), a1}, true);
+    rig.panel->selection().selectClip({rig.indexOf(lower), a2}, true);
+    const uint64_t before = rig.state();
+    const QPointF to = rig.pointAt(kSecond + kSecond / 2, rig.indexOf(topVideo));
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(lower)), to,
+             Qt::NoModifier, false);
+    auto checkTracks = [&] {
+        size_t tv = SIZE_MAX, t1 = SIZE_MAX, t2 = SIZE_MAX;
+        ASSERT_NE(clipById(rig.timeline, v, &tv), nullptr);
+        ASSERT_NE(clipById(rig.timeline, a1, &t1), nullptr);
+        ASSERT_NE(clipById(rig.timeline, a2, &t2), nullptr);
+        EXPECT_EQ(tv, rig.indexOf(topVideo));
+        EXPECT_EQ(t1, rig.indexOf(upper));
+        EXPECT_EQ(t2, rig.indexOf(lower));
+    };
+    checkTracks();
+    rig.mouse(QEvent::MouseButtonRelease, to, Qt::NoButton);
+    checkTracks();
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, VideoGroupCanStillCreateATrackAboveAndUndoExactly)
+{
+    DragRig rig;
+    Track* top = rig.videoTrack("V2");
+    Track* bottom = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(top, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(bottom, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(top), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(bottom), b}, true);
+    const uint64_t before = rig.state();
+    const size_t tracksBefore = rig.timeline.trackCount();
+    QPointF to = rig.pointAt(kSecond + kSecond / 2, rig.indexOf(top));
+    to.setY(rig.panel->trackRowRect(rig.indexOf(top)).top() + 2);
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(bottom)), to);
+    size_t ta = SIZE_MAX, tb = SIZE_MAX;
+    ASSERT_NE(clipById(rig.timeline, a, &ta), nullptr);
+    ASSERT_NE(clipById(rig.timeline, b, &tb), nullptr);
+    EXPECT_EQ(rig.timeline.trackCount(), tracksBefore + 1);
+    EXPECT_EQ(ta + 1, rig.indexOf(top));
+    EXPECT_EQ(tb, rig.indexOf(top));
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, LinkedClipCreatesATrackAboveForItsVideoOnly)
+{
+    DragRig rig;
+    Track* video = rig.videoTrack("V1");
+    Track* audio = rig.timeline.addAudioTrack("A1");
+    const uint64_t v = rig.addClip(video, kSecond, kSecond)->id();
+    const uint64_t a = rig.addAudioClip(audio, kSecond, kSecond)->id();
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(video), v}, false);
+    rig.panel->selection().selectClip({rig.indexOf(audio), a}, true);
+    const uint64_t before = rig.state();
+    const size_t tracksBefore = rig.timeline.trackCount();
+    QPointF to = rig.pointAt(kSecond + kSecond / 2, rig.indexOf(video));
+    to.setY(rig.panel->trackRowRect(rig.indexOf(video)).top() + 2);
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(video)), to);
+    size_t tv = SIZE_MAX, ta = SIZE_MAX;
+    ASSERT_NE(clipById(rig.timeline, v, &tv), nullptr);
+    ASSERT_NE(clipById(rig.timeline, a, &ta), nullptr);
+    EXPECT_EQ(rig.timeline.trackCount(), tracksBefore + 1);
+    EXPECT_EQ(tv + 1, rig.indexOf(video));
+    EXPECT_EQ(ta, rig.indexOf(audio));
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, BlockedGroupDoesNotLeaveAnEmptyGhostTrack)
+{
+    // The lower clip can't follow the upper one into the new track: the
+    // locked row above it is in the way, so the group stays put.
+    DragRig rig;
+    Track* top = rig.videoTrack("V3");
+    Track* locked = rig.videoTrack("V2");
+    Track* bottom = rig.videoTrack("V1");
+    const uint64_t a = rig.addClip(top, kSecond, kSecond)->id();
+    const uint64_t b = rig.addClip(bottom, kSecond, kSecond)->id();
+    locked->setLocked(true);
+    rig.show();
+    rig.panel->selection().selectClip({rig.indexOf(top), a}, false);
+    rig.panel->selection().selectClip({rig.indexOf(bottom), b}, true);
+    const uint64_t before = rig.state();
+    QPointF to = rig.pointAt(kSecond + kSecond / 2, rig.indexOf(top));
+    to.setY(rig.panel->trackRowRect(rig.indexOf(top)).top() + 2);
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(top)), to);
+    EXPECT_EQ(rig.state(), before);
+    EXPECT_EQ(rig.stack.undoCount(), 0u);
 }
 
 TEST(TimelineDrags, EscapeDuringMoveRestoresAndRecordsNothing)

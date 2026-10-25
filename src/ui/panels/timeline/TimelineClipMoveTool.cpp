@@ -48,6 +48,50 @@ void TimelineClipMoveTool::move(const QMouseEvent& event, int64_t tickDelta)
     moveTo(event, pos, tickDelta);
 }
 
+int TimelineClipMoveTool::clampTrackDelta(int requestedDelta, TrackType section) const
+{
+    if (!m_panel.m_timeline) return 0;
+
+    // The video clips and the audio clips are clamped separately: a linked
+    // clip whose audio already sits on A1 can still take its video up to V2
+    // (Premiere leaves the audio there too).
+    std::vector<size_t> members;   // original track of each clip in `section`
+    for (const auto& clip : m_clips) {
+        const Track* source = m_panel.m_timeline->track(clip.originalTrack);
+        if (source && source->type() == section)
+            members.push_back(clip.originalTrack);
+    }
+    if (members.empty()) return 0;
+
+    const auto [minOrig, maxOrig] = std::minmax_element(members.begin(), members.end());
+    const int lastTrack = static_cast<int>(m_panel.m_timeline->trackCount()) - 1;
+    const int delta = std::clamp(requestedDelta, -static_cast<int>(*minOrig),
+                                lastTrack - static_cast<int>(*maxOrig));
+    // A lone clip retains the nearest-compatible-track behavior below.
+    if (members.size() == 1) return delta;
+
+    // One offset must work for EVERY member. Clamping members separately
+    // collapses stacked clips onto the same boundary row, where the release's
+    // overwrite operation can delete another member of the selection.
+    // Search toward the origin so crossing a divider/locked row never pushes
+    // the group farther than the cursor requested.
+    for (int candidate = delta; candidate != 0; candidate += candidate > 0 ? -1 : 1) {
+        bool fits = true;
+        for (const size_t originalTrack : members) {
+            const Track* destination = m_panel.m_timeline->track(
+                static_cast<size_t>(static_cast<int>(originalTrack) + candidate));
+            if (!destination || destination->isLocked()
+                    || destination->isDivider() || destination->isCaptionTrack()
+                    || destination->type() != section) {
+                fits = false;
+                break;
+            }
+        }
+        if (fits) return candidate;
+    }
+    return 0;
+}
+
 void TimelineClipMoveTool::moveTo(const QMouseEvent& event, QPointF pos, int64_t tickDelta)
 {
     int64_t newIn = m_originalIn + tickDelta;
@@ -231,19 +275,8 @@ void TimelineClipMoveTool::moveTo(const QMouseEvent& event, QPointF pos, int64_t
     }
 
     // ── Group-safety clamp ──────────────────────────────────────────
-    if (trackDeltaLive != 0) {
-        size_t minOrig = SIZE_MAX, maxOrig = 0;
-        for (const auto& dcs : m_clips) {
-            minOrig = std::min(minOrig, dcs.originalTrack);
-            maxOrig = std::max(maxOrig, dcs.originalTrack);
-        }
-        if (minOrig != SIZE_MAX) {
-            const int lastTrack = static_cast<int>(m_panel.m_timeline->trackCount()) - 1;
-            const int minAllowed = -static_cast<int>(minOrig);
-            const int maxAllowed = lastTrack - static_cast<int>(maxOrig);
-            trackDeltaLive = std::clamp(trackDeltaLive, minAllowed, maxAllowed);
-        }
-    }
+    const int videoShift = clampTrackDelta(trackDeltaLive, TrackType::Video);
+    const int audioShift = clampTrackDelta(trackDeltaLive, TrackType::Audio);
 
     // Move clips DIRECTLY in the data model (no commands) for live visual feedback.
     for (auto& dcs : m_clips) {
@@ -253,10 +286,10 @@ void TimelineClipMoveTool::moveTo(const QMouseEvent& event, QPointF pos, int64_t
         int64_t clipNewIn = dcs.originalIn + actualDelta;
         if (clipNewIn < 0) clipNewIn = 0;
 
-        int dst = static_cast<int>(dcs.originalTrack) + trackDeltaLive;
-
         Track* srcTr = m_panel.m_timeline->track(dcs.ref.trackIndex);
         if (!srcTr) continue;
+        int dst = static_cast<int>(dcs.originalTrack)
+                + (srcTr->type() == TrackType::Video ? videoShift : audioShift);
         // Clamp onto the nearest track that can host this clip's kind. A
         // video clip dragged down into the audio section (or onto the V/A
         // divider) lands on the lowest video track instead of being
@@ -413,18 +446,30 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
             if (std::abs(event.position().y() - m_panel.m_dragStart.y()) < kTrackShiftDeadzone)
                 trackDelta = 0;
         }
-        if (trackDelta != 0) {
-            size_t minOrig = SIZE_MAX, maxOrig = 0;
-            for (const auto& dcs : m_clips) {
-                minOrig = std::min(minOrig, dcs.originalTrack);
-                maxOrig = std::max(maxOrig, dcs.originalTrack);
+        int videoShift = clampTrackDelta(trackDelta, TrackType::Video);
+        int audioShift = clampTrackDelta(trackDelta, TrackType::Audio);
+        auto shiftedTrack = [&](const TimelineDragClip& clip) {
+            const Track* source = m_panel.m_timeline->track(clip.originalTrack);
+            const bool audio = source && source->type() == TrackType::Audio;
+            return static_cast<int>(clip.originalTrack) + (audio ? audioShift : videoShift);
+        };
+
+        // A group can be stopped (a locked row in the way) even after a ghost
+        // row was provisionally inserted. Do not leave an empty new track
+        // behind when no member can reach it.
+        if (newTrackIndex != SIZE_MAX && std::none_of(m_clips.begin(), m_clips.end(),
+                [&](const TimelineDragClip& clip) {
+                    return shiftedTrack(clip) == static_cast<int>(newTrackIndex);
+                })) {
+            m_panel.m_timeline->removeTrack(newTrackIndex);
+            for (auto& clip : m_clips) {
+                if (clip.originalTrack > newTrackIndex) --clip.originalTrack;
+                if (clip.ref.trackIndex > newTrackIndex) --clip.ref.trackIndex;
             }
-            if (minOrig != SIZE_MAX) {
-                const int lastTrack = static_cast<int>(m_panel.m_timeline->trackCount()) - 1;
-                const int minAllowed = -static_cast<int>(minOrig);
-                const int maxAllowed = lastTrack - static_cast<int>(maxOrig);
-                trackDelta = std::clamp(trackDelta, minAllowed, maxAllowed);
-            }
+            if (m_originalTrack > newTrackIndex) --m_originalTrack;
+            newTrackIndex = SIZE_MAX;
+            videoShift = clampTrackDelta(videoShift, TrackType::Video);
+            audioShift = clampTrackDelta(audioShift, TrackType::Audio);
         }
 
         // Capture final positions
@@ -446,7 +491,7 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
                 }
             }
 
-            int dst = static_cast<int>(dcs.originalTrack) + trackDelta;
+            int dst = shiftedTrack(dcs);
 
             Track* origTr = m_panel.m_timeline->track(dcs.originalTrack);
             if (!origTr) continue;
@@ -465,8 +510,9 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
                 finals.push_back({dcs.originalTrack, dcs.ref.clipId, curPos, dcs.originalIn, dstTrack});
         }
 
-        spdlog::info("[OVERLAP-DIAG] mouseRelease: {} finals from {} dragSelectedClips, trackDelta={}",
-                     finals.size(), m_clips.size(), trackDelta);
+        spdlog::info("[OVERLAP-DIAG] mouseRelease: {} finals from {} dragSelectedClips, "
+                     "videoShift={} audioShift={}",
+                     finals.size(), m_clips.size(), videoShift, audioShift);
 
         // Back to the drag-start state; the commands below re-apply the
         // move as one undoable step.
