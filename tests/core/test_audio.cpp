@@ -30,6 +30,11 @@ extern "C" {
 
 #include "audio/AudioFile.h"
 #include "audio/AudioEngine.h"
+#include "audio/AudioPlaybackService.h"
+#include "playback/PlaybackController.h"
+#include "timeline/Timeline.h"
+#include "timeline/Track.h"
+#include "timeline/AudioClip.h"
 #include "playback/AVSyncClock.h"
 #include "playback/FrameClock.h"
 #include "audio/WaveformCache.h"
@@ -575,6 +580,72 @@ TEST(AudioEngineTest, SyncClockAttach)
     engine.setSyncClock(&clock);
     engine.setSyncClock(nullptr);
     // Should not crash
+}
+
+TEST(AudioEngineTest, TransportAndLevelsPreserveSourceRevision)
+{
+    AudioEngine engine;
+    auto samples = std::make_shared<std::vector<float>>(48000, 0.25f);
+    AudioTrackSource source;
+    source.trackId = 7;
+    source.sampleBuffer = samples;
+    source.samples = samples->data();
+    source.totalFrames = 48000;
+    source.channels = 1;
+    const auto initial = engine.trackSourcesRevision();
+    engine.setTrackSources({source});
+    const auto installed = engine.trackSourcesRevision();
+    EXPECT_NE(installed, initial);
+    engine.seekToFrame(100);
+    engine.setPlaybackSpeed(2.0);
+    engine.updateSourceLevels(7, 0.5f, 0.0f, false);
+    engine.resetStretchers();
+    EXPECT_EQ(engine.trackSourcesRevision(), installed);
+    engine.clearTrackSources();
+    EXPECT_NE(engine.trackSourcesRevision(), installed);
+}
+
+TEST(AudioPlaybackServiceTest, RecoversAudioAfterSharedMixerIsClearedOrReplaced)
+{
+    const auto path = testTempDir() / "timeline_recovery.wav";
+    const std::vector<float> samples(2 * 48000, 0.25f);
+    ASSERT_TRUE(writeWavFloat32(path, samples.data(), samples.size(), 1, 48000));
+    Timeline timeline;
+    auto clip = std::make_unique<AudioClip>(path.string());
+    clip->setDuration(2 * 48000);
+    timeline.addAudioTrack("A1")->addClip(std::move(clip));
+    AudioEngine engine;
+    PlaybackController playback;
+    playback.setTimeline(&timeline);
+    AudioPlaybackService service;
+    service.setTimeline(&timeline);
+    service.setAudioEngine(&engine);
+    service.setPlaybackController(&playback);
+    service.ensureSourcesLoaded();
+
+    auto expectAudible = [&] {
+        engine.seekToFrame(0);
+        AudioEngineTestAccess::setPlaying(engine);
+        std::vector<float> output(128);
+        AudioEngineTestAccess::process(engine, output.data(), 64);
+        EXPECT_GT(engine.meter().peakL, 0.1f);
+        EXPECT_GT(engine.meter().peakR, 0.1f);
+    };
+    expectAudible();
+    engine.clearTrackSources();
+    ASSERT_FALSE(engine.hasTrackSources());
+    service.ensureSourcesLoaded(); // same tick/window; must detect external clear
+    expectAudible();
+
+    // A different panel can leave a nonempty but silent source list too.
+    engine.setTrackSources({AudioTrackSource{}});
+    ASSERT_TRUE(engine.hasTrackSources());
+    playback.play();
+    EXPECT_TRUE(service.needsPlaybackWindowRefresh());
+    service.loadSources(false);
+    expectAudible();
+    EXPECT_FALSE(service.needsPlaybackWindowRefresh());
+    playback.pause();
 }
 
 #ifdef ROUNDTABLE_HAS_PORTAUDIO

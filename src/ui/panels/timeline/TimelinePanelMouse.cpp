@@ -738,7 +738,7 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
                     m_trackWidgets[w]->setSelectedTransition(SIZE_MAX);
             }
             // Clear stale edge-hover state so it doesn't interfere
-            m_lastClickedEdge.valid = false;
+            clearEditPointSelection();
             for (size_t w = 0; w < m_trackWidgets.size(); ++w)
                 m_trackWidgets[w]->setGapHighlight(-1, -1);
             if (m_gapSelection.trackIndex < m_trackWidgets.size())
@@ -758,7 +758,7 @@ void TimelinePanel::pressWithSelectionTool(QMouseEvent* event, QPointF pos)
             m_gapSelection.active = false;
             for (size_t w = 0; w < m_trackWidgets.size(); ++w)
                 m_trackWidgets[w]->setGapHighlight(-1, -1);
-            m_lastClickedEdge.valid = false;
+            clearEditPointSelection();
             // Don't clear selection yet — wait to see if user drags
             beginMarquee();
         }
@@ -963,6 +963,10 @@ void TimelinePanel::pressWithRollingTool(QMouseEvent* event, QPointF pos)
             // affordance from the first frame of the drag.
             setEditPointSelection(primary.trackIndex, primary.origEditPoint,
                                    EditPointSide::Both);
+            // The brackets mean "Ctrl+T adds a transition here", so record
+            // the cut too — otherwise Ctrl+T silently does nothing.
+            m_lastClickedEdge = { ClipRef{primary.trackIndex, primary.leftClipId},
+                                  ClipEdge::Tail, true };
 
             // Initialize snap engine for rolling edit (ignoring every
             // clip being rolled, so no seam snaps to itself).

@@ -53,6 +53,7 @@ void PropertiesPanel::setClip(Clip* clip, Track* track)
     m_clipId = clip ? clip->id() : 0;
     if (m_clipId != previousClipId) m_gfxSelectedTextLayerId = 0;
     m_multiSelection.clear(); // single-clip path: no multi-selection in flight
+    leaveSharedCharacterMode();
     m_track = track;
     const bool editable = rt::canMutateClip(clip, track);
     m_scrollArea->setEnabled(editable);
@@ -92,6 +93,7 @@ void PropertiesPanel::clearClip()
     m_gfxSelectedTextLayerId = 0;
     m_monitorTextEditing = false;
     m_multiSelection.clear();
+    leaveSharedCharacterMode();
     m_spineClip = nullptr;
     m_puppetClip = nullptr;
     m_track = nullptr;
@@ -125,6 +127,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
     }
 
     m_scrollArea->setEnabled(editable);
+    leaveSharedCharacterMode();
 
     // Retain the full selection so the Shot dropdown (and any other future
     // multi-clip action) can operate on every selected clip, not just the
@@ -232,10 +235,14 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
 
         updateShotSection();
 
-        // For shot groups, also show character/animation controls for
-        // each clip type present (e.g. video character talking toggle).
-        // Find a video character or spine clip in the group to populate from.
-        for (auto* c : clips) {
+        // Different characters in the group: only their shared settings.
+        // Otherwise show the character/animation controls of the (one)
+        // character present (e.g. video character talking toggle).
+        int sharedCount = 0;
+        if (Clip* rep = sharedCharacterRepresentative(clips, sharedCount)) {
+            bindRepresentative(rep);
+            enterSharedCharacterMode(sharedCount);
+        } else for (auto* c : clips) {
             if (c->clipType() == ClipType::Video) {
                 auto* vc = static_cast<VideoClip*>(c);
                 if (vc->isVideoCharacter()) {
@@ -343,6 +350,13 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
             if (m_statusLabel && editable)
                 m_statusLabel->setText(
                     QString("Animation edits apply to all %1").arg(charCount));
+        } else {
+            // Different characters: the settings they share.
+            int sharedCount = 0;
+            if (Clip* rep = sharedCharacterRepresentative(clips, sharedCount)) {
+                bindRepresentative(rep);
+                enterSharedCharacterMode(sharedCount);
+            }
         }
     }
 

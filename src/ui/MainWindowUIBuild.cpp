@@ -25,6 +25,7 @@
 #include "panels/characters/CharacterShotPanel.h"
 #include "panels/export/ExportPanel.h"
 #include "panels/comfy/ComfyPanel.h"
+#include "corridorkey/CorridorKeyService.h"
 #include "panels/export/ExportRenderSession.h"
 #include "panels/project/ProjectPanel.h"
 #include "panels/characters/ShotComposer.h"
@@ -841,6 +842,18 @@ void MainWindow::buildPanels()
     // ── Page 5: COMFYUI — green-screen takes → SCAIL driving clips ──────
     m_comfyPanel = new ComfyPanel(m_audioSync, this);
     m_pageStack->addWidget(m_comfyPanel);
+
+    // CorridorKey (Ultra Key's "Render with CorridorKey"): setup + renders.
+    // Effect Controls reaches it through CorridorKeyService::current().
+    auto* corridorKey = new CorridorKeyService(this);
+    corridorKey->setEditContextProvider([this]() -> CorridorKeyService::EditContext {
+        if (m_destroying.load(std::memory_order_acquire)) return {};
+        return {currentProject(), m_commandStack};
+    });
+    corridorKey->setGpuBusyProbe([this]() {
+        return !m_destroying.load(std::memory_order_acquire) && m_comfyPanel
+            && m_comfyPanel->isRendering();
+    });
     connect(m_comfyPanel, &ComfyPanel::assembleRequested, this, [this]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
         if (!m_currentProject || !m_comfyPanel) return;

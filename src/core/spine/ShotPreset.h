@@ -353,7 +353,9 @@ public:
     /// Resolve the default shot for a character.
     ///
     /// Priority:
-    ///   1. Resolve any alias display name → real character name (see setAlias).
+    ///   1. Resolve any alias display name → real character name (see setAlias),
+    ///      then script-name variants that keep the character's own name on
+    ///      screen ("Ark Ranger Black" → "Black Ark Ranger", "Mirror" → "Red Shoes").
     ///   2. Check `_defaults.json` (set via the "SET DEFAULT" button in ShotComposer)
     ///      for an explicit character → shot name mapping.
     ///   3. Fall back to the naming convention `"{characterName} (Default)"`.

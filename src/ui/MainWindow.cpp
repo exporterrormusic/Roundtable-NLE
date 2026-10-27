@@ -125,12 +125,16 @@ void MainWindow::onUndo()
         using Clock = std::chrono::steady_clock;
         const auto t0 = Clock::now();
         auto desc = m_commandStack->undoDescription();
-        m_commandStack->undo();
+        const bool affectsTimeline = m_commandStack->undoAffectsTimeline();
+        if (!m_commandStack->undo()) return;
         const auto t1 = Clock::now();
         // Rebuild the timeline UI, flush the composite and audio caches and
         // refresh the monitor + overlay (refreshAfterUndoRedo does all of it,
         // the track rebuild once and after stale clips are released).
-        if (m_timelineWorkspace)
+        // Moving/importing bin items leaves the timeline unchanged. Clearing
+        // its mixer here needlessly interrupts audio and relies on a deferred
+        // reload to recover it.
+        if (m_timelineWorkspace && affectsTimeline)
             m_timelineWorkspace->refreshAfterUndoRedo();
         const auto t2 = Clock::now();
         const auto ms = [](Clock::time_point a, Clock::time_point b) {
@@ -172,12 +176,13 @@ void MainWindow::onRedo()
         using Clock = std::chrono::steady_clock;
         const auto t0 = Clock::now();
         auto desc = m_commandStack->redoDescription();
-        m_commandStack->redo();
+        const bool affectsTimeline = m_commandStack->redoAffectsTimeline();
+        if (!m_commandStack->redo()) return;
         const auto t1 = Clock::now();
         // Rebuild the timeline UI, flush the composite and audio caches and
         // refresh the monitor + overlay (refreshAfterUndoRedo does all of it,
         // the track rebuild once and after stale clips are released).
-        if (m_timelineWorkspace)
+        if (m_timelineWorkspace && affectsTimeline)
             m_timelineWorkspace->refreshAfterUndoRedo();
         const auto t2 = Clock::now();
         const auto ms = [](Clock::time_point a, Clock::time_point b) {

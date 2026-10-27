@@ -275,6 +275,8 @@ public:
     /// slices. Rows = cards in the current view; built = cards created so far.
     [[nodiscard]] int cardRowCount() const noexcept { return static_cast<int>(m_cardWidgets.size()); }
     [[nodiscard]] int builtCardCount() const noexcept;
+    /// Card frames kept for reuse (in use or spare).
+    [[nodiscard]] int pooledCardCount() const noexcept { return static_cast<int>(m_cardPool.pool.size()); }
     [[nodiscard]] bool cardBuildPending() const noexcept
     {
         return m_cardBuild.active || m_leftBuild.active;

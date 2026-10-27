@@ -137,6 +137,28 @@ TEST_F(AudioSyncMatchTest, RebuildWhileStreamingReplacesTheStaleBuild)
     EXPECT_EQ(audioSync.scriptListWidget()->count(), 90);
 }
 
+// Opening another project deletes the cards; the pool must not keep them,
+// or the next build hides freed cards (crash 2026-10-24 opening the Audio
+// page after a project switch).
+TEST_F(AudioSyncMatchTest, ProjectSwitchLeavesNoDeletedCardsInThePool)
+{
+    rt::AudioSync audioSync;
+    audioSync.resize(1400, 900);
+    audioSync.show();
+    ASSERT_TRUE(audioSync.loadScript(scriptOf(40), "memory://first-project"));
+    audioSync.setClipsForTesting(clipsFor(40, "C:/missing/a.wav"));
+    audioSync.finishCardBuild();
+    ASSERT_GT(audioSync.pooledCardCount(), 0);
+
+    audioSync.resetForNewProject();
+    EXPECT_EQ(audioSync.pooledCardCount(), 0);
+
+    ASSERT_TRUE(audioSync.loadScript(scriptOf(30), "memory://second-project"));
+    audioSync.setClipsForTesting(clipsFor(30, "C:/missing/b.wav"));
+    audioSync.finishCardBuild();
+    EXPECT_EQ(audioSync.builtCardCount(), 30);
+}
+
 TEST_F(AudioSyncMatchTest, ImportDecodesSamplesInTheBackground)
 {
     QTemporaryDir temporary;

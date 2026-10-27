@@ -518,51 +518,13 @@ void PropertiesPanel::setupTransformSection(QWidget* container)
     // value would never be applied and an undo would restore a stale
     // scrubStartValue() of 0 → scale 0 → the clip vanishes.  Instead we
     // snapshot the whole scale KeyframeTrack and run a real execute-style
-    // undoable command (same pattern as applySpeed()).
-    auto applyFlip = [this](bool vertical, bool on) {
-        if (!canMutateBoundClip()) return;
-        auto* clip = m_clip;
-        KeyframeTrack<float>& track = vertical ? clip->scaleY()
-                                               : clip->scaleX();
-        KeyframeTrack<float> before = track;
-        KeyframeTrack<float> after  = track;
-        // Force the target sign on the default value + every keyframe so a
-        // keyframed scale still flips uniformly across the whole clip.
-        auto withSign = [on](float v) {
-            float m = std::abs(v);
-            return on ? -m : m;
-        };
-        after.setDefaultValue(withSign(after.defaultValue()));
-        for (size_t i = 0; i < after.keyframeCount(); ++i)
-            after.keyframe(i).value = withSign(after.keyframe(i).value);
-
-        if (before.defaultValue() == after.defaultValue()
-            && before.keyframeCount() == 0)
-            return; // no-op (already in the requested state)
-
-        if (!m_commandStack) {
-            track = after;
-            populateFromClip();
-            emit propertyChanged();
-            return;
-        }
-        executeTimelineEdit(m_commandStack, m_timeline, std::make_unique<LambdaCommand>(
-            vertical ? "Flip Vertical" : "Flip Horizontal",
-            [clip, vertical, after, this]() {
-                (vertical ? clip->scaleY() : clip->scaleX()) = after;
-                populateFromClip();
-                emit propertyChanged();
-            },
-            [clip, vertical, before, this]() {
-                (vertical ? clip->scaleY() : clip->scaleX()) = before;
-                populateFromClip();
-                emit propertyChanged();
-            }));
-    };
-    connect(m_flipHCheck, &QCheckBox::toggled, this,
-            [applyFlip](bool on) { applyFlip(false, on); });
-    connect(m_flipVCheck, &QCheckBox::toggled, this,
-            [applyFlip](bool on) { applyFlip(true, on); });
+    // undoable command (applyFlip).  checkStateChanged, not toggled: a
+    // mixed box (several characters, PartiallyChecked) clicked to Checked
+    // stays "checked" to toggled.
+    connect(m_flipHCheck, &QCheckBox::checkStateChanged, this,
+            [this](Qt::CheckState s) { applyFlip(false, s == Qt::Checked); });
+    connect(m_flipVCheck, &QCheckBox::checkStateChanged, this,
+            [this](Qt::CheckState s) { applyFlip(true, s == Qt::Checked); });
 
     container->layout()->addWidget(m_transformSection);
 }
@@ -658,14 +620,16 @@ void PropertiesPanel::setupAnimationSection(QWidget* container)
 
     m_loopingCheck = new QCheckBox("Loop", m_animationSection);
     m_loopingCheck->setToolTip(tr("Loop the animation continuously"));
-    connect(m_loopingCheck, &QCheckBox::toggled,
-            this, [this](bool) { if (!m_updating) applySpineLooping(); });
+    // checkStateChanged (not toggled) also fires for a mixed box clicked to
+    // Checked; see setupTransformSection.
+    connect(m_loopingCheck, &QCheckBox::checkStateChanged,
+            this, [this](Qt::CheckState) { if (!m_updating) applySpineLooping(); });
     form->addRow(m_loopingCheck);
 
     m_talkingCheck = new QCheckBox("Talking", m_animationSection);
     m_talkingCheck->setToolTip(tr("Enable talking mouth animation"));
-    connect(m_talkingCheck, &QCheckBox::toggled,
-            this, [this](bool) { if (!m_updating) applySpineTalking(); });
+    connect(m_talkingCheck, &QCheckBox::checkStateChanged,
+            this, [this](Qt::CheckState) { if (!m_updating) applySpineTalking(); });
     form->addRow(m_talkingCheck);
 
     m_animSpeedSpin = new ScrubbySpinBox(m_animationSection);
@@ -687,8 +651,8 @@ void PropertiesPanel::setupAnimationSection(QWidget* container)
         "so animation position carries smoothly across cuts between same-character clips.\n"
         "Action/special animations always use clip-local time (reset at each clip start).");
     m_continuityCheck->setChecked(true);
-    connect(m_continuityCheck, &QCheckBox::toggled,
-            this, [this](bool) { if (!m_updating) applySpineContinuity(); });
+    connect(m_continuityCheck, &QCheckBox::checkStateChanged,
+            this, [this](Qt::CheckState) { if (!m_updating) applySpineContinuity(); });
     form->addRow(m_continuityCheck);
 
     container->layout()->addWidget(m_animationSection);

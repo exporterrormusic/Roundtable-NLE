@@ -828,6 +828,30 @@ TEST_F(ShotPresetManagerTest, AliasUsesRealNameForShowDefault)
     EXPECT_TRUE(reloaded.resolveDefaultShot("Only One", "Roundtable Talk").has_value());
 }
 
+TEST_F(ShotPresetManagerTest, MirrorLinesUseRedShoesWhoKeepsHerName)
+{
+    // Mirror is another name for Red Shoes (same spine model): her lines
+    // find Red Shoes' shots, and she is still shown as Red Shoes.
+    ShotPresetManager mgr;
+    mgr.scan(m_tmpDir.path());
+
+    ShotPreset preset("Red Shoes (Close-Up)");
+    preset.setShow("Roundtable Talk");
+    CharacterState character;
+    character.characterName = "Red Shoes";
+    preset.addCharacter(character);
+    ASSERT_TRUE(mgr.save(preset));
+    mgr.setShowDefaultShot("Roundtable Talk", "Red Shoes", preset.name());
+
+    for (const char* line : {"Mirror", "MIRROR", "Red Shoes"}) {
+        auto resolved = mgr.resolveDefaultShot(line, "Roundtable Talk");
+        ASSERT_TRUE(resolved.has_value()) << line;
+        EXPECT_EQ(resolved->name(), preset.name()) << line;
+    }
+    EXPECT_EQ(mgr.displayNameFor("Red Shoes"), "Red Shoes");
+    EXPECT_FALSE(mgr.resolveDefaultShot("Mirrors", "Roundtable Talk").has_value());
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ShotComposer — UI Panel Tests
 // ═════════════════════════════════════════════════════════════════════════════

@@ -15,7 +15,9 @@
 #include "spine/ModelManager.h"
 #include "timeline/SpineClip.h"
 
+#include <spine/Animation.h>
 #include <spine/AnimationState.h>
+#include <spine/SkeletonData.h>
 
 #include <filesystem>
 #include <fstream>
@@ -342,6 +344,126 @@ TEST_F(SpineTest, EngineLoadInvalid)
     rt::SpineEngine engine;
     EXPECT_FALSE(engine.loadSkeleton("bad.skel", "bad.atlas"));
     EXPECT_FALSE(engine.isLoaded());
+}
+
+// COMPOSE, the timeline and export frame characters by the framing box.
+// Red Shoes' live box drifts ~100 units with her particles over the idle
+// loop; the framing box must not, whatever the engine is playing.
+TEST_F(SpineTest, FramingBoxIsFixedPerAnimation)
+{
+    if (!hasAssets) GTEST_SKIP() << "No assets directory found";
+
+    auto files = findCharFiles("Red Shoes");
+    if (!files.valid()) GTEST_SKIP() << "Red Shoes not available";
+
+    rt::SpineEngine engine;
+    ASSERT_TRUE(engine.loadSkeleton(files.skel, files.atlas));
+
+    // Right after load the skeleton is in its setup pose.
+    float sx, sy, sw, sh;
+    engine.getBounds(sx, sy, sw, sh);
+    ASSERT_GT(sw, 1.0f);
+    ASSERT_GT(sh, 1.0f);
+
+    const rt::SpineBox setup = engine.framingBox("");
+    EXPECT_FLOAT_EQ(setup.x, sx);
+    EXPECT_FLOAT_EQ(setup.y, sy);
+    EXPECT_FLOAT_EQ(setup.w, sw);
+    EXPECT_FLOAT_EQ(setup.h, sh);
+
+    // Sideways it is the setup pose; up and down it covers the idle's reach.
+    const rt::SpineBox idle = engine.framingBox("idle");
+    EXPECT_FLOAT_EQ(idle.x, sx);
+    EXPECT_FLOAT_EQ(idle.w, sw);
+    EXPECT_LE(idle.y, sy);
+    EXPECT_GE(idle.y + idle.h, sy + sh);
+
+    engine.animation().setBodyAnimation("idle", true);
+    engine.animation().startTalking();
+    for (float t : {0.0f, 0.9f, 2.7f, 4.4f}) {
+        engine.evaluateAtTime(t, t);
+        float x, y, w, h;
+        engine.getBounds(x, y, w, h);
+        const float slack = 0.01f * idle.h;  // the box is sampled ~30 times a second
+        EXPECT_GE(y, idle.y - slack) << "t=" << t;
+        EXPECT_LE(y + h, idle.y + idle.h + slack) << "t=" << t;
+
+        const rt::SpineBox again = engine.framingBox("idle");
+        EXPECT_FLOAT_EQ(again.x, idle.x);
+        EXPECT_FLOAT_EQ(again.y, idle.y);
+        EXPECT_FLOAT_EQ(again.w, idle.w);
+        EXPECT_FLOAT_EQ(again.h, idle.h);
+    }
+}
+
+// A tall action pose grows its box upward so the timeline doesn't cut it
+// off, without moving it sideways. Each box is measured on its own: export
+// used to measure an animation still mixed with the one measured before it.
+TEST_F(SpineTest, FramingBoxCoversTallPosesAndIgnoresMeasureOrder)
+{
+    if (!hasAssets) GTEST_SKIP() << "No assets directory found";
+
+    auto files = findCharFiles("Black Ark Ranger");
+    if (!files.valid()) GTEST_SKIP() << "Black Ark Ranger not available";
+
+    auto first = rt::SpineParsedSkeleton::parseFromFiles(files.skel, files.atlas);
+    auto second = rt::SpineParsedSkeleton::parseFromFiles(files.skel, files.atlas);
+    ASSERT_TRUE(first && second);
+    ASSERT_TRUE(first->skelData->findAnimation("action"));
+    ASSERT_TRUE(first->skelData->findAnimation("etc"));
+
+    const rt::SpineBox setup = first->framingBox("");
+    const rt::SpineBox action = first->framingBox("action");
+    EXPECT_GT(action.y + action.h, setup.y + setup.h + 0.25f * setup.h);
+    EXPECT_FLOAT_EQ(action.x, setup.x);
+    EXPECT_FLOAT_EQ(action.w, setup.w);
+
+    const rt::SpineBox etcAfterAction = first->framingBox("etc");
+    const rt::SpineBox etcAlone = second->framingBox("etc");
+    EXPECT_FLOAT_EQ(etcAfterAction.x, etcAlone.x);
+    EXPECT_FLOAT_EQ(etcAfterAction.y, etcAlone.y);
+    EXPECT_FLOAT_EQ(etcAfterAction.w, etcAlone.w);
+    EXPECT_FLOAT_EQ(etcAfterAction.h, etcAlone.h);
+    // etc stays inside the setup pose up and down.
+    EXPECT_NEAR(etcAlone.h, setup.h, 0.005f * setup.h);
+}
+
+// Modernia outfit_02's action reaches well past her setup pose (raised
+// parts, a burst ring that expands as it fades): the render grows to hold
+// it, while her idle needs no extra room.
+TEST_F(SpineTest, ActionReachGrowsTheRenderNotTheCharacter)
+{
+    if (!hasAssets) GTEST_SKIP() << "No assets directory found";
+
+    auto files = findCharFiles("Modernia", "outfit_02");
+    if (!files.valid()) GTEST_SKIP() << "Modernia outfit_02 not available";
+
+    auto parsed = rt::SpineParsedSkeleton::parseFromFiles(files.skel, files.atlas);
+    ASSERT_TRUE(parsed);
+    ASSERT_TRUE(parsed->skelData->findAnimation("action"));
+
+    const rt::SpineBox setup = parsed->framingBox("");
+    const rt::SpineBox action = parsed->framingBox("action");
+    EXPECT_GT(action.h, 1.15f * setup.h);
+    EXPECT_FLOAT_EQ(action.x, setup.x);
+    EXPECT_FLOAT_EQ(action.w, setup.w);
+    EXPECT_GT(rt::spineRenderHeight(1080, setup, action), 1080u);
+    EXPECT_EQ(rt::spineRenderHeight(1080, setup, parsed->framingBox("idle")), 1080u);
+}
+
+TEST(SpineRenderHeight, HoldsTheReachCentredOnTheSetupPose)
+{
+    const rt::SpineBox setup{0.0f, 0.0f, 100.0f, 1000.0f};   // centre y = 500
+    EXPECT_EQ(rt::spineRenderHeight(1080, setup, setup), 1080u);
+    // 300 above the top: 800 from the centre, so 1.6x (centred render).
+    EXPECT_EQ(rt::spineRenderHeight(1080, setup, {0.0f, 0.0f, 100.0f, 1300.0f}), 1728u);
+    EXPECT_EQ(rt::spineRenderHeight(1080, setup, {0.0f, -300.0f, 100.0f, 1300.0f}), 1728u);
+    // Capped at kSpineMaxRenderGrowth.
+    EXPECT_EQ(rt::spineRenderHeight(1080, setup, {0.0f, 0.0f, 100.0f, 9000.0f}), 2160u);
+    // Always even.
+    EXPECT_EQ(rt::spineRenderHeight(271, setup, {0.0f, 0.0f, 100.0f, 1100.0f}) % 2u, 0u);
+    // Degenerate boxes change nothing.
+    EXPECT_EQ(rt::spineRenderHeight(1080, {}, setup), 1080u);
 }
 
 TEST_F(SpineTest, EngineLoadFromClip)

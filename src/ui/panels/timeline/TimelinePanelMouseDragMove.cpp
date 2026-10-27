@@ -362,7 +362,9 @@ void TimelinePanel::continuePendingClipClick(QPointF pos)
                 m_commandStack->beginMacro("Trim clip tail");
         } else {
             m_dragMode = DragMode::ClipMove;
-            m_lastClickedEdge.valid = false;
+            // Drop the brackets with the edge so they never show a cut
+            // Ctrl+T can't act on.
+            clearEditPointSelection();
         }
 
         // Record original positions of ALL selected clips

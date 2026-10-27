@@ -388,6 +388,21 @@ private:
     void executeCharacterEdits(const char* name, std::vector<CharacterEdit> edits,
                                std::function<void(bool redo)> syncUi);
 
+    /// Clips of two or more DIFFERENT characters selected: the panel shows
+    /// only what they share (Talking, Loop, Seamless, Flip), as tri-state
+    /// boxes where the clips disagree, and an edit applies to every selected
+    /// character clip (characterTargets()).  Returns the clip to bind as the
+    /// representative (a Spine clip when there is one), or nullptr when the
+    /// selection is not such a mix.
+    [[nodiscard]] Clip* sharedCharacterRepresentative(const std::vector<Clip*>& clips,
+                                                      int& count) const;
+    void enterSharedCharacterMode(int count);
+    void leaveSharedCharacterMode();
+    void refreshSharedCharacterControls();
+    void hideForSharedMode(QWidget* widget);
+    /// Flip the bound clip, or every target in shared-character mode.
+    void applyFlip(bool vertical, bool on);
+
     // PNG puppet
     void populateFromPuppet();
     void applyPuppetTalking();
@@ -479,6 +494,9 @@ private:
     /// states). Retained so the Shot dropdown can apply across every selected
     /// clip rather than just the single representative `m_clip`.
     std::vector<Clip*> m_multiSelection;
+    bool               m_sharedCharacterMode{false};
+    /// Widgets shared-character mode hid; shown again when it ends.
+    std::vector<QWidget*> m_sharedModeHidden;
     SpineClip*         m_spineClip{nullptr};
     Track*             m_track{nullptr};
     size_t             m_transitionIndex{SIZE_MAX};

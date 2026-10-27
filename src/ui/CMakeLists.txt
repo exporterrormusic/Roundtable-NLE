@@ -144,6 +144,9 @@ add_library(roundtable_ui STATIC
     panels/comfy/ComfyRunner.cpp
     panels/comfy/ComfyEventStream.cpp
     panels/comfy/FramingEditor.cpp
+    corridorkey/CorridorKeyService.cpp
+    corridorkey/CorridorKeySetup.cpp
+    corridorkey/CorridorKeySetupDialog.cpp
     panels/audio/VoiceGenerationService.cpp
     panels/audio/VoiceGenerationPanel.cpp
     panels/audio/VoiceProviders.cpp

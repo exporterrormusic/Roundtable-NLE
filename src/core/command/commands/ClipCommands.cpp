@@ -259,6 +259,17 @@ void retargetTransitionsForClip(Track* track, uint64_t clipId, const Clip* c)
 }
 } // namespace
 
+// A head trim moves the clip's start, so re-seat it in the track's
+// start-time order: the timeline painter stops at the first clip past the
+// visible edge, and an out-of-order clip was left undrawn (the overwrite
+// "erased clip" bug).  Returns the clip at its new index.
+Clip* TrimClipCommand::keepSorted(size_t idx)
+{
+    m_track->moveClip(idx, m_track->clip(idx)->timelineIn(),
+                      TrackMutationPolicy::BypassLock);
+    return m_track->clip(m_track->findClipIndexById(m_clipId));
+}
+
 void TrimClipCommand::execute()
 {
     if (!m_authorized) return;
@@ -275,6 +286,7 @@ void TrimClipCommand::execute()
     c->setTimelineIn(m_newTimelineIn);
     c->setDuration(m_newDuration);
     c->setSourceIn(m_newSourceIn);
+    c = keepSorted(idx);
 
     retargetTransitionsForClip(m_track, m_clipId, c);
     m_applied = true;
@@ -292,6 +304,7 @@ void TrimClipCommand::undo()
     c->setTimelineIn(m_oldTimelineIn);
     c->setDuration(m_oldDuration);
     c->setSourceIn(m_oldSourceIn);
+    c = keepSorted(idx);
 
     retargetTransitionsForClip(m_track, m_clipId, c);
     m_applied = false;

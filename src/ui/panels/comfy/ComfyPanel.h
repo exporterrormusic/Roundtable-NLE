@@ -146,6 +146,8 @@ public:
     /// exists, else the newest one still on disk, else nullptr.
     [[nodiscard]] static const RenderVersion* usableRender(const ShotSettings& settings);
     [[nodiscard]] static bool needsRender(const ShotSettings& settings);
+    /// A ComfyUI batch is running (it holds most of the GPU's memory).
+    [[nodiscard]] bool isRendering() const;
 private:
 
     // RENDERS strip (SHOTS pane): every render on disk; click = use + view

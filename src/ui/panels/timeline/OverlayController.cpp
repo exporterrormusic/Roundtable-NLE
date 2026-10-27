@@ -684,22 +684,16 @@ void OverlayController::updateTransformOverlay()
     if ((info.srcW == 0 || info.srcH == 0) && dynamic_cast<SpineClip*>(m_ws->selection().clip)) {
         auto* spineClip = static_cast<SpineClip*>(m_ws->selection().clip);
         if (m_ws->compositeService()) {
-            const auto* shared = m_ws->compositeService()->getSpineSharedDataForOverlay(
+            const auto shared = m_ws->compositeService()->getSpineSharedDataForOverlay(
                 spineClip->characterName(), spineClip->outfit(),
                 static_cast<int>(spineClip->stance()));
-            // Match the renderer: it frames the character to THIS animation's
-            // box (setup pose ∪ the animation's envelope), so the overlay must
-            // use the same bounds or it won't line up with the visible
-            // character (especially for taller "action" poses).
-            float boundsW = shared ? shared->stableBoundsW : 0.0f;
-            float boundsH = shared ? shared->stableBoundsH : 0.0f;
-            if (shared) {
-                auto abIt = shared->animBounds.find(spineClip->animationName());
-                if (abIt != shared->animBounds.end()) {
-                    boundsW = abIt->second.w;
-                    boundsH = abIt->second.h;
-                }
-            }
+            // Match the renderer: it sizes the character by the setup pose
+            // whatever the animation (a taller pose's reach is drawn around
+            // it), so the box is her setup-pose frame.
+            SpineBox box;
+            if (shared) box = shared->framingBox("");
+            const float boundsW = box.w;
+            const float boundsH = box.h;
             if (shared && boundsW > 1.0f && boundsH > 1.0f) {
                 // Scale: same as compositor: fit height with 0.9 padding
                 float refH = 1080.0f;

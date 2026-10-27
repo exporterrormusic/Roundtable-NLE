@@ -179,6 +179,9 @@ void TimelineWorkspace::scheduleSpineSharedLoad(
             // Parsed on this background thread; per-clip engines on the
             // render thread reuse it instead of re-parsing (~50 ms/clip).
             shared->parsed = tempEngine.parsedData();
+            // Measure the usual framing box here, not on the render thread
+            // (up to ~15 ms); other animations are measured on first use.
+            (void)shared->parsed->framingBox("idle");
 
             // Pre-cache bounds
             tempEngine.getBounds(

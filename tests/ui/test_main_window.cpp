@@ -20,6 +20,9 @@
 #include "ShortcutManager.h"
 
 #include "command/CommandStack.h"
+#include "audio/AudioEngine.h"
+#include "playback/PlaybackController.h"
+#include "widgets/MediaDragTreeWidget.h"
 #include "project/Project.h"
 #include "project/ProjectSerializer.h"
 #include "timeline/Timeline.h"
@@ -65,6 +68,10 @@
 #include <QThread>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QUrl>
 
 #include <atomic>
 #include <chrono>
@@ -1176,6 +1183,85 @@ TEST_F(MainWindowTest, UndoRedoWithCommandStack)
     // Direct call should be safe
     EXPECT_FALSE(stack.canUndo());
     EXPECT_FALSE(stack.canRedo());
+}
+
+TEST_F(MainWindowTest, BinImportAndFolderUndoLeaveTimelineAudioInstalled)
+{
+    Timeline timeline;
+    CommandStack stack;
+    AudioEngine engine;
+    PlaybackController playback;
+    playback.setTimeline(&timeline);
+    playback.setAudioEngine(&engine);
+    MainWindow mw;
+    mw.setCommandStack(&stack);
+    mw.setTimeline(&timeline);
+    mw.setAudioEngine(&engine);
+    mw.setPlaybackController(&playback);
+    mw.buildPanels();
+    auto* bin = mw.projectBin();
+    ASSERT_NE(bin, nullptr);
+    bin->setCommandStack(&stack);
+    bin->addFilesToNamedBin({"folder-item.wav"}, QStringLiteral("Folder"));
+    auto* tree = bin->findChild<MediaDragTreeWidget*>();
+    ASSERT_NE(tree, nullptr);
+    tree->resize(800, 600);
+    tree->show();
+    QApplication::processEvents();
+
+    auto samples = std::make_shared<std::vector<float>>(48000, 0.25f);
+    AudioTrackSource source;
+    source.sampleBuffer = samples;
+    source.samples = samples->data();
+    source.totalFrames = samples->size();
+    source.channels = 1;
+    engine.setTrackSources({source});
+    engine.seekToFrame(1234);
+    const auto revision = engine.trackSourcesRevision();
+    auto expectUndisturbed = [&] {
+        EXPECT_TRUE(engine.hasTrackSources());
+        EXPECT_EQ(engine.trackSourcesRevision(), revision);
+        EXPECT_EQ(engine.currentFrame(), 1234);
+    };
+    auto drop = [&](const QMimeData& mime, QPoint point, Qt::DropAction action) {
+        QDragEnterEvent enter(point, action, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(tree->viewport(), &enter);
+        QDropEvent event(point, action, &mime, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(tree->viewport(), &event);
+        return event.isAccepted();
+    };
+    QMimeData imported;
+    imported.setUrls({QUrl::fromLocalFile(QDir::tempPath() + "/bin-import-a.wav"),
+                      QUrl::fromLocalFile(QDir::tempPath() + "/bin-import-b.wav")});
+    ASSERT_TRUE(drop(imported, QPoint(700, 550), Qt::CopyAction));
+    ASSERT_EQ(stack.undoDescription(), "Import Media");
+    expectUndisturbed();
+    ASSERT_TRUE(QMetaObject::invokeMethod(&mw, "onUndo", Qt::DirectConnection));
+    expectUndisturbed();
+    ASSERT_TRUE(QMetaObject::invokeMethod(&mw, "onRedo", Qt::DirectConnection));
+    expectUndisturbed();
+
+    QTreeWidgetItem* file = nullptr;
+    QTreeWidgetItem* folder = nullptr;
+    for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+        auto* item = tree->topLevelItem(i);
+        if (item->text(0) == "Folder") folder = item;
+        else if (!item->data(0, Qt::UserRole + 2).toBool()) file = item;
+    }
+    ASSERT_NE(file, nullptr);
+    ASSERT_NE(folder, nullptr);
+    QMimeData moved;
+    moved.setData("application/x-roundtable-tree-item-ptrs",
+                  QByteArray::number(reinterpret_cast<quintptr>(file)));
+    ASSERT_TRUE(drop(moved, tree->visualItemRect(folder).center(), Qt::MoveAction));
+    ASSERT_EQ(stack.undoDescription(), "Move Bin Items");
+    expectUndisturbed();
+    ASSERT_TRUE(QMetaObject::invokeMethod(&mw, "onUndo", Qt::DirectConnection));
+    expectUndisturbed();
+    ASSERT_TRUE(QMetaObject::invokeMethod(&mw, "onRedo", Qt::DirectConnection));
+    expectUndisturbed();
+    QApplication::processEvents();
+    expectUndisturbed();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

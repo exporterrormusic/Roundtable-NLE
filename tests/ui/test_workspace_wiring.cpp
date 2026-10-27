@@ -39,6 +39,12 @@
 #include "cache/FrameCache.h"
 #include "panels/monitors/SourceMonitor.h"
 #include "playback/MediaPool.h"
+#include "CompositeService.h"
+#include "timeline/SpineClip.h"
+#ifdef ROUNDTABLE_HAS_SPINE
+#include <spine/SkeletonData.h>
+#include <spine/BoneData.h>
+#endif
 #include "../gpu/IndexedVideoFixture.h"
 
 #include <QApplication>
@@ -55,6 +61,9 @@
 #include <filesystem>
 #include <string>
 #include <memory>
+#include <chrono>
+#include <future>
+#include <thread>
 
 namespace {
 
@@ -824,3 +833,132 @@ TEST(WorkspaceWiring, SourceClipMarkersAreUndoableAndBelongToTheFile)
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
+
+#ifdef ROUNDTABLE_HAS_SPINE
+namespace {
+// A real Spine engine without external character files or a GPU requirement.
+std::shared_ptr<rt::CompositeService::SpineSharedData> lifetimeTestSkeleton()
+{
+    auto shared = std::make_shared<rt::CompositeService::SpineSharedData>();
+    shared->loadState = rt::ResourceLoadState::Ready;
+    shared->boundsCached = true;
+    shared->skelBytes.push_back(0); // parsed data below is the loading authority
+    shared->parsed = std::make_shared<rt::SpineParsedSkeleton>();
+    shared->parsed->skelData.reset(new spine::SkeletonData());
+    shared->parsed->skelData->getBones().add(
+        new spine::BoneData(0, spine::String("root")));
+    return shared;
+}
+}
+
+TEST(WorkspaceWiring, OverwriteUndoKeepsInflightSpineSnapshotAlive)
+{
+    ensureApp();
+    rt::Timeline timeline;
+    auto* track = timeline.addVideoTrack("V1");
+    rt::CommandStack stack;
+    auto original = std::make_unique<rt::SpineClip>("Lifetime fixture", "default");
+    original->setDuration(480000);
+    const auto originalId = original->id();
+    track->addClip(std::move(original));
+    auto incoming = std::make_unique<rt::SpineClip>("Lifetime fixture", "default");
+    incoming->setTimelineIn(192000);
+    incoming->setDuration(96000);
+    const auto incomingId = incoming->id();
+    track->addClip(std::move(incoming));
+    auto overwrite = rt::EditOperations::resolveOverlaps(timeline, 0, incomingId);
+    ASSERT_NE(overwrite, nullptr);
+    stack.execute(std::move(overwrite));
+    rt::SpineClip* remnant = nullptr;
+    for (size_t i = 0; i < track->clipCount(); ++i) {
+        auto* clip = track->clip(i);
+        if (clip->id() != originalId && clip->id() != incomingId)
+            remnant = dynamic_cast<rt::SpineClip*>(clip);
+    }
+    ASSERT_NE(remnant, nullptr);
+    auto snapshotClip = remnant->clone();
+    snapshotClip->setId(remnant->id());
+
+    rt::TimelineWorkspace workspace;
+    auto* service = workspace.compositeService();
+    service->storeSpineSharedData(service->spineCharKey(*remnant), lifetimeTestSkeleton());
+    workspace.setCommandStack(&stack);
+    workspace.setTimeline(&timeline);
+    auto* state = service->getOrCreateSpineState(remnant);
+    ASSERT_NE(state, nullptr);
+    ASSERT_TRUE(state->engine.isLoaded());
+    state->cachedFrame = std::make_shared<rt::CachedFrame>();
+    std::weak_ptr<rt::CachedFrame> lifetime = state->cachedFrame;
+    std::promise<void> started;
+    auto ready = started.get_future();
+    auto frame = std::async(std::launch::async, [&] {
+        std::lock_guard lock(service->compositeMutex());
+        started.set_value();
+        // Let the UI run the actual undo-refresh path while this older
+        // snapshot owns an in-flight render transaction.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const bool alive = !lifetime.expired();
+        // Avoid undefined behavior even when this test catches a regression.
+        if (alive) {
+            state->engine.evaluateAtTime(0.25f, 0.25f);
+            (void)state->engine.extractMeshes();
+        }
+        return alive;
+    });
+    ready.wait();
+    EXPECT_TRUE(stack.undo());
+    workspace.refreshAfterUndoRedo();
+    EXPECT_TRUE(frame.get()) << "Undo freed a Spine engine still owned by an in-flight frame";
+    EXPECT_TRUE(lifetime.expired()) << "The removed remnant is reclaimed after rendering";
+    EXPECT_EQ(service->spineCache().count(snapshotClip->id()), 0u);
+}
+
+TEST(WorkspaceWiring, PropertyEvictionWaitsUntilSpineFrameFinishes)
+{
+    rt::CompositeService service;
+    rt::SpineClip clip("Lifetime fixture", "default");
+    service.storeSpineSharedData(service.spineCharKey(clip), lifetimeTestSkeleton());
+    auto* state = service.getOrCreateSpineState(&clip);
+    ASSERT_NE(state, nullptr);
+    state->cachedFrame = std::make_shared<rt::CachedFrame>();
+    std::weak_ptr<rt::CachedFrame> lifetime = state->cachedFrame;
+    std::unique_lock renderLock(service.compositeMutex());
+    std::promise<void> started;
+    auto ready = started.get_future();
+    auto edit = std::async(std::launch::async, [&] {
+        started.set_value();
+        service.evictSpineState(clip.id());
+    });
+    ready.wait();
+    const bool waiting = edit.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    const bool alive = !lifetime.expired();
+    renderLock.unlock();
+    edit.get();
+    EXPECT_TRUE(waiting);
+    EXPECT_TRUE(alive) << "A property edit destroyed the active frame's engine";
+    EXPECT_TRUE(lifetime.expired());
+}
+
+TEST(WorkspaceWiring, UndoResyncWaitsUntilSpineFrameFinishes)
+{
+    rt::CompositeService service;
+    rt::SpineClip clip("Lifetime fixture", "default");
+    service.storeSpineSharedData(service.spineCharKey(clip), lifetimeTestSkeleton());
+    auto* state = service.getOrCreateSpineState(&clip);
+    ASSERT_NE(state, nullptr);
+    clip.setAnimationSpeed(2.0f);
+    std::unique_lock renderLock(service.compositeMutex());
+    std::promise<void> started;
+    auto ready = started.get_future();
+    auto edit = std::async(std::launch::async, [&] {
+        started.set_value();
+        service.resyncSpineClip(&clip);
+    });
+    ready.wait();
+    const bool waiting = edit.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
+    renderLock.unlock();
+    edit.get();
+    EXPECT_TRUE(waiting) << "Undo mutated the active frame's animation state";
+    EXPECT_FLOAT_EQ(state->appliedSpeed, 2.0f);
+}
+#endif

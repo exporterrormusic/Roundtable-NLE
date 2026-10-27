@@ -57,6 +57,25 @@ std::string normalizeArkRangerName(const std::string& name)
     return name;
 }
 
+// Other names scripts use for a spine character who keeps their own name on
+// screen. An alias (_aliases.json) would rename the character everywhere;
+// these only let a line under the extra name find the character's shots.
+// Case-insensitive; other names pass through unchanged.
+std::string normalizeExtraName(const std::string& name)
+{
+    static const std::pair<const char*, const char*> kExtraNames[] = {
+        {"mirror", "Red Shoes"},   // same character, same spine model
+    };
+    std::string low = name;
+    std::transform(low.begin(), low.end(), low.begin(),
+                   [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+    for (const auto& [extra, canonical] : kExtraNames) {
+        if (low == extra)
+            return canonical;
+    }
+    return name;
+}
+
 // Escape a string for JSON output
 std::string jsonEscape(const std::string& s)
 {
@@ -1103,6 +1122,8 @@ std::optional<ShotPreset> ShotPresetManager::resolveDefaultShot(
     // Ranger") so the colour can sit on either side of the name in the script
     // and still resolve to the canonical spine character / shots.
     realName = normalizeArkRangerName(realName);
+    // Extra script names for a character ("Mirror" → "Red Shoes").
+    realName = normalizeExtraName(realName);
 
     // ── Step A: per-show default (checked first when a show is given) ────
     if (!show.empty()) {

@@ -181,6 +181,16 @@ size_t CommandStack::undoCount() const noexcept
     return m_undoStack.size();
 }
 
+bool CommandStack::undoAffectsTimeline() const
+{
+    return !m_undoStack.empty() && m_undoStack.back()->affectsTimeline();
+}
+
+bool CommandStack::redoAffectsTimeline() const
+{
+    return !m_redoStack.empty() && m_redoStack.back()->affectsTimeline();
+}
+
 size_t CommandStack::redoCount() const noexcept
 {
     return m_redoStack.size();

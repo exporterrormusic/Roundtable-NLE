@@ -342,11 +342,13 @@ void ShotComposer::updatePreview()
         for (const auto& a : anims) {
             if (a.name == animName) { foundAnim = true; break; }
         }
-        if (foundAnim) {
+        if (!foundAnim && !anims.empty())
+            animName = anims[0].name;
+        // Only when it changes: setting it again restarts the loop, so every
+        // edit made every character twitch back to its first frame.
+        if (!anims.empty() &&
+            engine->animation().currentBodyAnimation() != animName)
             engine->animation().setBodyAnimation(animName, true);
-        } else if (!anims.empty()) {
-            engine->animation().setBodyAnimation(anims[0].name, true);
-        }
 
         if (ch->isTalking)
             engine->animation().startTalking();

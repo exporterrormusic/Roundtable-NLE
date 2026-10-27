@@ -25,7 +25,13 @@
 
 #include <QComboBox>
 #include <QCheckBox>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QLabel>
+#include <QScrollArea>
+#include <QSignalBlocker>
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 
 namespace rt {
@@ -164,7 +170,10 @@ std::vector<Clip*> PropertiesPanel::characterTargets()
     const std::string key = characterKey(m_clip);
     if (m_multiSelection.size() > 1 && !key.empty()) {
         for (Clip* c : m_multiSelection) {
-            if (!c || characterKey(c) != key) continue;
+            // Shared-character mode: every character clip; otherwise only
+            // the representative's character.
+            const std::string ck = characterKey(c);
+            if (!c || ck.empty() || (!m_sharedCharacterMode && ck != key)) continue;
             Track* track = nullptr;
             Clip* live = m_timeline ? rt::resolveClipById(m_timeline, c->id(), &track) : c;
             if (!live) continue;
@@ -189,6 +198,8 @@ void PropertiesPanel::executeCharacterEdits(const char* name, std::vector<Charac
         }
         m_updating = true;
         if (syncUi) syncUi(redo);
+        // The clips may disagree again after an undo: show it.
+        if (m_sharedCharacterMode) refreshSharedCharacterControls();
         m_updating = false;
         emit propertyChanged();
     };
@@ -198,6 +209,147 @@ void PropertiesPanel::executeCharacterEdits(const char* name, std::vector<Charac
     } else {
         run(true);
     }
+}
+
+// ── Shared settings across different characters ─────────────────────────────
+
+Clip* PropertiesPanel::sharedCharacterRepresentative(const std::vector<Clip*>& clips,
+                                                     int& count) const
+{
+    count = 0;
+    Clip* first = nullptr;
+    Clip* firstSpine = nullptr;
+    bool differ = false;
+    for (Clip* c : clips) {
+        const std::string key = characterKey(c);
+        if (key.empty()) continue;
+        if (!first) first = c;
+        else if (key != characterKey(first)) differ = true;
+        if (!firstSpine && c->clipType() == ClipType::Spine) firstSpine = c;
+        ++count;
+    }
+    if (count < 2 || !differ) return nullptr;
+    // A Spine representative keeps the Spine-only rows (Loop, Seamless) live.
+    return firstSpine ? firstSpine : first;
+}
+
+void PropertiesPanel::hideForSharedMode(QWidget* widget)
+{
+    if (!widget || widget->isHidden()) return;
+    widget->hide();
+    m_sharedModeHidden.push_back(widget);
+}
+
+void PropertiesPanel::enterSharedCharacterMode(int count)
+{
+    m_sharedCharacterMode = true;
+    m_spineClip = (m_clip && m_clip->clipType() == ClipType::Spine)
+        ? static_cast<SpineClip*>(m_clip) : nullptr;
+    m_characterSection->setVisible(false);
+    m_animationSection->setVisible(true);
+    m_transformSection->setVisible(true);
+
+    // Animation names, speed: per character, so not shared.
+    auto* form = qobject_cast<QFormLayout*>(m_animationSection->layout());
+    for (QWidget* field : {static_cast<QWidget*>(m_animationCombo),
+                           static_cast<QWidget*>(m_animSpeedSpin)}) {
+        hideForSharedMode(field);
+        if (form) hideForSharedMode(form->labelForField(field));
+    }
+    bool anySpine = false;
+    for (Clip* c : characterTargets())
+        anySpine |= c->clipType() == ClipType::Spine;
+    m_talkingCheck->setVisible(true);
+    m_loopingCheck->setVisible(anySpine);
+    m_continuityCheck->setVisible(anySpine);
+
+    // Transform: only Flip is shared; position/scale fields bind one clip.
+    for (auto* w : m_transformSection->findChildren<QWidget*>(
+             QString(), Qt::FindDirectChildrenOnly)) {
+        if (w != m_flipHCheck && w != m_flipVCheck) hideForSharedMode(w);
+    }
+
+    refreshSharedCharacterControls();
+    m_headerLabel->setText(QString("%1 characters selected").arg(count));
+    m_typeLabel->setText(QStringLiteral("Shared settings"));
+    if (m_statusLabel && m_scrollArea->isEnabled())
+        m_statusLabel->setText(QString("Changes apply to all %1").arg(count));
+}
+
+void PropertiesPanel::leaveSharedCharacterMode()
+{
+    m_sharedCharacterMode = false;
+    for (QWidget* w : m_sharedModeHidden) w->show();
+    m_sharedModeHidden.clear();
+    for (QCheckBox* box : {m_talkingCheck, m_loopingCheck, m_continuityCheck,
+                           m_flipHCheck, m_flipVCheck}) {
+        if (!box) continue;
+        QSignalBlocker blocker(box);
+        box->setTristate(false);
+    }
+}
+
+void PropertiesPanel::refreshSharedCharacterControls()
+{
+    const auto targets = characterTargets();
+    int talking = 0, spines = 0, looping = 0, seamless = 0, flipH = 0, flipV = 0;
+    for (Clip* c : targets) {   // (scaleX() has no const overload)
+        if (c->clipType() == ClipType::Spine) {
+            const auto* s = static_cast<const SpineClip*>(c);
+            ++spines;
+            talking += s->isTalking();
+            looping += s->isLooping();
+            seamless += s->useGlobalTime();
+        } else {
+            talking += static_cast<const VideoClip*>(c)->isTalking();
+        }
+        flipH += c->scaleX().evaluate(0) < 0.0f;
+        flipV += c->scaleY().evaluate(0) < 0.0f;
+    }
+    // Tri-state shows a mix; a click on it then sets every clip (Checked).
+    auto show = [](QCheckBox* box, int on, int of) {
+        if (!box) return;
+        QSignalBlocker blocker(box);
+        const bool mixed = on > 0 && on < of;
+        box->setTristate(mixed);
+        box->setCheckState(mixed ? Qt::PartiallyChecked
+                                 : (on > 0 ? Qt::Checked : Qt::Unchecked));
+    };
+    const int all = static_cast<int>(targets.size());
+    show(m_talkingCheck, talking, all);
+    show(m_loopingCheck, looping, spines);
+    show(m_continuityCheck, seamless, spines);
+    show(m_flipHCheck, flipH, all);
+    show(m_flipVCheck, flipV, all);
+}
+
+void PropertiesPanel::applyFlip(bool vertical, bool on)
+{
+    if (m_updating || !canMutateBoundClip()) return;
+    std::vector<CharacterEdit> edits;
+    const std::vector<Clip*> targets = m_sharedCharacterMode
+        ? characterTargets() : std::vector<Clip*>{m_clip};
+    for (Clip* c : targets) {
+        const KeyframeTrack<float>& track = vertical ? c->scaleY() : c->scaleX();
+        KeyframeTrack<float> before = track;
+        KeyframeTrack<float> after  = track;
+        // Force the target sign on the default value + every keyframe so a
+        // keyframed scale still flips uniformly across the whole clip.
+        auto withSign = [on](float v) {
+            float m = std::abs(v);
+            return on ? -m : m;
+        };
+        after.setDefaultValue(withSign(after.defaultValue()));
+        for (size_t i = 0; i < after.keyframeCount(); ++i)
+            after.keyframe(i).value = withSign(after.keyframe(i).value);
+        if (before.defaultValue() == after.defaultValue() && before.keyframeCount() == 0)
+            continue;   // already in the requested state
+        edits.push_back({c->id(), c,
+            [vertical, after](Clip* x) { (vertical ? x->scaleY() : x->scaleX()) = after; },
+            [vertical, before](Clip* x) { (vertical ? x->scaleY() : x->scaleX()) = before; }});
+    }
+    executeCharacterEdits(vertical ? "Flip Vertical" : "Flip Horizontal", std::move(edits),
+        [this](bool) { if (!m_sharedCharacterMode) populateFromClip(); });
 }
 
 void PropertiesPanel::applySpineAnimation()

@@ -116,7 +116,7 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
     if (idx == track->clipCount())
         return nullptr;
 
-    const Clip* clip = track->clip(idx);
+    Clip* clip = track->clip(idx);
 
     // Split must be within the clip
     if (splitTime <= clip->timelineIn() || splitTime >= clip->timelineOut())
@@ -157,9 +157,13 @@ std::unique_ptr<Command> EditOperations::splitClipInternal(
     compound->addCommand(std::make_unique<TrimClipCommand>(
         track, clipId,
         clip->timelineIn(), leftDuration, clip->sourceIn()));
+    compound->addCommand(sliceClipKeyframesCommand(*clip, 0, leftDuration));
 
     // 2. Clone the clip for the right half
     auto rightClip = clip->clone();
+    // Keys use clip-local timeline ticks, independently of sourceIn/speed.
+    // The key at the cut belongs to the right half at local tick zero.
+    sliceClipKeyframes(*rightClip, leftDuration, clip->duration());
     rightClip->setTimelineIn(splitTime);
     rightClip->setDuration(rightDuration);
     // leftDuration is in timeline ticks; convert to source ticks for sourceIn.

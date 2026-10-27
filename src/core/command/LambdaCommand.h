@@ -19,10 +19,12 @@ class LambdaCommand : public Command
 public:
     LambdaCommand(std::string description,
                   std::function<void()> executeFn,
-                  std::function<void()> undoFn)
+                  std::function<void()> undoFn,
+                  bool affectsTimeline = true)
         : m_description(std::move(description))
         , m_executeFn(std::move(executeFn))
         , m_undoFn(std::move(undoFn))
+        , m_affectsTimeline(affectsTimeline)
     {
     }
 
@@ -30,11 +32,13 @@ public:
     void undo()    override { if (m_undoFn)    m_undoFn();    }
 
     [[nodiscard]] std::string description() const override { return m_description; }
+    [[nodiscard]] bool affectsTimeline() const override { return m_affectsTimeline; }
 
 private:
     std::string            m_description;
     std::function<void()>  m_executeFn;
     std::function<void()>  m_undoFn;
+    bool                  m_affectsTimeline;
 };
 
 } // namespace rt

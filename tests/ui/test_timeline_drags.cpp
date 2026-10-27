@@ -1284,6 +1284,109 @@ TEST(TimelineDrags, EscapeAfterACrossTrackMoveRestoresTheTransition)
     EXPECT_EQ(rig.stack.undoCount(), 0u);
 }
 
+// ── Overwrite: the dropped clip wins, and the cut it covers goes ──────────
+
+TEST(TimelineDrags, DraggingTheRightClipIntoTheLeftRemovesTheirTransition)
+{
+    // It used to follow B's head onto the new cut (Premiere drops it).
+    DragRig rig;
+    DissolveScene scene(rig);   // A [1 s, 2 s) | B [2 s, 3 s), dissolve at 2 s
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(2 * kSecond + kSecond / 2, scene.track),
+             rig.pointAt(2 * kSecond, scene.track));   // half a second left
+
+    EXPECT_EQ(clipById(rig.timeline, scene.b)->timelineIn(), kSecond + kSecond / 2);
+    EXPECT_EQ(clipById(rig.timeline, scene.a)->timelineOut(), kSecond + kSecond / 2);
+    EXPECT_EQ(rig.timeline.track(scene.track)->transitionCount(), 0u);
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, DraggingTheLeftClipIntoTheRightRemovesTheirTransition)
+{
+    DragRig rig;
+    DissolveScene scene(rig);
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, scene.track),
+             rig.pointAt(2 * kSecond, scene.track));   // half a second right
+
+    EXPECT_EQ(clipById(rig.timeline, scene.a)->timelineOut(), 2 * kSecond + kSecond / 2);
+    EXPECT_EQ(clipById(rig.timeline, scene.b)->timelineIn(), 2 * kSecond + kSecond / 2);
+    EXPECT_EQ(rig.timeline.track(scene.track)->transitionCount(), 0u);
+    rig.expectOneExactUndoStep(before);
+}
+
+namespace {
+void expectStartOrder(const Track& track)
+{
+    for (size_t i = 1; i < track.clipCount(); ++i)
+        EXPECT_LE(track.clip(i - 1)->timelineIn(), track.clip(i)->timelineIn())
+            << "clip " << i << " is listed out of start order";
+}
+} // namespace
+
+TEST(TimelineDrags, ClipDroppedOnAnotherTrackOverwritesAClipStartingOnTheSameFrame)
+{
+    // A Crown clip lined up on a Wells clip's first frame: the track lists
+    // the moved clip after the one already there, which used to be taken
+    // for the moved clip and overwrote it instead.
+    DragRig rig;
+    Track* v2 = rig.videoTrack("V2");
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t wells = rig.addClip(v1, kSecond, 2 * kSecond)->id();
+    const uint64_t crown = rig.addClip(v2, kSecond, kSecond)->id();
+    rig.show();
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(v2)),
+             rig.pointAt(kSecond + kSecond / 2, rig.indexOf(v1)));
+
+    size_t track = SIZE_MAX;
+    const Clip* moved = clipById(rig.timeline, crown, &track);
+    ASSERT_NE(moved, nullptr);
+    EXPECT_EQ(track, rig.indexOf(v1));
+    EXPECT_EQ(moved->timelineIn(), kSecond);
+    EXPECT_EQ(moved->duration(), kSecond);
+    const Clip* rest = clipById(rig.timeline, wells);
+    ASSERT_NE(rest, nullptr);
+    EXPECT_EQ(rest->timelineIn(), 2 * kSecond);
+    EXPECT_EQ(rest->duration(), kSecond);
+    // The overwritten clip's head moved past the dropped one; the track must
+    // still list clips in start order or the timeline stops drawing one.
+    expectStartOrder(*rig.timeline.track(rig.indexOf(v1)));
+    rig.expectOneExactUndoStep(before);
+}
+
+TEST(TimelineDrags, AltCopyOntoAClipStartingOnTheSameFrameOverwritesIt)
+{
+    DragRig rig;
+    Track* v2 = rig.videoTrack("V2");
+    Track* v1 = rig.videoTrack("V1");
+    const uint64_t under = rig.addClip(v1, kSecond, 2 * kSecond)->id();
+    const uint64_t original = rig.addClip(v2, kSecond, kSecond)->id();
+    rig.show();
+    const uint64_t before = rig.state();
+
+    rig.drag(rig.pointAt(kSecond + kSecond / 2, rig.indexOf(v2)),
+             rig.pointAt(kSecond + kSecond / 2, rig.indexOf(v1)), Qt::AltModifier);
+
+    EXPECT_NE(clipById(rig.timeline, original), nullptr);   // copy, not move
+    const Track* bottom = rig.timeline.track(rig.indexOf(v1));
+    ASSERT_EQ(bottom->clipCount(), 2u);
+    const Clip* copy = bottom->clip(0)->id() == under ? bottom->clip(1) : bottom->clip(0);
+    EXPECT_EQ(copy->timelineIn(), kSecond);
+    EXPECT_EQ(copy->duration(), kSecond);
+    const Clip* rest = clipById(rig.timeline, under);
+    ASSERT_NE(rest, nullptr);
+    EXPECT_EQ(rest->timelineIn(), 2 * kSecond);
+    EXPECT_EQ(rest->duration(), kSecond);
+    // The overwritten clip's head moved past the dropped one; the track must
+    // still list clips in start order or the timeline stops drawing one.
+    expectStartOrder(*rig.timeline.track(rig.indexOf(v1)));
+    rig.expectOneExactUndoStep(before);
+}
+
 // ── Wheel: scroll and track height follow how far the wheel turned ────────
 
 namespace {

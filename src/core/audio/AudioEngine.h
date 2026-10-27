@@ -198,6 +198,13 @@ public:
     /// Check whether any track sources are loaded.
     [[nodiscard]] bool hasTrackSources() const;
 
+    /// Changes only when a client replaces/clears the source list, not when
+    /// transport or levels change. Shared-engine clients use it to detect
+    /// that their previously installed sources have been replaced.
+    [[nodiscard]] uint64_t trackSourcesRevision() const noexcept {
+        return m_trackSourcesRevision.load(std::memory_order_acquire);
+    }
+
     /// Clear all time-stretcher instances (call when switching audio contexts).
     void resetStretchers();
 
@@ -277,6 +284,7 @@ private:
 
     // Atomics for lock-free audio thread communication
     std::atomic<TransportState> m_state{TransportState::Stopped};
+    std::atomic<uint64_t>       m_trackSourcesRevision{0};
     std::atomic<int64_t>        m_playPosition{0};
     std::atomic<float>          m_masterVolume{1.0f};
     std::atomic<int64_t>        m_scrubEnd{0};

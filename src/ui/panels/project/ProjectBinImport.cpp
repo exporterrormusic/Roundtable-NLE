@@ -134,7 +134,8 @@ void ProjectBin::importFiles()
         m_commandStack->pushWithoutExecute(std::make_unique<LambdaCommand>(
             "Import Media",
             [this, after]()  { if (m_destroying.load(std::memory_order_acquire)) return; applyBinSnapshot(*after); },
-            [this, before]() { if (m_destroying.load(std::memory_order_acquire)) return; applyBinSnapshot(*before); }));
+            [this, before]() { if (m_destroying.load(std::memory_order_acquire)) return; applyBinSnapshot(*before); },
+            /*affectsTimeline=*/false));
     }
 }
 

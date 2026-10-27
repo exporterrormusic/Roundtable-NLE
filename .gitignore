@@ -40,6 +40,8 @@ __pycache__/
 venv/
 .venv/
 .voice-runtime/
+# Downloaded AI runtimes (CorridorKey's Python, PyTorch and models — ~9.5 GB)
+/runtimes/
 
 # OS
 Thumbs.db

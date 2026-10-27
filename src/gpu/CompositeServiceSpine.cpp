@@ -41,15 +41,22 @@ std::string CompositeService::spineCharKey(const SpineClip& clip)
            + std::to_string(static_cast<int>(clip.stance()));
 }
 
-const CompositeService::SpineSharedData*
+SpineBox CompositeService::SpineSharedData::framingBox(const std::string& animation) const
+{
+    if (parsed) return parsed->framingBox(animation);
+    return SpineBox{stableBoundsX, stableBoundsY, stableBoundsW, stableBoundsH};
+}
+
+std::shared_ptr<const CompositeService::SpineSharedData>
 CompositeService::getSpineSharedDataForOverlay(
     const std::string& charName, const std::string& outfit, int stance) const
 {
+    std::lock_guard lock(m_compositeMutex);
     // Build a key matching spineCharKey format
     std::string key = charName + "|" + outfit + "|" + std::to_string(stance);
     auto it = m_spineSharedCache.find(key);
     if (it != m_spineSharedCache.end() && it->second && it->second->boundsCached)
-        return it->second.get();
+        return it->second;
     return nullptr;
 }
 
@@ -57,6 +64,7 @@ std::shared_ptr<CompositeService::SpineSharedData>
 CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
                                                const std::string& assetsDir)
 {
+    std::lock_guard lock(m_compositeMutex);
     const std::string key = spineCharKey(clip);
     auto it = m_spineSharedCache.find(key);
     if (it != m_spineSharedCache.end())
@@ -185,67 +193,16 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
     // Keep the parsed data so per-clip engines don't re-parse it.
     shared->parsed = tempEngine.parsedData();
 
-    // Pre-cache bounds from setup pose
+    // Pre-cache bounds from setup pose. Per-animation framing boxes are
+    // measured on first use (SpineSharedData::framingBox), the same way on
+    // every loader.
     tempEngine.getBounds(
         shared->stableBoundsX, shared->stableBoundsY,
         shared->stableBoundsW, shared->stableBoundsH);
     shared->boundsCached = true;
 
-    // ── Per-animation framing boxes ─────────────────────────────────────
-    // Sample each animation across its duration and store, per animation, the
-    // union of the setup pose and that animation's own bounding-box envelope.
-    // The live renderer frames each clip to its CURRENT animation's box, so a
-    // taller "action" pose grows only its own box (framed to fit, never
-    // clipped) while normal animations keep their original setup-pose size —
-    // exactly one box per animation, not a single shared box that would shrink
-    // everything to the largest pose.  Modest sampling (≈15 fps, capped) keeps
-    // the one-time load cost bounded; bounding boxes vary smoothly so we don't
-    // need frame-accurate sampling to find the extent.
-    {
-        const float setMinX = shared->stableBoundsX;
-        const float setMinY = shared->stableBoundsY;
-        const float setMaxX = shared->stableBoundsX + shared->stableBoundsW;
-        const float setMaxY = shared->stableBoundsY + shared->stableBoundsH;
-        const bool  setValid = shared->stableBoundsW > 1.0f && shared->stableBoundsH > 1.0f;
-
-        const auto animInfos = tempEngine.animation().listAnimations();
-        for (const auto& ai : animInfos) {
-            if (ai.name.empty()) continue;
-            tempEngine.animation().setBodyAnimation(ai.name, false);
-            const float dur = ai.duration;
-            int samples = (dur > 0.0f)
-                ? std::clamp(static_cast<int>(dur * 15.0f), 8, 60)
-                : 1;
-            // Seed with the setup pose so a normal animation that stays within
-            // the setup silhouette keeps the original size.
-            float minX = setValid ?  setMinX :  1e9f;
-            float minY = setValid ?  setMinY :  1e9f;
-            float maxX = setValid ?  setMaxX : -1e9f;
-            float maxY = setValid ?  setMaxY : -1e9f;
-            for (int s = 0; s <= samples; ++s) {
-                const float t = (dur > 0.0f && samples > 0)
-                    ? (static_cast<float>(s) / static_cast<float>(samples)) * dur
-                    : 0.0f;
-                tempEngine.evaluateAtTime(t, 0.0f);
-                float bx, by, bw, bh;
-                tempEngine.getBounds(bx, by, bw, bh);
-                if (bw <= 0.0f || bh <= 0.0f) continue;
-                minX = std::min(minX, bx);
-                minY = std::min(minY, by);
-                maxX = std::max(maxX, bx + bw);
-                maxY = std::max(maxY, by + bh);
-            }
-            if (maxX > minX && maxY > minY) {
-                shared->animBounds[ai.name] =
-                    SpineSharedData::AnimBounds{minX, minY, maxX - minX, maxY - minY};
-            }
-        }
-    }
-
-    spdlog::info("Spine shared: loaded '{}' ({} atlas pages, setup {:.0f}x{:.0f}, "
-                 "{} per-animation boxes)",
-                 key, pages.size(), shared->stableBoundsW, shared->stableBoundsH,
-                 shared->animBounds.size());
+    spdlog::info("Spine shared: loaded '{}' ({} atlas pages, setup {:.0f}x{:.0f})",
+                 key, pages.size(), shared->stableBoundsW, shared->stableBoundsH);
 
     shared->loadState = ResourceLoadState::Ready;
     shared->loadWarning.clear();
@@ -256,6 +213,7 @@ CompositeService::getOrCreateSharedSpineData(const SpineClip& clip,
 CompositeService::SpineCPUState*
 CompositeService::getOrCreateSpineState(SpineClip* clip)
 {
+    std::lock_guard lock(m_compositeMutex);
     if (!clip) return nullptr;
 
     const uint64_t cid = clip->id();
@@ -333,6 +291,8 @@ CompositeService::getOrCreateSpineState(SpineClip* clip)
 
 void CompositeService::resyncSpineClip(SpineClip* clip)
 {
+    // Track replacement must not race animation evaluation either.
+    std::lock_guard lock(m_compositeMutex);
     if (!clip) return;
     auto it = m_spineCache.find(clip->id());
     if (it == m_spineCache.end() || !it->second) return;
@@ -386,6 +346,7 @@ void CompositeService::resyncSpineClip(SpineClip* clip)
 CompositeService::SpineCPUState*
 CompositeService::tryGetSpineState(SpineClip* clip)
 {
+    std::lock_guard lock(m_compositeMutex);
     if (!clip) return nullptr;
 
     const uint64_t cid = clip->id();
@@ -432,6 +393,7 @@ CompositeService::tryGetSpineState(SpineClip* clip)
 ResourceLoadState CompositeService::spineResourceState(
     const SpineClip& clip) const
 {
+    std::lock_guard lock(m_compositeMutex);
     auto stateIt = m_spineCache.find(clip.id());
     if (stateIt != m_spineCache.end() && stateIt->second &&
         stateIt->second->engine.isLoaded()) {
@@ -450,6 +412,7 @@ ResourceLoadState CompositeService::spineResourceState(
 std::string CompositeService::spineResourceWarning(
     const SpineClip& clip) const
 {
+    std::lock_guard lock(m_compositeMutex);
     const std::string key = spineCharKey(clip);
     auto sharedIt = m_spineSharedCache.find(key);
     if (sharedIt != m_spineSharedCache.end() && sharedIt->second)
@@ -462,6 +425,7 @@ std::string CompositeService::spineResourceWarning(
 // their per-clip SpineEngine using already-cached shared data (fast path).
 void CompositeService::warmNewSpineClips()
 {
+    std::lock_guard lock(m_compositeMutex);
     if (!m_timeline) return;
 
     std::string assetsDir = "assets";
@@ -510,6 +474,7 @@ void CompositeService::warmNewSpineClips()
 // animations are fully cached.
 void CompositeService::preloadSpineAssets()
 {
+    std::lock_guard lock(m_compositeMutex);
     if (!m_timeline) return;
 
     std::string assetsDir = "assets";
@@ -561,7 +526,10 @@ void CompositeService::preloadSpineAssets()
 std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
     SpineClip* clip, int64_t tick, uint32_t outW, uint32_t outH)
 {
+    // SourceMonitor also calls this outside compositeFrameImpl().
+    std::lock_guard lock(m_compositeMutex);
     if (!clip) return nullptr;
+    resyncSpineClip(clip);
 
     // Get or create per-clip state (shares atlas data with other clips
     // of the same character via SpineSharedData).
@@ -608,33 +576,28 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
     SpineRenderData renderData = state.engine.extractMeshes();
     if (renderData.batches.empty()) return nullptr;
 
+    // Sized and centred by the setup pose, like the GPU path; the frame is
+    // taller than the output when the animation reaches above or below it
+    // (spineRenderHeight), and the layer build scales it back.  Nothing
+    // zooms or sways the way it would with the live per-frame bounds,
+    // which are only a fallback for a degenerate box.
+    const SpineBox box = shared.framingBox("");
+    const uint32_t renderH = spineRenderHeight(
+        outH, box, shared.framingBox(clip->animationName()));
+
     // Create output frame
     auto frame = std::make_shared<CachedFrame>();
     frame->width  = outW;
-    frame->height = outH;
+    frame->height = renderH;
     frame->stride = outW * 4;
-    frame->pixels.resize(static_cast<size_t>(outW) * outH * 4, 0);
+    frame->pixels.resize(static_cast<size_t>(outW) * renderH * 4, 0);
 
-    // Use STABLE animation bounds for scale (prevents zooming in/out
-    // as the live bounding box changes per frame during animation).
-    // Setup-pose stableBounds provide the anchor center to prevent swaying.
     float liveBx{0}, liveBy{0}, liveBw{0}, liveBh{0};
     state.engine.getBounds(liveBx, liveBy, liveBw, liveBh);
-    // Frame to THIS animation's box (setup pose ∪ the animation's own
-    // envelope) so a taller-than-idle pose isn't clipped, while normal
-    // animations keep their original setup-pose size.  Fall back to the
-    // setup-pose bounds, then to live bounds, when no per-animation box
-    // exists.  Using a constant (per-animation) box also prevents the
-    // zoom/sway that live per-frame bounds would cause.
-    const SpineSharedData::AnimBounds* ab = nullptr;
-    {
-        auto abIt = shared.animBounds.find(clip->animationName());
-        if (abIt != shared.animBounds.end()) ab = &abIt->second;
-    }
-    const float boundsW = ab ? ab->w : shared.stableBoundsW;
-    const float boundsH = ab ? ab->h : shared.stableBoundsH;
-    const float boundsX = ab ? ab->x : shared.stableBoundsX;
-    const float boundsY = ab ? ab->y : shared.stableBoundsY;
+    const float boundsW = box.w;
+    const float boundsH = box.h;
+    const float boundsX = box.x;
+    const float boundsY = box.y;
     const float bw = (boundsW > 1.0f) ? boundsW
                     : ((liveBw > 1.0f) ? liveBw : boundsW);
     const float bh = (boundsH > 1.0f) ? boundsH
@@ -661,10 +624,10 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
     const float spineScale = (static_cast<float>(outH) / bh);
 
     const float offsetX = outW * 0.5f;
-    const float offsetY = outH * 0.5f;
-    // Center on THIS animation's box (constant per animation) — live bounds
-    // shift per frame which causes visible swaying during playback, and the
-    // setup-pose center would push a taller animation off the top.
+    const float offsetY = renderH * 0.5f;
+    // Center on the setup pose (constant) — live bounds shift per frame,
+    // which causes visible swaying during playback.  A taller animation's
+    // reach lands in the frame's extra height.
     const float spineCX = boundsX + boundsW * 0.5f;
     const float spineCY = boundsY + boundsH * 0.5f;
 
@@ -700,7 +663,7 @@ std::shared_ptr<CachedFrame> CompositeService::renderSpineClip(
             int maxX = std::min(static_cast<int>(outW) - 1,
                                 static_cast<int>(std::ceil(std::max({px0, px1, px2}))));
             int minY = std::max(0, static_cast<int>(std::floor(std::min({py0, py1, py2}))));
-            int maxY = std::min(static_cast<int>(outH) - 1,
+            int maxY = std::min(static_cast<int>(renderH) - 1,
                                 static_cast<int>(std::ceil(std::max({py0, py1, py2}))));
 
             if (minX > maxX || minY > maxY) continue;

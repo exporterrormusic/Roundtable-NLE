@@ -545,6 +545,13 @@ public:
     [[nodiscard]] static EditPoint findEditPoint(const Track& track, int64_t nearTime);
 
 private:
+    /// Keep keys in [localIn, localOut), rebasing to the surviving clip's zero.
+    /// Shared by overwrite remnants and explicit cuts so keys stay on the
+    /// original timeline position instead of replaying on a cloned right half.
+    static void sliceClipKeyframes(Clip& clip, int64_t localIn, int64_t localOut);
+    [[nodiscard]] static std::unique_ptr<Command> sliceClipKeyframesCommand(
+        Clip& clip, int64_t localIn, int64_t localOut);
+
     /// Internal split that accepts an optional group-remap table.
     /// When splitting multiple clips from the same group, the remap table
     /// ensures all right-half clones receive the same new group ID.

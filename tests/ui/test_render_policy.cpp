@@ -22,6 +22,10 @@
 #include "timeline/VideoClip.h"
 #include "timeline/AdjustmentClip.h"
 #include "effects/ColorGrading.h"
+#include "Constants.h"
+#ifdef ROUNDTABLE_HAS_SPINE
+#include "spine/ModelManager.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -852,6 +856,90 @@ TEST(RenderPolicyTest, MissingPngPuppetFacePropagatesAsMissingMedia)
 }
 
 #ifdef ROUNDTABLE_HAS_SPINE
+namespace {
+/// First and last row holding a visible pixel, or {-1, -1}.
+std::pair<int, int> visibleRows(const CachedFrame& frame)
+{
+    int top = -1, bottom = -1;
+    for (uint32_t y = 0; y < frame.height; ++y) {
+        const uint8_t* row = frame.pixels.data() + static_cast<size_t>(y) * frame.stride;
+        for (uint32_t x = 0; x < frame.width; ++x) {
+            if (row[x * 4 + 3] > 16) {
+                if (top < 0) top = static_cast<int>(y);
+                bottom = static_cast<int>(y);
+                break;
+            }
+        }
+    }
+    return {top, bottom};
+}
+} // namespace
+
+// Switching Modernia (outfit_02) from idle to action drew her at ~62% of
+// her size: the action's reach (raised parts, a burst effect) made her
+// framing box taller.  Her size now follows the setup pose and the reach
+// goes into a taller render, so it is not cut off either.
+TEST(RenderPolicyTest, SpineCharacterKeepsHerSizeWhateverTheAnimation)
+{
+    const auto assets = std::filesystem::path(__FILE__).parent_path()
+                            .parent_path().parent_path() / "assets";
+    if (!std::filesystem::exists(assets / "characters" / "Modernia" / "outfit_02"))
+        GTEST_SKIP() << "Modernia outfit_02 not available";
+    ModelManager models;
+    models.scan(assets.string());
+    // Only the GPU composites (there is no CPU compositor).
+    if (!GpuContext::get().init()) GTEST_SKIP() << "No Vulkan device";
+    struct GpuDown { ~GpuDown() { GpuContext::get().shutdown(); } } gpuDown;
+
+    auto render = [&](const char* animation, double seconds) {
+        Timeline timeline;
+        auto* track = timeline.addVideoTrack("V1");
+        auto clip = std::make_unique<SpineClip>("Modernia", "outfit_02");
+        clip->setAnimationName(animation);
+        clip->setTimelineIn(0);
+        clip->setDuration(10 * kTicksPerSecond);
+        clip->scaleX().setDefaultValue(0.5f);   // room for the reach above
+        clip->scaleY().setDefaultValue(0.5f);
+        auto* spineClip = static_cast<SpineClip*>(track->addClip(std::move(clip)));
+
+        CompositeService compositor;
+        compositor.setTimeline(&timeline);
+        compositor.setModelManager(&models);
+        // Loaded up front, as export does (no background loader here).
+        const auto shared = compositor.getOrCreateSharedSpineData(*spineClip, assets.string());
+        EXPECT_TRUE(shared && shared->loadState == ResourceLoadState::Ready);
+        RenderRequest request;
+        request.type = RenderRequestType::Export;
+        request.exactness = RenderExactness::ExactRequired;
+        request.quality = RenderQuality::Full;
+        request.timelineTick = static_cast<int64_t>(seconds * kTicksPerSecond);
+        request.outputWidth = 480;
+        request.outputHeight = 270;
+        request.stillFrame = true;
+        request.forceFullResolution = true;
+        request.preserveAlpha = true;
+        const auto result = compositor.renderFrame(request);
+        EXPECT_EQ(result.status, RenderResultStatus::Ready)
+            << animation << ": " << result.diagnostics.warning;
+        return result.frame ? visibleRows(*result.frame) : std::pair<int, int>{-1, -1};
+    };
+
+    // Both start near the setup pose: same height on screen.
+    const auto idle = render("idle", 0.0);
+    const auto action = render("action", 0.0);
+    ASSERT_GE(idle.first, 0);
+    ASSERT_GE(action.first, 0);
+    const int idleHeight = idle.second - idle.first;
+    EXPECT_NEAR(action.second - action.first, idleHeight, 0.04 * idleHeight);
+    EXPECT_NEAR(action.second, idle.second, 3);
+
+    // 3.15 s in, her raised parts reach ~16% of her height above the setup
+    // pose: drawn, not cut off at its top.
+    const auto raised = render("action", 3.15);
+    ASSERT_GE(raised.first, 0);
+    EXPECT_LT(raised.first, idle.first - 0.08 * idleHeight);
+}
+
 TEST(RenderPolicyTest, MissingSpineAssetsPropagateAsMissingMedia)
 {
     Timeline timeline;

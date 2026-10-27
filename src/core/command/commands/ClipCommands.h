@@ -145,6 +145,8 @@ public:
     [[nodiscard]] int64_t newSourceIn() const noexcept { return m_newSourceIn; }
 
 private:
+    Clip* keepSorted(size_t idx);
+
     Track*   m_track;
     uint64_t m_clipId;
     int64_t  m_oldTimelineIn, m_newTimelineIn;

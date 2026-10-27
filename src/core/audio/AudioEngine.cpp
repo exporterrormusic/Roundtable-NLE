@@ -380,6 +380,7 @@ void AudioEngine::setTrackSources(std::vector<AudioTrackSource> sources)
 {
     std::lock_guard lock(m_snapshotUpdateMutex);
     publishTrackSourcesLocked(std::move(sources));
+    m_trackSourcesRevision.fetch_add(1, std::memory_order_release);
 }
 
 void AudioEngine::clearTrackSources()

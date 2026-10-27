@@ -40,6 +40,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
+; CorridorKey: the app downloads it (about 8 GB) on first launch when ticked;
+; otherwise it asks the first time Ultra Key's "Render with CorridorKey" is used.
+Name: "corridorkey"; Description: "Download the CorridorKey AI green-screen keyer after installing (about 8 GB download, 9.5 GB on disk; needs an NVIDIA RTX 30-series or newer graphics card)"; GroupDescription: "AI tools:"
 
 [Dirs]
 ; Writable data directories — these must be user-writable so the app can
@@ -53,6 +56,9 @@ Name: "{app}\projects"; Permissions: users-modify
 ; non-admin users can create dumps when the app is installed under
 ; Program Files.  See main.cpp:71 (NEVER use %LOCALAPPDATA%).
 Name: "{app}\logs"; Permissions: users-modify
+; Downloaded AI runtimes (CorridorKey: Python, PyTorch, models) — written by
+; the app at run time, so users must be able to modify it.
+Name: "{app}\runtimes"; Permissions: users-modify
 
 [Files]
 ; Main executable
@@ -100,6 +106,13 @@ Source: "launch.vbs"; DestDir: "{app}"; Flags: ignoreversion
 ; Third-party attribution (opened by Help -> Third-Party Licenses)
 Source: "docs\THIRD_PARTY_LICENSES.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
+; CorridorKey (Corridor Digital, CorridorKey Licence): the unmodified code and
+; Roundtable's worker + pinned requirements. Python, PyTorch and the models
+; are downloaded by the app into {app}\runtimes\corridorkey.
+Source: "third_party\corridorkey\*"; DestDir: "{app}\third_party\corridorkey"; Flags: ignoreversion recursesubdirs
+Source: "tools\corridorkey\roundtable_corridorkey.py"; DestDir: "{app}\tools\corridorkey"; Flags: ignoreversion
+Source: "tools\corridorkey\requirements.txt"; DestDir: "{app}\tools\corridorkey"; Flags: ignoreversion
+
 [Icons]
 ; Route installed shortcuts through the silent preflight launcher.  Keep the
 ; application icon and working directory identical to a direct EXE shortcut.
@@ -114,6 +127,10 @@ Filename: "{sys}\wscript.exe"; Parameters: """{app}\launch.vbs"""; WorkingDir: "
 [UninstallRun]
 ; Clean up cache on uninstall (optional)
 Filename: "{sys}\cmd.exe"; Parameters: "/c rmdir /s /q ""{localappdata}\ROUNDTABLE\cache"""; Flags: runhidden
+
+[UninstallDelete]
+; Everything CorridorKey's setup downloaded (Python, PyTorch, models).
+Type: filesandordirs; Name: "{app}\runtimes"
 
 [Code]
 { Check for NVIDIA GPU during install }
@@ -164,6 +181,14 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  { "Download CorridorKey" ticked: leave a request the app picks up on its
+    next launch (CorridorKeyService), where the download runs with progress. }
+  if (CurStep = ssPostInstall) and WizardIsTaskSelected('corridorkey') then
+  begin
+    ForceDirectories(ExpandConstant('{app}\runtimes\corridorkey'));
+    SaveStringToFile(ExpandConstant('{app}\runtimes\corridorkey\setup-requested'), '1', False);
+  end;
+
   { Post-install confirmation that the redist is now present.  Belt and
     braces in case the user chose "continue anyway" in InitializeSetup. }
   if CurStep = ssDone then

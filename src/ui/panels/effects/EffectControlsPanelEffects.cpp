@@ -30,6 +30,8 @@
 #include "effects/BeatEffects.h"
 #include "audio/AudioFile.h"
 #include "audio/BeatDetector.h"
+#include "ai/CorridorKey.h"
+#include "corridorkey/CorridorKeyService.h"
 #include "Constants.h"
 
 #include <QFrame>
@@ -44,8 +46,10 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QPointer>
 #include <QSignalBlocker>
+#include <QTimer>
 
 #include <spdlog/spdlog.h>
 
@@ -556,6 +560,130 @@ void EffectControlsPanel::buildUltraKeyUI(Effect& fx, size_t effectIdx,
             emit propertyChanged();
         });
         m_propLayout->addWidget(settingWidget);
+    }
+
+    // ── CorridorKey: render a final-quality key of this shot ────────────
+    if (auto* corridorKey = CorridorKeyService::current();
+        corridorKey && m_clip && m_clip->clipType() == ClipType::Video) {
+        enum Action { Render, Cancel, Back, ShowSetup, RenderAgain };
+        auto* row = new QWidget(m_propContainer);
+        row->setFixedHeight(30);
+        auto* rl = new QHBoxLayout(row);
+        rl->setContentsMargins(20, 2, 6, 2);
+        rl->setSpacing(6);
+        auto* status = new QLabel(row);
+        status->setMinimumWidth(80);
+        status->setStyleSheet(QStringLiteral("color: %1; font-size: %2px; background: transparent;")
+            .arg(Theme::hex(tc.textSecondary))
+            .arg(Theme::typography().sizeXs));
+        auto* steadier = new QCheckBox(tr("Steadier"), row);
+        steadier->setChecked(corridorKey->steadier());
+        steadier->setToolTip(corridorKey->steadierDescription());
+        connect(steadier, &QCheckBox::toggled, corridorKey, &CorridorKeyService::setSteadier);
+        auto* button = new QPushButton(row);
+        button->setFixedHeight(22);
+        rl->addWidget(status, 1);
+        rl->addWidget(steadier);
+        rl->addWidget(button);
+
+        const uint64_t clipId = m_clip->id();
+        const uint64_t fxId = fx.id();
+        QPointer<QLabel> statusPtr(status);
+        QPointer<QPushButton> buttonPtr(button);
+        QPointer<QCheckBox> steadierPtr(steadier);
+        auto boundClip = [this, clipId]() -> VideoClip* {
+            return m_clip && m_clip->id() == clipId ? dynamic_cast<VideoClip*>(m_clip) : nullptr;
+        };
+        auto sync = [this, corridorKey, clipId, statusPtr, buttonPtr, steadierPtr, boundClip]() {
+            VideoClip* vc = boundClip();
+            if (!statusPtr || !buttonPtr || !steadierPtr || !vc) return;
+            Action action = Render;
+            QString text, tip;
+            if (CorridorKeyService::usesRender(*vc)) {
+                if (CorridorKeyService::renderIsStale(m_timeline, *vc)) {
+                    action = RenderAgain;
+                    text = tr("The render is missing frames this clip now shows");
+                    tip = tr("A transition was added or made longer, the clip was trimmed longer or "
+                             "slowed down, or its crop opened up. Render Again goes back to Ultra Key "
+                             "and renders the clip as it is now.");
+                } else {
+                    action = Back;
+                    text = tr("Using the CorridorKey render");
+                    tip = tr("This clip plays its CorridorKey render; Ultra Key is off. "
+                             "Back to Ultra Key returns to the live key on the original footage.");
+                }
+            } else if (const auto job = corridorKey->jobStatus(clipId)) {
+                action = Cancel;
+                text = QStringLiteral("CorridorKey: %1").arg(job->text);
+                if (job->state != CorridorKeyService::JobState::Queued
+                    && job->state != CorridorKeyService::JobState::Waiting)
+                    text += QStringLiteral(" %1%").arg(int(job->progress * 100.0));
+                if (job->secondsLeft >= 0.0)
+                    text += QStringLiteral(" · ") + tr("%1 left").arg(QString::fromStdString(
+                        corridorkey::formatDuration(job->secondsLeft)));
+            } else if (corridorKey->isSetupRunning()) {
+                action = ShowSetup;
+                text = tr("Setting up CorridorKey %1%").arg(int(corridorKey->setupProgress() * 100.0));
+            } else if (const QString failure = corridorKey->lastFailure(clipId); !failure.isEmpty()) {
+                text = tr("Last CorridorKey render failed (hover for why)");
+                tip = failure;
+            } else {
+                text = tr("Final-quality AI key, rendered in the background");
+                tip = tr("CorridorKey keys hair, motion blur and shadows far better than Ultra Key. "
+                         "It renders this clip in the background (minutes, not real time), covering "
+                         "any transitions across its cuts, and then swaps it in; Ultra Key stays "
+                         "your live key until then.");
+            }
+            static const char* const kLabels[] = {"Render with CorridorKey", "Cancel",
+                                                  "Back to Ultra Key", "Show Setup", "Render Again"};
+            statusPtr->setText(text);
+            statusPtr->setToolTip(tip);
+            buttonPtr->setText(tr(kLabels[action]));
+            buttonPtr->setToolTip(tip);
+            buttonPtr->setProperty("ckAction", int(action));
+            steadierPtr->setVisible(action == Render || action == RenderAgain);
+            steadierPtr->setToolTip(corridorKey->steadierDescription());
+        };
+        connect(button, &QPushButton::clicked, row,
+                [this, corridorKey, clipId, fxId, buttonPtr, boundClip, sync]() {
+            VideoClip* vc = boundClip();
+            if (!vc || !buttonPtr) return;
+            QString problem;
+            switch (buttonPtr->property("ckAction").toInt()) {
+            case Render:
+                if (!corridorKey->renderClip(m_timeline, vc, fxId, &problem) && !problem.isEmpty())
+                    QMessageBox::information(this, tr("CorridorKey"), problem);
+                break;
+            case Cancel:
+                corridorKey->cancel(clipId);
+                break;
+            case Back:
+                if (!corridorKey->backToUltraKey(m_timeline, vc, fxId, &problem) && !problem.isEmpty())
+                    QMessageBox::warning(this, tr("CorridorKey"), problem);
+                break;
+            case ShowSetup:
+                corridorKey->showSetup(false);
+                break;
+            case RenderAgain:
+                if (!corridorKey->renderAgain(m_timeline, vc, fxId, &problem) && !problem.isEmpty())
+                    QMessageBox::information(this, tr("CorridorKey"), problem);
+                break;
+            }
+            sync();
+        });
+        connect(corridorKey, &CorridorKeyService::jobChanged, row,
+                [clipId, sync](quint64 id) { if (id == clipId) sync(); });
+        connect(corridorKey, &CorridorKeyService::setupChanged, row, sync);
+        // The clip's media and Ultra Key's on/off changed: rebuild the panel
+        // (after this signal returns — the rebuild deletes this row).
+        connect(corridorKey, &CorridorKeyService::clipSwapped, row, [this, clipId](quint64 id) {
+            if (id != clipId) return;
+            QTimer::singleShot(0, this, [this, clipId]() {
+                if (m_clip && m_clip->id() == clipId) refresh();
+            });
+        });
+        sync();
+        m_propLayout->addWidget(row);
     }
 
     // ── Matte Generation section ────────────────────────────────────────

@@ -26,7 +26,9 @@
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -35,8 +37,8 @@ namespace rt {
 
 namespace {
 
-// Overwrite remnants are independent clips. Since keyframe times are local to
-// a clip, a verbatim clone duplicates the animation and a head trim moves it.
+// Split halves and overwrite remnants are independent clips. Since keyframe
+// times are local, a verbatim clone duplicates the animation and a head trim moves it.
 // Keep only keys in the surviving interval and rebase them to its local zero.
 KeyframeTrack<float> sliceKeyframeTrack(const KeyframeTrack<float>& source,
                                         int64_t localIn, int64_t localOut)
@@ -147,7 +149,9 @@ ClipKeyframeTargets collectClipKeyframeTargets(Clip& clip)
     return result;
 }
 
-void sliceClipKeyframes(Clip& clip, int64_t localIn, int64_t localOut)
+} // namespace
+
+void EditOperations::sliceClipKeyframes(Clip& clip, int64_t localIn, int64_t localOut)
 {
     auto targets = collectClipKeyframeTargets(clip);
     for (auto* track : targets.tracks)
@@ -156,6 +160,7 @@ void sliceClipKeyframes(Clip& clip, int64_t localIn, int64_t localOut)
         *mask = sliceOpacityMask(*mask, localIn, localOut);
 }
 
+namespace {
 struct ClipKeyframeSliceState
 {
     ClipKeyframeTargets targets;
@@ -164,10 +169,10 @@ struct ClipKeyframeSliceState
     std::vector<OpacityMask> beforeMasks;
     std::vector<OpacityMask> afterMasks;
 };
+} // namespace
 
-std::unique_ptr<Command> sliceClipKeyframesCommand(Clip& clip,
-                                                   int64_t localIn,
-                                                   int64_t localOut)
+std::unique_ptr<Command> EditOperations::sliceClipKeyframesCommand(
+    Clip& clip, int64_t localIn, int64_t localOut)
 {
     auto state = std::make_shared<ClipKeyframeSliceState>();
     state->targets = collectClipKeyframeTargets(clip);
@@ -191,9 +196,45 @@ std::unique_ptr<Command> sliceClipKeyframesCommand(Clip& clip,
     };
 
     return std::make_unique<LambdaCommand>(
-        "Preserve overwrite keyframes",
+        "Preserve clip keyframes",
         [apply]() { apply(true); },
         [apply]() { apply(false); });
+}
+
+namespace {
+
+// An overwrite replaces the edge it covers, transitions included: Premiere
+// drops them (dropping a new one on the cut brings the covered frames back
+// as handles).  Without this the transition followed the clip edge onto the
+// new cut.  Matched when the command runs, not by index: earlier commands
+// in the same overwrite remove clips, and their transitions with them.
+std::unique_ptr<Command> removeOverwrittenTransitionsCommand(
+    Track* track, std::function<bool(const Transition&)> covered)
+{
+    auto removed = std::make_shared<std::vector<std::pair<size_t, Transition>>>();
+    return std::make_unique<LambdaCommand>(
+        "Remove overwritten transitions",
+        [track, covered = std::move(covered), removed]() {
+            removed->clear();
+            for (size_t i = track->transitionCount(); i-- > 0; ) {
+                if (covered(*track->transition(i)))
+                    removed->emplace_back(
+                        i, track->removeTransition(i, TrackMutationPolicy::BypassLock));
+            }
+        },
+        [track, removed]() {
+            // Removed highest index first: put them back lowest first.
+            auto& all = track->transitions();
+            for (auto it = removed->rbegin(); it != removed->rend(); ++it)
+                all.insert(all.begin() + static_cast<ptrdiff_t>(
+                               std::min(it->first, all.size())), it->second);
+        });
+}
+
+bool joinsClips(const Transition& t, uint64_t a, uint64_t b)
+{
+    return (t.leftClipId == a && t.rightClipId == b) ||
+           (t.leftClipId == b && t.rightClipId == a);
 }
 
 } // namespace
@@ -388,7 +429,10 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
             continue;
         }
 
-        // Partial overlap — trim the other clip
+        // Partial overlap — trim the other clip.  A transition between the
+        // two clips is always overwritten (that cut is gone), whichever
+        // edge of the other clip it sits on.
+        const uint64_t otherId = other->id();
         if (otherIn < movedIn && otherOut > movedOut) {
             // The moved clip lands in the MIDDLE of the other clip.
             // Create a right remnant first (clone before trimming the original).
@@ -403,8 +447,36 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
             rightClip->setSourceIn(rightSourceIn);
             const int64_t rightLocalIn = movedOut - otherIn;
             sliceClipKeyframes(*rightClip, rightLocalIn, other->duration());
+            const uint64_t rightId = rightClip->id();
             compound->addCommand(std::make_unique<AddClipCommand>(
                 track, std::move(rightClip)));
+
+            compound->addCommand(removeOverwrittenTransitionsCommand(
+                track, [otherId, movedClipId](const Transition& t) {
+                    return joinsClips(t, otherId, movedClipId);
+                }));
+            // The other clip's tail now belongs to the right remnant (as in
+            // a split).  Re-anchored before the trim, whose retarget would
+            // drag those transitions onto the new cut.
+            compound->addCommand(std::make_unique<LambdaCommand>(
+                "Re-anchor overwritten clip's tail transitions",
+                [track, otherId, rightId, otherOut]() {
+                    for (size_t i = 0; i < track->transitionCount(); ++i) {
+                        Transition t = *track->transition(i);
+                        if (t.leftClipId != otherId) continue;
+                        t.leftClipId    = rightId;
+                        t.editPointTick = otherOut;
+                        track->setTransition(i, t, TrackMutationPolicy::BypassLock);
+                    }
+                },
+                [track, otherId, rightId]() {
+                    for (size_t i = 0; i < track->transitionCount(); ++i) {
+                        Transition t = *track->transition(i);
+                        if (t.leftClipId != rightId) continue;
+                        t.leftClipId = otherId;
+                        track->setTransition(i, t, TrackMutationPolicy::BypassLock);
+                    }
+                }));
 
             // Trim the original clip's tail to the moved clip's in-point (left remnant).
             int64_t newDuration = movedIn - otherIn;
@@ -419,6 +491,10 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
         }
         else if (otherIn < movedIn) {
             // Other clip's tail extends into the moved clip → trim tail
+            compound->addCommand(removeOverwrittenTransitionsCommand(
+                track, [otherId, movedClipId](const Transition& t) {
+                    return t.leftClipId == otherId || joinsClips(t, otherId, movedClipId);
+                }));
             int64_t newDuration = movedIn - otherIn;
             compound->addCommand(std::make_unique<TrimClipCommand>(
                 track, other->id(),
@@ -439,6 +515,10 @@ std::unique_ptr<Command> EditOperations::resolveOverlaps(
                 compound->addCommand(
                     std::make_unique<RemoveClipCommand>(track, other->id()));
             } else {
+                compound->addCommand(removeOverwrittenTransitionsCommand(
+                    track, [otherId, movedClipId](const Transition& t) {
+                        return t.rightClipId == otherId || joinsClips(t, otherId, movedClipId);
+                    }));
                 compound->addCommand(std::make_unique<TrimClipCommand>(
                     track, other->id(),
                     newIn,          // move timelineIn forward

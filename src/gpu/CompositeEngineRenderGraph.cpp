@@ -167,14 +167,33 @@ static std::vector<uint8_t> rasterizeLayerMasks(
             sourceMasks.push_back(mask);
     }
 
+    // A texture taller than the frame its source-local masks were drawn on
+    // (LayerInfo::renderGrowthY) holds that frame in its middle 1/k.  The
+    // rasterizer scales feather and expansion by the mapping's mean scale;
+    // this mapping keeps the texture's pixel size, so undo that.
+    MaskRasterTransform grownXf{};
+    const MaskRasterTransform* sourceMap = nullptr;
+    if (layer.renderGrowthY > 1.0f) {
+        const float k = layer.renderGrowthY;
+        const float h = static_cast<float>(srcH);
+        grownXf = {{static_cast<float>(srcW), 0.0f, 0.0f,
+                    0.0f, h / k, h * (1.0f - 1.0f / k) * 0.5f}};
+        sourceMap = &grownXf;
+        const float meanScale = 0.5f * (1.0f + 1.0f / k);
+        for (auto& mask : sourceMasks) {
+            mask.feather /= meanScale;
+            mask.expansion /= meanScale;
+        }
+    }
+
     if (legacyMasks.empty())
-        return rasterizeMasks(sourceMasks, srcW, srcH);
+        return rasterizeMasks(sourceMasks, srcW, srcH, sourceMap);
 
     const auto xf = legacyMaskTransform(layer, srcW, srcH, outW, outH);
     if (sourceMasks.empty())
         return rasterizeMasks(legacyMasks, srcW, srcH, &xf);
 
-    auto pixels = rasterizeMasks(sourceMasks, srcW, srcH);
+    auto pixels = rasterizeMasks(sourceMasks, srcW, srcH, sourceMap);
     const auto legacyPixels = rasterizeMasks(legacyMasks, srcW, srcH, &xf);
     for (size_t i = 0; i < pixels.size(); ++i) {
         pixels[i] = static_cast<uint8_t>(std::min(

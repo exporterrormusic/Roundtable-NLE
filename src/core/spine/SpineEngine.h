@@ -24,7 +24,9 @@
 #include "timeline/SpineClip.h"
 
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <cstdint>
@@ -76,6 +78,24 @@ struct SpineRenderData
     float boundsX = 0, boundsY = 0, boundsW = 0, boundsH = 0;
 };
 
+/// An axis-aligned box in skeleton coordinates.
+struct SpineBox
+{
+    float x = 0, y = 0, w = 0, h = 0;
+};
+
+/// The most a render grows to hold an animation's reach (a memory cap;
+/// reach beyond it is cut off).
+inline constexpr float kSpineMaxRenderGrowth = 2.0f;
+
+/// Height for a render `outH` tall at the character's setup-pose size that
+/// also holds what an animation reaches above and below (`reach`, its
+/// framingBox), centred on the setup pose.  The character keeps her size
+/// and place whatever she plays; only the render grows.  `outH` when the
+/// animation stays inside the setup pose; always even.
+[[nodiscard]] uint32_t spineRenderHeight(uint32_t outH, const SpineBox& setup,
+                                         const SpineBox& reach);
+
 /// Parsed, immutable atlas + skeleton data for one character asset.
 /// Parsing is the expensive part of creating a SpineEngine (~50 ms for a
 /// full character); spine-cpp treats SkeletonData/Atlas as read-only at
@@ -101,6 +121,17 @@ struct SpineParsedSkeleton
         const std::string& skelPath, const std::string& atlasPath,
         float scale = 1.0f);
 
+    /// What `animation` needs drawn: horizontally the setup pose; vertically
+    /// also everything visible the animation reaches, so a raised arm is not
+    /// cut off at the top of the timeline's render.  A character is SIZED
+    /// and placed by the setup pose (framingBox("")) in COMPOSE, timeline and
+    /// export alike; this box only sets how tall the render must be
+    /// (spineRenderHeight).  It is constant per animation: live bounds
+    /// follow every swinging cape and particle.  Measured once per animation
+    /// on a skeleton of its own, then cached.  An empty or unknown name
+    /// gives the setup pose.  Thread-safe.
+    [[nodiscard]] SpineBox framingBox(const std::string& animation) const;
+
     struct SkelDataDeleter { void operator()(spine::SkeletonData* p) const; };
 
     // Declaration order matters: skelData's attachments reference atlas
@@ -110,6 +141,10 @@ struct SpineParsedSkeleton
     std::string                                           skelPath;
     std::string                                           atlasPath;
     std::string                                           version;
+
+private:
+    mutable std::mutex                                    m_framingMutex;
+    mutable std::unordered_map<std::string, SpineBox>     m_framingBoxes;
 };
 
 class SpineEngine
@@ -224,6 +259,13 @@ public:
 
     /// Get axis-aligned bounding box of current pose
     void getBounds(float& x, float& y, float& w, float& h);
+
+    /// The box to frame this character by while it plays `animation`; see
+    /// SpineParsedSkeleton::framingBox.  Empty when nothing is loaded.
+    [[nodiscard]] SpineBox framingBox(const std::string& animation) const
+    {
+        return m_parsed ? m_parsed->framingBox(animation) : SpineBox{};
+    }
 
     // ── Atlas access ────────────────────────────────────────────────────
 

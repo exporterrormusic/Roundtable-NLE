@@ -225,6 +225,7 @@ std::shared_ptr<Nv12Converter> CompositeService::renderNv12Converter(
 
 void CompositeService::reset()
 {
+    std::lock_guard lock(m_compositeMutex);
     invalidateCacheDirect();
     clearMediaHandles();
     if (m_engine) {
@@ -281,6 +282,7 @@ void CompositeService::initAnimVideoCache(MediaPool* pool)
 
 void CompositeService::drainCompletedSpineFutures()
 {
+    std::lock_guard lock(m_compositeMutex);
     m_spineLoadFutures.erase(
         std::remove_if(m_spineLoadFutures.begin(), m_spineLoadFutures.end(),
                        [](const std::future<void>& f) {
@@ -291,12 +293,14 @@ void CompositeService::drainCompletedSpineFutures()
 
 void CompositeService::addSpineFuture(std::future<void> f)
 {
+    std::lock_guard lock(m_compositeMutex);
     m_spineLoadFutures.push_back(std::move(f));
 }
 
 std::shared_ptr<CompositeService::SpineSharedData>
 CompositeService::findSpineSharedData(const std::string& key) const
 {
+    std::lock_guard lock(m_compositeMutex);
     auto it = m_spineSharedCache.find(key);
     return (it != m_spineSharedCache.end()) ? it->second : nullptr;
 }
@@ -304,12 +308,14 @@ CompositeService::findSpineSharedData(const std::string& key) const
 void CompositeService::storeSpineSharedData(const std::string& key,
                                             std::shared_ptr<SpineSharedData> data)
 {
+    std::lock_guard lock(m_compositeMutex);
     m_spineSharedCache[key] = std::move(data);
 }
 
 const std::vector<std::string>*
 CompositeService::findAnimNames(const std::string& key) const
 {
+    std::lock_guard lock(m_compositeMutex);
     auto it = m_animNameCache.find(key);
     return (it != m_animNameCache.end()) ? &it->second : nullptr;
 }
@@ -317,16 +323,21 @@ CompositeService::findAnimNames(const std::string& key) const
 void CompositeService::storeAnimNames(const std::string& key,
                                       std::vector<std::string> names)
 {
+    std::lock_guard lock(m_compositeMutex);
     m_animNameCache[key] = std::move(names);
 }
 
 void CompositeService::evictSpineState(uint64_t clipId)
 {
+    // UI edits must not destroy an engine while FrameProducer evaluates it.
+    std::lock_guard lock(m_compositeMutex);
     m_spineCache.erase(clipId);
 }
 
 void CompositeService::purgeDeadSpineStates(const std::unordered_set<uint64_t>& liveIds)
 {
+    // Undo can remove a remnant while an older snapshot still renders it.
+    std::lock_guard lock(m_compositeMutex);
     for (auto it = m_spineCache.begin(); it != m_spineCache.end(); ) {
         if (liveIds.find(it->first) == liveIds.end())
             it = m_spineCache.erase(it);
@@ -473,6 +484,7 @@ int CompositeService::vramUsagePercent() const
 void CompositeService::integrateSpineSharedData(const std::string& key,
                                                  std::shared_ptr<SpineSharedData> shared)
 {
+    std::lock_guard lock(m_compositeMutex);
     m_spineSharedCache[key] = std::move(shared);
 }
 

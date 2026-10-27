@@ -153,6 +153,11 @@ void AudioSync::resetForNewProject()
         m_scriptStatus->setText("No script loaded");
     if (m_audioStatus)
         m_audioStatus->setText("No files imported");
+    // Delete the pooled cards through the pool: the loop below would delete
+    // the ones in the layout behind its back, and the next populateCards()
+    // hid those freed cards (crash opening the Audio page after a project
+    // switch).  Deleting a widget also takes it out of its layout.
+    m_cardPool.shrink(0);
     if (m_rightLayout) {
         QLayoutItem* child;
         while ((child = m_rightLayout->takeAt(0)) != nullptr) {

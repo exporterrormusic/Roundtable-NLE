@@ -26,6 +26,7 @@
 #include "timeline/Clip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
+#include "timeline/SpineClip.h"
 #include "timeline/NestTransitionTransfer.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/GraphicClip.h"
@@ -376,6 +377,187 @@ TEST(EditOperations, SplitClipUndo)
 
     // Should be back to 3 clips
     EXPECT_EQ(tt.vTrack->clipCount(), 3u);
+}
+
+TEST(EditOperations, SplitSpineKeepsKeyframesOnTheirOriginalSideOfTheCut)
+{
+    rt::Timeline timeline;
+    auto* track = timeline.addVideoTrack("V1");
+    auto wells = std::make_unique<rt::SpineClip>("Wells", "default");
+    wells->setTimelineIn(20 * TPS);
+    wells->setDuration(10 * TPS);
+    wells->setSourceIn(7 * TPS);
+    wells->setSpeed(2.0);
+    wells->positionX().addKeyframe(TPS, 10.0f, rt::InterpMode::Hold);
+    wells->positionX().addKeyframe(5 * TPS, 50.0f, rt::InterpMode::Bezier);
+    wells->positionX().addKeyframe(9 * TPS, 90.0f, rt::InterpMode::EaseIn);
+    auto& cutKey = wells->positionX().keyframe(1);
+    cutKey.bezierOutX = 0.2f;
+    cutKey.bezierOutY = 0.7f;
+    cutKey.spatialInterp = rt::InterpMode::ContinuousBezier;
+    cutKey.spatialOutX = 42.0f;
+    const uint64_t leftId = wells->id();
+    track->addClip(std::move(wells));
+    rt::CommandStack stack;
+
+    auto split = rt::EditOperations::splitClip(timeline, 0, leftId, 25 * TPS);
+    ASSERT_NE(split, nullptr);
+    // Merely preparing a command must not edit the original.
+    ASSERT_EQ(track->clipCount(), 1u);
+    ASSERT_EQ(track->clip(0)->positionX().keyframeCount(), 3u);
+    stack.execute(std::move(split));
+
+    auto expectSplit = [&] {
+        ASSERT_EQ(track->clipCount(), 2u);
+        auto* left = track->clip(0);
+        auto* right = track->clip(1);
+        EXPECT_EQ(left->id(), leftId);
+        EXPECT_EQ(left->timelineOut(), 25 * TPS);
+        EXPECT_EQ(right->timelineIn(), 25 * TPS);
+        EXPECT_EQ(right->sourceIn(), 17 * TPS);
+        ASSERT_EQ(left->positionX().keyframeCount(), 1u);
+        ASSERT_EQ(right->positionX().keyframeCount(), 2u);
+        EXPECT_EQ(left->timelineIn() + left->positionX().keyframe(0).time, 21 * TPS);
+        EXPECT_EQ(right->timelineIn() + right->positionX().keyframe(0).time, 25 * TPS);
+        EXPECT_EQ(right->timelineIn() + right->positionX().keyframe(1).time, 29 * TPS);
+        const auto& key = right->positionX().keyframe(0);
+        EXPECT_FLOAT_EQ(key.value, 50.0f);
+        EXPECT_EQ(key.interp, rt::InterpMode::Bezier);
+        EXPECT_FLOAT_EQ(key.bezierOutX, 0.2f);
+        EXPECT_FLOAT_EQ(key.bezierOutY, 0.7f);
+        EXPECT_EQ(key.spatialInterp, rt::InterpMode::ContinuousBezier);
+        EXPECT_FLOAT_EQ(key.spatialOutX, 42.0f);
+    };
+    expectSplit();
+    EXPECT_EQ(stack.undoCount(), 1u);
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(track->clipCount(), 1u);
+    auto* restored = track->clip(0);
+    EXPECT_EQ(restored->id(), leftId);
+    EXPECT_EQ(restored->duration(), 10 * TPS);
+    EXPECT_EQ(restored->sourceIn(), 7 * TPS);
+    ASSERT_EQ(restored->positionX().keyframeCount(), 3u);
+    EXPECT_EQ(restored->positionX().keyframe(1).time, 5 * TPS);
+    EXPECT_FLOAT_EQ(restored->positionX().keyframe(1).spatialOutX, 42.0f);
+    ASSERT_TRUE(stack.redo());
+    expectSplit();
+}
+
+TEST(EditOperations, SplitAfterSpineAnimationDoesNotReplayItOnTheRight)
+{
+    rt::Timeline timeline;
+    auto* track = timeline.addVideoTrack("V1");
+    auto wells = std::make_unique<rt::SpineClip>("Wells", "default");
+    wells->setDuration(10 * TPS);
+    wells->scaleX().addKeyframe(TPS, 1.0f);
+    wells->scaleX().addKeyframe(2 * TPS, 2.0f);
+    const uint64_t id = wells->id();
+    track->addClip(std::move(wells));
+
+    auto split = rt::EditOperations::splitClip(timeline, 0, id, 5 * TPS);
+    ASSERT_NE(split, nullptr);
+    split->execute();
+    ASSERT_EQ(track->clipCount(), 2u);
+    EXPECT_EQ(track->clip(0)->scaleX().keyframeCount(), 2u);
+    const auto& rightScale = track->clip(1)->scaleX();
+    EXPECT_TRUE(rightScale.isStatic());
+    EXPECT_FLOAT_EQ(rightScale.evaluate(0), 2.0f);
+    EXPECT_FLOAT_EQ(rightScale.evaluate(TPS), 2.0f);
+    EXPECT_FLOAT_EQ(rightScale.evaluate(4 * TPS), 2.0f);
+}
+
+TEST(EditOperations, SplitSlicesEffectParametersAndBothKindsOfMasks)
+{
+    rt::Timeline timeline;
+    auto* track = timeline.addVideoTrack("V1");
+    auto clip = makeClip(10.0, 10.0);
+    auto effect = std::make_unique<rt::Effect>(rt::EffectType::Blur);
+    ASSERT_GT(effect->paramCount(), 0u);
+    effect->param(0).track.addKeyframe(TPS, 10.0f);
+    effect->param(0).track.addKeyframe(7 * TPS, 70.0f);
+    const uint64_t effectId = effect->id();
+    rt::OpacityMask mask;
+    mask.pathAnimated = true;
+    rt::MaskGeometry early, late;
+    early.centerX = 0.1f;
+    late.centerX = 0.7f;
+    mask.addPathKey(TPS, early);
+    mask.addPathKey(7 * TPS, late);
+    mask.feather.addKeyframe(TPS, 1.0f);
+    mask.feather.addKeyframe(7 * TPS, 7.0f);
+    clip->addMask(mask);
+    effect->masks().push_back(mask);
+    clip->effects().addEffect(std::move(effect));
+    const uint64_t id = clip->id();
+    track->addClip(std::move(clip));
+    rt::CommandStack stack;
+    stack.execute(rt::EditOperations::splitClip(timeline, 0, id, 15 * TPS));
+    ASSERT_EQ(track->clipCount(), 2u);
+    for (size_t half = 0; half < 2; ++half) {
+        const int64_t expectedTime = (half == 0 ? 11 : 17) * TPS;
+        auto* part = track->clip(half);
+        const auto& param = part->effects().effect(0).param(0).track;
+        ASSERT_EQ(param.keyframeCount(), 1u);
+        EXPECT_EQ(part->timelineIn() + param.keyframe(0).time, expectedTime);
+        for (const auto* sliced : {&part->masks()[0], &part->effects().effect(0).masks()[0]}) {
+            ASSERT_EQ(sliced->pathKeys.size(), 1u);
+            ASSERT_EQ(sliced->feather.keyframeCount(), 1u);
+            EXPECT_EQ(part->timelineIn() + sliced->pathKeys[0].time, expectedTime);
+            EXPECT_EQ(part->timelineIn() + sliced->feather.keyframe(0).time, expectedTime);
+        }
+    }
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(track->clipCount(), 1u);
+    EXPECT_EQ(track->clip(0)->effects().effect(0).id(), effectId);
+    EXPECT_EQ(track->clip(0)->effects().effect(0).param(0).track.keyframeCount(), 2u);
+    EXPECT_EQ(track->clip(0)->masks()[0].pathKeys.size(), 2u);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(track->clip(1)->effects().effect(0).param(0).track.keyframe(0).time, 2 * TPS);
+}
+
+TEST(EditOperations, SplitAllSlicesAudioAndGraphicLayerKeyframes)
+{
+    rt::Timeline timeline;
+    auto* video = timeline.addVideoTrack("V1");
+    auto* audio = timeline.addAudioTrack("A1");
+    auto graphic = std::make_unique<rt::GraphicClip>();
+    graphic->setDuration(10 * TPS);
+    auto* text = graphic->addTextLayer("Split me");
+    text->tracking().addKeyframe(TPS, 10.0f);
+    text->tracking().addKeyframe(7 * TPS, 70.0f);
+    text->transform().opacity.addKeyframe(TPS, 0.1f);
+    text->transform().opacity.addKeyframe(7 * TPS, 0.7f);
+    video->addClip(std::move(graphic));
+    auto sound = std::make_unique<rt::AudioClip>();
+    sound->setDuration(10 * TPS);
+    sound->volume().addKeyframe(TPS, 0.1f);
+    sound->volume().addKeyframe(7 * TPS, 0.7f);
+    sound->pan().addKeyframe(TPS, -1.0f);
+    sound->pan().addKeyframe(7 * TPS, 1.0f);
+    audio->addClip(std::move(sound));
+    rt::CommandStack stack;
+    stack.execute(rt::EditOperations::splitAllAtPlayhead(timeline, 5 * TPS));
+    ASSERT_EQ(video->clipCount(), 2u);
+    ASSERT_EQ(audio->clipCount(), 2u);
+    for (size_t half = 0; half < 2; ++half) {
+        auto* graphicPart = dynamic_cast<rt::GraphicClip*>(video->clip(half));
+        auto* audioPart = dynamic_cast<rt::AudioClip*>(audio->clip(half));
+        ASSERT_NE(graphicPart, nullptr);
+        ASSERT_NE(audioPart, nullptr);
+        auto* textPart = dynamic_cast<rt::TextLayer*>(graphicPart->layer(0));
+        ASSERT_NE(textPart, nullptr);
+        for (const auto* keys : {&textPart->tracking(), &textPart->transform().opacity,
+                                 &audioPart->volume(), &audioPart->pan()}) {
+            ASSERT_EQ(keys->keyframeCount(), 1u);
+            EXPECT_EQ(graphicPart->timelineIn() + keys->keyframe(0).time,
+                      (half == 0 ? 1 : 7) * TPS);
+        }
+    }
+    EXPECT_EQ(stack.undoCount(), 1u);
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(video->clipCount(), 1u);
+    EXPECT_EQ(audio->clipCount(), 1u);
+    EXPECT_EQ(static_cast<rt::AudioClip*>(audio->clip(0))->volume().keyframeCount(), 2u);
 }
 
 TEST(EditOperations, SplitTierListPreservesOneEventClock)
@@ -1830,6 +2012,78 @@ TEST(EditOperations, OverwriteMiddleKeepsKeyframesAtOriginalTimelinePositions)
     auto* redoneLeft = track->clip(track->findClipIndexById(originalId));
     ASSERT_NE(redoneLeft, nullptr);
     EXPECT_EQ(redoneLeft->opacity().keyframeCount(), 1u);
+}
+
+static rt::Transition dissolveBetween(uint64_t left, uint64_t right, double atSec)
+{
+    rt::Transition t;
+    t.duration = TPS / 2;
+    t.leftClipId = left;
+    t.rightClipId = right;
+    t.editPointTick = static_cast<int64_t>(atSec * TPS);
+    return t;
+}
+
+TEST(EditOperations, OverwritingACutRemovesItsTransition)
+{
+    // A third clip dropped across the A|B cut: the dissolve used to be
+    // dragged onto the A|incoming cut.
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    rt::CommandStack stack;
+    const uint64_t a = addClip(track, 0.0, 5.0);
+    const uint64_t b = addClip(track, 5.0, 5.0);
+    track->addTransition(dissolveBetween(a, b, 5.0));
+    const uint64_t incoming = addClip(track, 4.0, 2.0);
+
+    auto overwrite = rt::EditOperations::resolveOverlaps(timeline, 0, incoming);
+    ASSERT_NE(overwrite, nullptr);
+    stack.execute(std::move(overwrite));
+
+    EXPECT_EQ(track->clip(track->findClipIndexById(a))->timelineOut(), 4 * TPS);
+    EXPECT_EQ(track->clip(track->findClipIndexById(b))->timelineIn(), 6 * TPS);
+    EXPECT_EQ(track->transitionCount(), 0u);
+
+    stack.undo();
+    ASSERT_EQ(track->transitionCount(), 1u);
+    EXPECT_EQ(track->transition(0)->leftClipId, a);
+    EXPECT_EQ(track->transition(0)->rightClipId, b);
+    EXPECT_EQ(track->transition(0)->editPointTick, 5 * TPS);
+    stack.redo();
+    EXPECT_EQ(track->transitionCount(), 0u);
+}
+
+TEST(EditOperations, OverwriteMiddleKeepsTheFarTransitionOnTheRightRemnant)
+{
+    // The clip's tail (and the dissolve on it) survives the overwrite, as
+    // the right remnant; the dissolve used to jump onto the new cut.
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    rt::CommandStack stack;
+    const uint64_t a = addClip(track, 0.0, 10.0);
+    const uint64_t next = addClip(track, 10.0, 5.0);
+    track->addTransition(dissolveBetween(a, next, 10.0));
+    const uint64_t incoming = addClip(track, 4.0, 2.0);
+
+    auto overwrite = rt::EditOperations::resolveOverlaps(timeline, 0, incoming);
+    ASSERT_NE(overwrite, nullptr);
+    stack.execute(std::move(overwrite));
+
+    ASSERT_EQ(track->transitionCount(), 1u);
+    const rt::Transition* t = track->transition(0);
+    const size_t remnantIdx = track->findClipIndexById(t->leftClipId);
+    ASSERT_LT(remnantIdx, track->clipCount());
+    EXPECT_NE(t->leftClipId, a);
+    EXPECT_EQ(track->clip(remnantIdx)->timelineIn(), 6 * TPS);
+    EXPECT_EQ(track->clip(remnantIdx)->timelineOut(), 10 * TPS);
+    EXPECT_EQ(t->rightClipId, next);
+    EXPECT_EQ(t->editPointTick, 10 * TPS);
+
+    stack.undo();
+    ASSERT_EQ(track->clipCount(), 3u);   // a, next, incoming
+    ASSERT_EQ(track->transitionCount(), 1u);
+    EXPECT_EQ(track->transition(0)->leftClipId, a);
+    EXPECT_EQ(track->transition(0)->editPointTick, 10 * TPS);
 }
 
 TEST(EditOperations, PasteGraphicAtSameStartOverwritesExistingGraphic)

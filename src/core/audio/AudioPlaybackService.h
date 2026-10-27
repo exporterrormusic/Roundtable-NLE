@@ -96,6 +96,7 @@ private:
     std::vector<std::shared_ptr<std::vector<float>>> m_audioBuffers;
     std::unordered_map<uint64_t, std::shared_ptr<AudioSampleProvider>> m_clipProviders;
     bool    m_sourcesLoaded{false};
+    uint64_t m_loadedSourcesRevision{0};
     bool    m_topologyDirty{true};
     int64_t m_loadedWindowStartFrame{-1};
     int64_t m_loadedWindowEndFrame{-1};

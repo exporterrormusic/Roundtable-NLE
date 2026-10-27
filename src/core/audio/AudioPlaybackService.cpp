@@ -136,7 +136,8 @@ void AudioPlaybackService::ensureSourcesLoaded()
     const int64_t currentTick = m_playbackController
         ? std::max<int64_t>(0, m_playbackController->currentTick()) : 0;
 
-    if (m_sourcesLoaded &&
+    if (m_sourcesLoaded && m_audioEngine &&
+        m_loadedSourcesRevision == m_audioEngine->trackSourcesRevision() &&
         !shouldRefreshTimelineAudioWindow(m_loadedWindowStartFrame,
                                           m_loadedWindowEndFrame,
                                           currentTick)) {
@@ -188,6 +189,7 @@ bool AudioPlaybackService::needsPlaybackWindowRefresh() const
 
     if (m_topologyDirty) return true;
     if (!m_sourcesLoaded) return true;
+    if (m_loadedSourcesRevision != m_audioEngine->trackSourcesRevision()) return true;
 
     const int64_t currentTick = std::max<int64_t>(0, m_playbackController->currentTick());
     return shouldRefreshTimelineAudioWindow(m_loadedWindowStartFrame,

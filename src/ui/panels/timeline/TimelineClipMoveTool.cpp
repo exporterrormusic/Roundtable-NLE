@@ -534,6 +534,9 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
                     std::make_unique<InsertTrackAtCommand>(m_panel.m_timeline, newTrackIndex));
             }
 
+            // The copies, by id: finding one as "the clip starting at
+            // finalIn" could pick the clip it lands on.
+            std::vector<std::pair<size_t, uint64_t>> copies;   // (dst track, copy id)
             for (const auto& fp : finals) {
                 Track* srcTr = m_panel.m_timeline->track(fp.srcTrack);
                 if (!srcTr) continue;
@@ -546,6 +549,7 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
                 Track* dstTr = m_panel.m_timeline->track(fp.dstTrack);
                 if (!dstTr) continue;
 
+                copies.emplace_back(fp.dstTrack, cloned->id());
                 auto cmd = std::make_unique<AddClipCommand>(dstTr, std::move(cloned));
                 cmd->execute();
                 masterCompound->addCommand(std::move(cmd));
@@ -556,32 +560,15 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
             // and are meant to coexist on the destination track).
             {
                 std::unordered_set<uint64_t> movedIds;
-                for (const auto& fp : finals) {
-                    Track* dstTr = m_panel.m_timeline->track(fp.dstTrack);
-                    if (!dstTr) continue;
-                    for (size_t ci = 0; ci < dstTr->clipCount(); ++ci) {
-                        if (dstTr->clip(ci)->timelineIn() == fp.finalIn) {
-                            movedIds.insert(dstTr->clip(ci)->id());
-                            break;
-                        }
-                    }
-                }
+                for (const auto& [dst, copyId] : copies)
+                    movedIds.insert(copyId);
 
-                for (const auto& fp : finals) {
-                    Track* dstTr = m_panel.m_timeline->track(fp.dstTrack);
-                    if (!dstTr) continue;
-                    for (size_t ci = 0; ci < dstTr->clipCount(); ++ci) {
-                        if (dstTr->clip(ci)->timelineIn() == fp.finalIn &&
-                            dstTr->clip(ci)->id() != fp.clipId) {
-                            auto overwrite = EditOperations::resolveOverlaps(
-                                *m_panel.m_timeline, fp.dstTrack, dstTr->clip(ci)->id(),
-                                movedIds);
-                            if (overwrite) {
-                                overwrite->execute();
-                                masterCompound->addCommand(std::move(overwrite));
-                            }
-                            break;
-                        }
+                for (const auto& [dst, copyId] : copies) {
+                    auto overwrite = EditOperations::resolveOverlaps(
+                        *m_panel.m_timeline, dst, copyId, movedIds);
+                    if (overwrite) {
+                        overwrite->execute();
+                        masterCompound->addCommand(std::move(overwrite));
                     }
                 }
             }
@@ -722,21 +709,13 @@ void TimelineClipMoveTool::release(const QMouseEvent& event)
             for (const auto& fp : finals)
                 movedIds.insert(fp.clipId);
 
+            // moveClipToTrack keeps the clip's id, so the moved clip is
+            // found by id.  (Finding it as "the clip starting at finalIn"
+            // picked the clip being overwritten when both started on the
+            // same frame, which then overwrote the moved clip instead.)
             for (const auto& fp : finals) {
-                uint64_t resolveId = fp.clipId;
-                if (fp.srcTrack != fp.dstTrack) {
-                    Track* dstTr = m_panel.m_timeline->track(fp.dstTrack);
-                    if (dstTr) {
-                        for (size_t ci = 0; ci < dstTr->clipCount(); ++ci) {
-                            if (dstTr->clip(ci)->timelineIn() == fp.finalIn) {
-                                resolveId = dstTr->clip(ci)->id();
-                                break;
-                            }
-                        }
-                    }
-                }
                 auto overwrite = EditOperations::resolveOverlaps(
-                    *m_panel.m_timeline, fp.dstTrack, resolveId, movedIds);
+                    *m_panel.m_timeline, fp.dstTrack, fp.clipId, movedIds);
                 if (overwrite) {
                     overwrite->execute();
                     masterCompound->addCommand(std::move(overwrite));

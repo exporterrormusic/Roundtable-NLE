@@ -44,6 +44,8 @@ void TimelineWorkspace::createClipPanelDocks()
         if (m_destroying.load(std::memory_order_acquire)) return {};
         const std::string key = charName + "|" + outfit + "|" + std::to_string(stance);
         if (!m_compositeService) return {};
+        // Keep borrowed entries/engines alive throughout this query.
+        std::lock_guard lock(m_compositeService->compositeMutex());
         {
             auto* cached = m_compositeService->findAnimNames(key);
             if (cached) return *cached;

@@ -633,19 +633,22 @@ void ProjectController::addToRecentFiles(const QString& filePath)
     // Projects living outside the projects folder (external drives etc.) are
     // pinned separately so they don't fall off the Projects list once ten
     // other projects have been opened.  Removed via Delete → "Remove from List".
-    if (filePath.endsWith(".rtp", Qt::CaseInsensitive) && isExternalProjectPath(filePath)) {
-        QStringList pinned = settings.value("ExternalProjects").toStringList();
-        const QString norm = QFileInfo(filePath).absoluteFilePath();
-        bool found = false;
-        for (const auto& p : pinned)
-            if (QFileInfo(p).absoluteFilePath().compare(norm, Qt::CaseInsensitive) == 0) { found = true; break; }
-        if (!found) {
-            pinned.append(norm);
-            settings.setValue("ExternalProjects", pinned);
-        }
-    }
+    if (filePath.endsWith(".rtp", Qt::CaseInsensitive) && isExternalProjectPath(filePath))
+        pinExternalProject(filePath);
 
     updateRecentFilesMenu();
+}
+
+void ProjectController::pinExternalProject(const QString& filePath)
+{
+    auto settings = rt::appSettings();
+    QStringList pinned = settings.value("ExternalProjects").toStringList();
+    const QString norm = QFileInfo(filePath).absoluteFilePath();
+    for (const auto& p : pinned)
+        if (QFileInfo(p).absoluteFilePath().compare(norm, Qt::CaseInsensitive) == 0)
+            return;
+    pinned.append(norm);
+    settings.setValue("ExternalProjects", pinned);
 }
 
 bool ProjectController::isExternalProjectPath(const QString& filePath) const

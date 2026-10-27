@@ -71,6 +71,26 @@ TEST(CommandStack, ExecuteAndUndo)
     EXPECT_TRUE(stack.canRedo());
 }
 
+TEST(CommandStack, BinOnlyScopeSurvivesUndoRedo)
+{
+    CommandStack stack;
+    int value = 0;
+    stack.execute(std::make_unique<LambdaCommand>("Move Bin Items",
+        [&] { value = 1; }, [&] { value = 0; }, false));
+    EXPECT_FALSE(stack.undoAffectsTimeline());
+    ASSERT_TRUE(stack.undo());
+    EXPECT_EQ(value, 0);
+    EXPECT_FALSE(stack.redoAffectsTimeline());
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(value, 1);
+    EXPECT_FALSE(stack.undoAffectsTimeline());
+    // Existing timeline commands keep the conservative refresh behavior.
+    stack.execute(std::make_unique<SetValueCommand>(value, 2));
+    EXPECT_TRUE(stack.undoAffectsTimeline());
+    ASSERT_TRUE(stack.undo());
+    EXPECT_TRUE(stack.redoAffectsTimeline());
+}
+
 TEST(CommandStack, Redo)
 {
     int value = 0;

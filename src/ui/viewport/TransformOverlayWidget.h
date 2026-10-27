@@ -721,6 +721,11 @@ private:
     /// events can still perform ordinary drag selection in the text document.
     bool             m_inlinePointerRerouted{false};
     int              m_inlinePointerAnchor{0};
+    // Click run inside the inline editor (Photoshop): 2 = word, 3 = line,
+    // 4+ = paragraph.  A press continues the run only when quick and close.
+    int              m_inlineClickCount{0};
+    qint64           m_inlineLastClickMs{0};
+    QPoint           m_inlineLastClickGlobal;
     /// Last explicit monitor-text selection. Native formatting controls can
     /// transiently collapse the QTextCursor when taking focus; formatting
     /// still belongs to this highlighted character range.

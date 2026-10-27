@@ -18,6 +18,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QApplication>
 #include <QScreen>
 #include <QMenu>
@@ -780,7 +781,36 @@ bool TransformOverlayWidget::eventFilter(QObject* watched, QEvent* event)
             if ((leftPress || leftDoubleClick) && insideEditor) {
                 QTextCursor cursor(m_inlineTextEdit->document());
                 cursor.setPosition(inlineTextPositionAtGlobal(global));
-                if (leftDoubleClick) {
+
+                // Count the click run: Qt reports only press/double-click,
+                // so a quick, close press after a double-click is click 3+.
+                const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+                const bool continuesRun = m_inlineClickCount >= 2
+                    && nowMs - m_inlineLastClickMs
+                        <= QApplication::doubleClickInterval()
+                    && (global - m_inlineLastClickGlobal).manhattanLength()
+                        <= QApplication::startDragDistance();
+                if (leftDoubleClick)
+                    m_inlineClickCount = 2;
+                else if (leftPress)
+                    m_inlineClickCount = continuesRun ? m_inlineClickCount + 1 : 1;
+                m_inlineLastClickMs = nowMs;
+                m_inlineLastClickGlobal = global;
+
+                if (leftPress && m_inlineClickCount >= 3
+                    && !(mouse->modifiers() & Qt::ShiftModifier)) {
+                    if (m_inlineClickCount == 3) {
+                        // The visual line (row) under the pointer.
+                        cursor.movePosition(QTextCursor::StartOfLine);
+                        cursor.movePosition(QTextCursor::EndOfLine,
+                                            QTextCursor::KeepAnchor);
+                    } else {
+                        cursor.movePosition(QTextCursor::StartOfBlock);
+                        cursor.movePosition(QTextCursor::EndOfBlock,
+                                            QTextCursor::KeepAnchor);
+                    }
+                    m_inlinePointerRerouted = false;
+                } else if (leftDoubleClick) {
                     cursor.select(QTextCursor::WordUnderCursor);
                     m_inlinePointerRerouted = false;
                 } else if (mouse->modifiers() & Qt::ShiftModifier) {

@@ -634,35 +634,103 @@ void ProjectController::onDuplicateProjectFromPanel(const QString& name)
 {
     spdlog::info("Duplicating project: {}", name.toStdString());
 
-    QString projDir = projectsDirectory();
-    QString srcPath = projDir + "/" + name + "/" + name + ".rtp";
-
-    // Find a unique name
-    QString newName = name + " (Copy)";
-    int counter = 2;
-    while (QDir(projDir + "/" + newName).exists()) {
-        newName = name + QString(" (Copy %1)").arg(counter++);
-    }
-
-    // Create subfolder for duplicate
-    QString newFolder = projDir + "/" + newName;
-    QDir().mkpath(newFolder);
-    QString dstPath = newFolder + "/" + newName + ".rtp";
-
-    if (QFile::copy(srcPath, dstPath)) {
-        // Also copy thumbnail if it exists
-        QString srcThumb = projDir + "/" + name + "/" + name + ".png";
-        if (QFile::exists(srcThumb))
-            QFile::copy(srcThumb, newFolder + "/" + newName + ".png");
-
-        refreshProjectsList();
-        m_mw->statusBar()->showMessage(
-            QString("Duplicated as '%1'").arg(newName), 3000);
-    } else {
-        QDir(newFolder).removeRecursively();
+    // Resolve the project's REAL location — it may be outside the projects
+    // folder (external drive) or in a folder that doesn't match its name.
+    QString srcPath = m_mw->projectPanel()
+        ? m_mw->projectPanel()->projectFilePath(name) : QString();
+    if (srcPath.isEmpty())
+        srcPath = projectsDirectory() + "/" + name + "/" + name + ".rtp";
+    const QFileInfo srcFi(srcPath);
+    if (!srcFi.exists()) {
         QMessageBox::warning(m_mw, "Error",
-            QString("Failed to duplicate '%1'").arg(name));
+            QString("Can't find the project file for '%1':\n%2")
+                .arg(name, QDir::toNativeSeparators(srcPath)));
+        return;
     }
+
+    // Thumbnails, workspace and AudioSync settings are keyed by name, so the
+    // name must be unique across the whole list, not just in one folder.
+    auto listed = [this](const QString& n) {
+        return m_mw->projectPanel() && !m_mw->projectPanel()->projectFilePath(n).isEmpty();
+    };
+
+    // Like Save As, the copy gets a folder named after it inside the chosen
+    // folder (unless the chosen folder already is that folder).  Inside the
+    // projects folder that must be <projects>/<name>/: the list only looks
+    // there, and Delete removes the project's whole folder.
+    const QString projDir = QDir(projectsDirectory()).absolutePath();
+    auto targetFor = [&](const QString& chosen) {
+        const QFileInfo fi(chosen);
+        const QString n = fi.completeBaseName();
+        QString folder = fi.absolutePath();
+        if (QFileInfo(folder).fileName().compare(n, Qt::CaseInsensitive) != 0)
+            folder += "/" + n;
+        if (!isExternalProjectPath(folder + "/" + n + ".rtp"))
+            folder = projDir + "/" + n;
+        return folder + "/" + n + ".rtp";
+    };
+
+    // Start where the original's own folder sits, so the default copy lands
+    // beside it as a sibling project folder.
+    QString startDir = srcFi.absolutePath();
+    if (QFileInfo(startDir).fileName().compare(srcFi.completeBaseName(), Qt::CaseInsensitive) == 0)
+        startDir = QFileInfo(startDir).absolutePath();
+    QString suggested = name + " (Copy)";
+    for (int counter = 2; listed(suggested) || QFileInfo::exists(startDir + "/" + suggested); ++counter)
+        suggested = name + QString(" (Copy %1)").arg(counter);
+
+    // The dialog's own overwrite prompt is about <chosen>.rtp, which is not
+    // the file written (see targetFor); the real target is checked below.
+    QString chosen = startDir + "/" + suggested + ".rtp";
+    QString dstPath, newName;
+    for (;;) {
+        chosen = QFileDialog::getSaveFileName(
+            m_mw, "Duplicate Project", chosen, "ROUNDTABLE Projects (*.rtp)",
+            nullptr, QFileDialog::DontConfirmOverwrite);
+        if (chosen.isEmpty()) return;
+        if (!chosen.endsWith(".rtp", Qt::CaseInsensitive))
+            chosen += ".rtp";
+        dstPath = targetFor(chosen);
+        newName = QFileInfo(dstPath).completeBaseName();
+        QString problem;
+        if (newName.trimmed().isEmpty())
+            problem = QString("The copy needs a name.");
+        else if (listed(newName))
+            problem = QString("There is already a project named '%1'.").arg(newName);
+        else if (QFileInfo::exists(dstPath))
+            problem = QString("A project file already exists at:\n%1")
+                          .arg(QDir::toNativeSeparators(dstPath));
+        if (problem.isEmpty()) break;
+        QMessageBox::warning(m_mw, "Duplicate Project",
+            problem + "\n\nChoose a different name or location.");
+    }
+
+    const QString newFolder = QFileInfo(dstPath).absolutePath();
+    const bool madeFolder = !QFileInfo::exists(newFolder);
+    if (!QDir().mkpath(newFolder) || !QFile::copy(srcPath, dstPath)) {
+        if (madeFolder)
+            QDir(newFolder).removeRecursively();   // created just above
+        QMessageBox::warning(m_mw, "Error",
+            QString("Failed to duplicate '%1' to:\n%2")
+                .arg(name, QDir::toNativeSeparators(dstPath)));
+        return;
+    }
+    spdlog::info("Duplicated project to {}", dstPath.toStdString());
+
+    // Also copy the thumbnail if it exists
+    for (const char* ext : {".png", ".jpg"}) {
+        const QString srcThumb = srcFi.absolutePath() + "/" + srcFi.completeBaseName() + ext;
+        if (QFile::exists(srcThumb))
+            QFile::copy(srcThumb, newFolder + "/" + newName + ext);
+    }
+    // Outside the projects folder the list only shows pinned projects.
+    if (isExternalProjectPath(dstPath))
+        pinExternalProject(dstPath);
+
+    refreshProjectsList();
+    m_mw->statusBar()->showMessage(
+        QString("Duplicated as '%1' in %2")
+            .arg(newName, QDir::toNativeSeparators(newFolder)), 5000);
 }
 
 void ProjectController::onRevealProjectInExplorer(const QString& name)
@@ -831,17 +899,37 @@ void ProjectController::onExportProject(const QString& name, const QString& dstP
 {
     spdlog::info("Exporting project '{}' to: {}", name.toStdString(), dstPath.toStdString());
 
-    QString projDir = projectsDirectory();
+    // Resolve the project's REAL location — it may be outside the projects
+    // folder (external drive) or in a folder that doesn't match its name.
+    QString srcPath = m_mw->projectPanel()
+        ? m_mw->projectPanel()->projectFilePath(name) : QString();
+    if (srcPath.isEmpty())
+        srcPath = projectsDirectory() + "/" + name + "/" + name + ".rtp";
+    if (!QFileInfo::exists(srcPath)) {
+        QMessageBox::warning(m_mw, "Error",
+            QString("Can't find the project file for '%1':\n%2")
+                .arg(name, QDir::toNativeSeparators(srcPath)));
+        return;
+    }
 
-    // Locate source .rtp (subfolder or flat)
-    QString srcPath = projDir + "/" + name + "/" + name + ".rtp";
-
-    if (QFile::copy(srcPath, dstPath)) {
+    // The save dialog has already asked before replacing an existing file,
+    // but QFile::copy never overwrites, so copy with overwrite instead.
+    // Exporting onto the project's own file leaves nothing to do.
+    const bool sameFile = QFileInfo(srcPath).absoluteFilePath().compare(
+        QFileInfo(dstPath).absoluteFilePath(), Qt::CaseInsensitive) == 0;
+    std::error_code ec;
+    if (!sameFile)
+        std::filesystem::copy_file(srcPath.toStdWString(), dstPath.toStdWString(),
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+    if (!ec) {
         m_mw->statusBar()->showMessage(
             "Exported '" + name + "' to " + QFileInfo(dstPath).dir().path(), 3000);
     } else {
+        spdlog::warn("Export project '{}' failed: {}", name.toStdString(), ec.message());
         QMessageBox::warning(m_mw, "Error",
-            "Failed to export project '" + name + "'");
+            QString("Failed to export project '%1' to:\n%2\n\n%3")
+                .arg(name, QDir::toNativeSeparators(dstPath),
+                     QString::fromStdString(ec.message())));
     }
 }
 

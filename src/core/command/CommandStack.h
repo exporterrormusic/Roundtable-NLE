@@ -89,6 +89,8 @@ public:
     /// Description of the next undo/redo action
     [[nodiscard]] std::string undoDescription() const;
     [[nodiscard]] std::string redoDescription() const;
+    [[nodiscard]] bool undoAffectsTimeline() const;
+    [[nodiscard]] bool redoAffectsTimeline() const;
 
     /// Number of commands in the undo stack
     [[nodiscard]] size_t undoCount() const noexcept;

@@ -540,17 +540,11 @@ public:
         bool boundsCached{false};
         float stableBoundsX{0}, stableBoundsY{0};
         float stableBoundsW{0}, stableBoundsH{0};
-        // PER-ANIMATION framing box, keyed by animation name.  Each entry is
-        // the union of the setup pose and that animation's own sampled
-        // envelope (max extent across its frames).  The live renderer frames a
-        // clip to its CURRENT animation's box, so:
-        //   • normal animations (which stay within the setup silhouette) keep
-        //     their original setup-pose size, and
-        //   • a taller "action" pose grows ONLY its own box — it's framed to
-        //     fit (never clipped) without shrinking every other animation.
-        // Falls back to setup-pose bounds when an animation has no entry.
-        struct AnimBounds { float x{0}, y{0}, w{0}, h{0}; };
-        std::unordered_map<std::string, AnimBounds> animBounds;
+        /// The box a clip playing `animation` is framed by — the same one
+        /// COMPOSE uses (SpineParsedSkeleton::framingBox).  Every loader
+        /// sets `parsed`, so preview and export agree; the setup-pose
+        /// stableBounds stand in only while it is missing.
+        [[nodiscard]] SpineBox framingBox(const std::string& animation) const;
         bool gpuTexturesUploaded{false};
         std::string skelPath;
         std::string atlasPath;
@@ -583,6 +577,8 @@ public:
     static std::string spineCharKey(const SpineClip& clip);
     std::shared_ptr<SpineSharedData> getOrCreateSharedSpineData(
         const SpineClip& clip, const std::string& assetsDir);
+    /// Returned states are borrowed. Hold compositeMutex() for their entire
+    /// use, including animation evaluation and mesh extraction.
     SpineCPUState* getOrCreateSpineState(SpineClip* clip);
     SpineCPUState* tryGetSpineState(SpineClip* clip);
     [[nodiscard]] ResourceLoadState spineResourceState(
@@ -595,7 +591,7 @@ public:
     void warmNewSpineClips();
 
     /// Get shared spine data for overlay sizing (null if not loaded).
-    [[nodiscard]] const SpineSharedData* getSpineSharedDataForOverlay(
+    [[nodiscard]] std::shared_ptr<const SpineSharedData> getSpineSharedDataForOverlay(
         const std::string& charName, const std::string& outfit, int stance) const;
 
     // Callback for schedule-based spine loading (set by UI layer)
@@ -605,8 +601,7 @@ public:
                                                   const std::string& assetsDir)>;
     void setSpineLoadScheduler(SpineLoadCallback cb) { m_spineLoadScheduler = std::move(cb); }
 
-    // Non-blocking spine state integration (called from UI thread after
-    // background load completes)
+    // Serialized with rendering (called from UI after background load).
     void integrateSpineSharedData(const std::string& key,
                                   std::shared_ptr<SpineSharedData> shared);
     void removeSpinePendingKey(const std::string& key);
@@ -634,6 +629,7 @@ public:
     void addSpineFuture(std::future<void> f);
 
     // ── Spine shared-data cache (read-only + keyed insert/lookup) ────
+    /// Borrowed cache views/pointers require compositeMutex() for their entire use.
     [[nodiscard]] const std::unordered_map<std::string, std::shared_ptr<SpineSharedData>>&
         spineSharedCache() const { return m_spineSharedCache; }
     [[nodiscard]] std::shared_ptr<SpineSharedData> findSpineSharedData(const std::string& key) const;
@@ -648,7 +644,7 @@ public:
     void purgeDeadSpineStates(const std::unordered_set<uint64_t>& liveIds);
     /// Re-apply the clip's animation/looping/talking/speed to its cached
     /// spine engine if they have drifted (e.g. after undo/redo). Cheap
-    /// no-op when nothing changed; never reloads the skeleton/atlas.
+    /// no-op when nothing changed; replaces the engine if identity changed.
     void resyncSpineClip(SpineClip* clip);
     [[nodiscard]] const std::unordered_map<uint64_t, std::unique_ptr<SpineCPUState>>&
         spineCache() const { return m_spineCache; }
@@ -866,7 +862,9 @@ private:
 
     bool m_isCompositing{false};
 
-    std::recursive_mutex m_compositeMutex;
+    // Also protects Spine cache lookup, mutation and destruction by the UI.
+    // A render retains borrowed engines for this whole lock.
+    mutable std::recursive_mutex m_compositeMutex;
     // What is held between frames: the last good composite, the static-stack
     // composite (stacked PNGs, cached tier-list states) and the settle clock.
     // Thread-safe on its own; see CompositeHold.h.

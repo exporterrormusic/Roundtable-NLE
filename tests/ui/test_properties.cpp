@@ -1147,6 +1147,69 @@ TEST(PropertiesPanel, MultiSelectSameCharacterChangesAllExpressions)
     EXPECT_FALSE(panel.animationCombo()->isVisibleTo(&panel));
 }
 
+// Clips of different characters: the settings they share (Talking, Loop,
+// Flip) show for all of them, a mix as a partial check, and one click sets
+// every clip in one undo step.  It used to show one clip's full properties,
+// and edits reached only that character.
+TEST(PropertiesPanel, DifferentCharactersShareTalkingLoopAndFlip)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    auto add = [v1](int64_t start, const char* character, bool talking) {
+        auto owned = std::make_unique<rt::SpineClip>();
+        owned->setCharacterName(character);
+        owned->setAnimationName("idle");
+        owned->setTimelineIn(start);
+        owned->setDuration(48000);
+        owned->setTalking(talking);
+        return static_cast<rt::SpineClip*>(v1->addClip(std::move(owned)));
+    };
+    rt::SpineClip* sin = add(0, "Sin", true);
+    rt::SpineClip* sugar = add(96000, "Sugar", false);
+    ASSERT_TRUE(sin && sugar);
+
+    rt::PropertiesPanel panel;
+    rt::CommandStack stack;
+    panel.setCommandStack(&stack);
+    panel.setTimeline(&timeline);
+    panel.setMultiSelection({sin, sugar});
+
+    EXPECT_FALSE(panel.animationCombo()->isVisibleTo(&panel));   // per character
+    ASSERT_TRUE(panel.talkingCheck()->isVisibleTo(&panel));
+    ASSERT_TRUE(panel.loopingCheck()->isVisibleTo(&panel));
+    ASSERT_TRUE(panel.flipHCheck()->isVisibleTo(&panel));
+    EXPECT_EQ(panel.talkingCheck()->checkState(), Qt::PartiallyChecked);
+
+    panel.talkingCheck()->click();   // mixed -> Checked: both talk
+    EXPECT_TRUE(sin->isTalking());
+    EXPECT_TRUE(sugar->isTalking());
+    EXPECT_EQ(panel.talkingCheck()->checkState(), Qt::Checked);
+
+    const bool loop = sin->isLooping();
+    panel.loopingCheck()->setChecked(!loop);
+    EXPECT_EQ(sin->isLooping(), !loop);
+    EXPECT_EQ(sugar->isLooping(), !loop);
+
+    panel.flipHCheck()->setChecked(true);
+    EXPECT_LT(sin->scaleX().evaluate(0), 0.0f);
+    EXPECT_LT(sugar->scaleX().evaluate(0), 0.0f);
+
+    ASSERT_TRUE(stack.undo());   // flip, both in one step
+    EXPECT_GT(sin->scaleX().evaluate(0), 0.0f);
+    EXPECT_GT(sugar->scaleX().evaluate(0), 0.0f);
+    ASSERT_TRUE(stack.undo());   // loop
+    ASSERT_TRUE(stack.undo());   // talking
+    EXPECT_TRUE(sin->isTalking());
+    EXPECT_FALSE(sugar->isTalking());
+    EXPECT_EQ(panel.talkingCheck()->checkState(), Qt::PartiallyChecked);
+
+    // One clip again: its full controls are back, no mixed state.
+    panel.setClip(sin, v1);
+    EXPECT_TRUE(panel.animationCombo()->isVisibleTo(&panel));
+    EXPECT_TRUE(panel.scaleXSpin()->isVisibleTo(&panel));
+    EXPECT_FALSE(panel.talkingCheck()->isTristate());
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  PropertiesPanel — VideoClip binding
 // ═══════════════════════════════════════════════════════════════════════════

@@ -94,6 +94,9 @@ add_roundtable_test(test_keyframe      LIBS roundtable_core)
 add_roundtable_test(test_clips         LIBS roundtable_core)
 add_roundtable_test(test_color_conversion LIBS roundtable_core)
 add_roundtable_test(test_video_frame_mapping LIBS roundtable_core)
+add_roundtable_test(test_corridorkey LIBS roundtable_core)
+# Runs the bundled ffmpeg against the app's VideoDecoder (frame-exact renders).
+add_roundtable_test(test_corridorkey_extract LIBS roundtable_core)
 add_roundtable_test(test_convert_decoded_frame LIBS roundtable_core)
 add_roundtable_test(test_video_decoder_seek LIBS roundtable_core)
 add_roundtable_test(test_frame_label LIBS roundtable_core)
@@ -174,6 +177,8 @@ add_roundtable_test(test_rgba16f_pack  LIBS roundtable_export roundtable_core GR
 add_roundtable_test(test_monitors        LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_media_task_queue LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_notification_center LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
+# Ultra Key's CorridorKey row; CorridorKeyLive.* (real setup + GPU render) is opt-in.
+add_roundtable_test(test_corridorkey_panel LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_project_bin     LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_properties      LIBS roundtable_ui roundtable_core USES_QT GROUP ui)
 add_roundtable_test(test_edit_gestures   LIBS roundtable_ui roundtable_core USES_QT GROUP ui)

@@ -45,6 +45,10 @@ public:
     /// Human-readable description for the undo history panel
     [[nodiscard]] virtual std::string description() const = 0;
 
+    /// Bin organization/import changes need no timeline playback refresh.
+    /// Default conservatively to true for existing editing commands.
+    [[nodiscard]] virtual bool affectsTimeline() const { return true; }
+
     /// If true, this command can be merged with the next command of the same type.
     /// Used for continuous operations like dragging (many small moves → one undo step).
     [[nodiscard]] virtual bool mergeWith(const Command& /*next*/) { return false; }

@@ -1135,6 +1135,31 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             } else {
                 assignMotionBlur(layer, xf, useComposeFit ? kComposeFit : 1.0f);
             }
+            // A Spine render taller than the output holds an animation's reach
+            // (spineRenderHeight); contain-fit would shrink it by r.  Scale it
+            // back and keep the setup-pose frame exactly where it was: with
+            // p = C + pos + a + R·S·(q − C − a) the compositor's mapping,
+            // S' = r·S and pos' = pos + (r − 1)·R·S·a give the same p for every
+            // position, scale, flip, rotation and anchor.
+            if ((gpuSpineZeroCopy || cpuSpineRendered) && outH > 0 &&
+                layer.frameHeight > outH) {
+                const float r = static_cast<float>(layer.frameHeight) /
+                                static_cast<float>(outH);
+                auto keepSetupFrame = [r](auto& s) {
+                    const float ax = s.scX * s.anchorX;
+                    const float ay = s.scY * s.anchorY;
+                    const float rad = s.rot * 3.14159265358979f / 180.0f;
+                    const float c = std::cos(rad), sn = std::sin(rad);
+                    s.posX += (r - 1.0f) * (c * ax - sn * ay);
+                    s.posY += (r - 1.0f) * (sn * ax + c * ay);
+                    s.scX *= r;
+                    s.scY *= r;
+                };
+                keepSetupFrame(layer);
+                keepSetupFrame(layer.motionStart);
+                keepSetupFrame(layer.motionEnd);
+                layer.renderGrowthY = r;
+            }
             layer.clipId  = clipId;
             layer.blendMode = clip->blendMode();
             layer.needsSwapRB = fromNestedSequence;
@@ -1532,37 +1557,36 @@ void CompositeService::applyClipCropAndRotation(LayerInfo& layer, Clip* clip,
             if (cit != m_spineCache.end() && cit->second->engine.isLoaded()
                 && cit->second->shared) {
                 auto& shared = *cit->second->shared;
-                // Use the SAME bounds the renderer framed the character
-                // with (this animation's box) so the crop margins line
-                // up with the actual character extent in the FBO.
-                float bw = shared.stableBoundsW;
-                float bh = shared.stableBoundsH;
-                {
-                    auto abIt = shared.animBounds.find(sc->animationName());
-                    if (abIt != shared.animBounds.end()) {
-                        bw = abIt->second.w;
-                        bh = abIt->second.h;
-                    }
-                }
+                // The renderer sizes the character by the setup pose, so
+                // the crop margins are measured against it too.
+                const SpineBox box = shared.framingBox("");
+                const float bw = box.w;
+                const float bh = box.h;
                 if (bw > 1.0f && bh > 1.0f) {
                     float fW = static_cast<float>(outW);
                     float fH = static_cast<float>(outH);
-                    // The live Spine texture renders the character at
-                    // the FULL texture height (spineScale = outH/bh in
-                    // CompositeServiceSpine), centered. So vertically
-                    // the character fills the texture (crop already
-                    // matches COMPOSE's character-relative crop and
-                    // passes through), and horizontally it occupies
-                    // only charFracW, centered with marginH each side.
-                    // The 0.85x compose-fit scales character AND margins
-                    // together, so it cancels in these fractions.
-                    // charFracW is aspect-based => tier-independent.
+                    // The live Spine texture renders the character's
+                    // setup pose at the output height (spineScale =
+                    // outH/bh in CompositeServiceSpine), centered.
+                    // Horizontally it occupies only charFracW, centered
+                    // with marginH each side.  The 0.85x compose-fit
+                    // scales character AND margins together, so it
+                    // cancels in these fractions.  charFracW is
+                    // aspect-based => tier-independent.
                     float charFracW = std::min(1.0f, (bw / bh) * (fH / fW));
                     float marginH = (1.0f - charFracW) * 0.5f;
                     // Horizontal: convert character-% -> texture-%.
                     layer.cropL = (marginH + (layer.cropL / 100.0f) * charFracW) * 100.0f;
                     layer.cropR = (marginH + (layer.cropR / 100.0f) * charFracW) * 100.0f;
-                    // Vertical crop is already character-relative.
+                    // Vertical: the setup pose fills the middle 1/k of a
+                    // texture k times the output height (an animation's
+                    // reach above and below); with k = 1 this passes the
+                    // character-relative crop through.  Like COMPOSE, a
+                    // crop clips to the setup pose on every side.
+                    const float k = std::max(1.0f, layer.renderGrowthY);
+                    const float marginV = (1.0f - 1.0f / k) * 0.5f;
+                    layer.cropT = (marginV + (layer.cropT / 100.0f) / k) * 100.0f;
+                    layer.cropB = (marginV + (layer.cropB / 100.0f) / k) * 100.0f;
                 }
             }
         }

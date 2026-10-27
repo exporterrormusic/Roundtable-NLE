@@ -678,10 +678,16 @@ void SpinePreviewWidget::renderMultiLayer(QPainter& painter)
         auto meshData = layer.engine->extractMeshes();
         if (meshData.batches.empty()) { ++layerZOrder; continue; }
 
-        // Cache bounds
+        // Size by the setup pose, like the timeline, whatever the animation:
+        // a taller pose's reach is simply drawn above her.  The live box is
+        // whatever pose the idle loop is in when the layers are rebuilt, so
+        // talking, duplicating or any edit made some characters jump.
         if (!layer.boundsCached) {
-            layer.engine->getBounds(layer.boundsX, layer.boundsY,
-                                     layer.boundsW, layer.boundsH);
+            const SpineBox box = layer.engine->framingBox("");
+            layer.boundsX = box.x;
+            layer.boundsY = box.y;
+            layer.boundsW = box.w;
+            layer.boundsH = box.h;
             layer.boundsCached = true;
         }
 

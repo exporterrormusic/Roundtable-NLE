@@ -93,6 +93,8 @@ public:
     void updateRecentFilesMenu();
     /// True when the .rtp lives outside projectsDirectory() (e.g. external drive).
     [[nodiscard]] bool isExternalProjectPath(const QString& filePath) const;
+    /// Keep an external project on the Projects list (no-op if already pinned).
+    void pinExternalProject(const QString& filePath);
     /// Drop an external project from the Projects list (file is untouched).
     void unpinExternalProject(const QString& filePath);
 

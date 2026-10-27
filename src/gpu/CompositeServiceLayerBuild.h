@@ -107,6 +107,11 @@ struct LayerInfo
                               // fit aspect for 90/270 and re-orients the sampled
                               // UV.  0 = no rotation (legacy byte-identical path).
     bool containFit{false};   // true = contain-fit (for pre-rendered spine cache)
+    // The texture is this many times taller than the frame its source-local
+    // crops and masks refer to, which is its middle 1/k: a Spine render
+    // holding an animation's reach above and below the setup pose
+    // (spineRenderHeight).  1 for everything else.
+    float renderGrowthY{1.0f};
     bool isPacked{false};     // true = packed-alpha (GPU shader handles unpack)
     bool isPMA{false};        // true = premultiplied-alpha (Spine FBO output)
     bool contentBoundsValid{false};

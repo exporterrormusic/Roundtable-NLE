@@ -34,6 +34,7 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace fs = std::filesystem;
@@ -114,6 +115,109 @@ std::shared_ptr<SpineParsedSkeleton> SpineParsedSkeleton::parseFromFiles(
                  data->getAnimations().size(), data->getSkins().size());
     return parsed;
 }
+
+namespace {
+
+/// Skeleton::getBounds' vertical extent, counting only what is drawn: a
+/// slot faded to nothing still has geometry.  Modernia's outfit_02 action
+/// carries a fully transparent effect far above and below her, and
+/// measuring it shrank her to about 60% on the timeline.  Same cut-off as
+/// extractMeshes' culling.
+void extendByVisibleY(spine::Skeleton& skeleton, spine::Vector<float>& verts,
+                      float& minY, float& maxY)
+{
+    const float skeletonAlpha = skeleton.getColor().a;
+    auto& drawOrder = skeleton.getDrawOrder();
+    for (size_t i = 0; i < drawOrder.size(); ++i) {
+        spine::Slot* slot = drawOrder[i];
+        if (!slot || !slot->getBone().isActive()) continue;
+        spine::Attachment* attachment = slot->getAttachment();
+        if (!attachment) continue;
+        size_t count = 0;
+        float attachmentAlpha = 1.0f;
+        if (attachment->getRTTI().instanceOf(spine::RegionAttachment::rtti)) {
+            auto* region = static_cast<spine::RegionAttachment*>(attachment);
+            attachmentAlpha = region->getColor().a;
+            count = 8;
+            if (verts.size() < count) verts.setSize(count, 0);
+            region->computeWorldVertices(*slot, verts, 0);
+        } else if (attachment->getRTTI().instanceOf(spine::MeshAttachment::rtti)) {
+            auto* mesh = static_cast<spine::MeshAttachment*>(attachment);
+            attachmentAlpha = mesh->getColor().a;
+            count = mesh->getWorldVerticesLength();
+            if (verts.size() < count) verts.setSize(count, 0);
+            mesh->computeWorldVertices(*slot, 0, count, verts.buffer(), 0);
+        }
+        if (count == 0 ||
+            skeletonAlpha * slot->getColor().a * attachmentAlpha < 0.004f)
+            continue;
+        for (size_t v = 1; v < count; v += 2) {
+            minY = std::min(minY, verts[v]);
+            maxY = std::max(maxY, verts[v]);
+        }
+    }
+}
+
+} // namespace
+
+uint32_t spineRenderHeight(uint32_t outH, const SpineBox& setup, const SpineBox& reach)
+{
+    if (setup.h <= 1.0f || reach.h <= 1.0f) return outH;
+    const float centreY = setup.y + setup.h * 0.5f;
+    const float halfReach = std::max(reach.y + reach.h - centreY, centreY - reach.y);
+    const float growth = std::clamp(2.0f * halfReach / setup.h, 1.0f, kSpineMaxRenderGrowth);
+    if (growth <= 1.0f) return outH;
+    // (- 0.01: float noise must not add a row, 1080 * 1.6f is 1728.00003)
+    const auto h = static_cast<uint32_t>(
+        std::ceil(static_cast<float>(outH) * growth - 0.01f));
+    return h + (h & 1u);
+}
+
+SpineBox SpineParsedSkeleton::framingBox(const std::string& animation) const
+{
+    std::lock_guard lock(m_framingMutex);
+    if (auto it = m_framingBoxes.find(animation); it != m_framingBoxes.end())
+        return it->second;
+
+    SpineBox box;
+    if (!skelData) return box;
+
+    // A skeleton of its own: sampling must not inherit another animation's
+    // pose (the old per-animation boxes were measured while still mixed
+    // from the animation sampled before them).
+    spine::Skeleton skeleton(skelData.get());
+    spine::Vector<float> verts;
+    skeleton.setToSetupPose();
+    skeleton.updateWorldTransform();
+    skeleton.getBounds(box.x, box.y, box.w, box.h, verts);
+
+    spine::Animation* anim = animation.empty()
+        ? nullptr : skelData->findAnimation(spine::String(animation.c_str()));
+    if (anim && box.w > 0.0f && box.h > 0.0f) {
+        // About 30 samples a second finds the extent; bounds move smoothly.
+        const float dur = anim->getDuration();
+        const int samples = dur > 0.0f
+            ? std::clamp(static_cast<int>(dur * 30.0f), 8, 240) : 0;
+        float minY = box.y;
+        float maxY = box.y + box.h;
+        spine::Vector<spine::Event*> events;
+        for (int s = 0; s <= samples; ++s) {
+            const float t = samples > 0
+                ? dur * static_cast<float>(s) / static_cast<float>(samples) : 0.0f;
+            skeleton.setToSetupPose();
+            anim->apply(skeleton, t, t, false, &events, 1.0f,
+                        spine::MixBlend_Setup, spine::MixDirection_In);
+            events.clear();
+            skeleton.updateWorldTransform();
+            extendByVisibleY(skeleton, verts, minY, maxY);
+        }
+        box.y = minY;
+        box.h = maxY - minY;
+    }
+    m_framingBoxes.emplace(animation, box);
+    return box;
+}
+
 void SpineEngine::ClipperDeleter::operator()(spine::SkeletonClipping* p) const { delete p; }
 
 // ─── Construction ───────────────────────────────────────────────────────────

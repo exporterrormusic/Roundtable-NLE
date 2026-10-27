@@ -37,7 +37,9 @@
 #include <QMimeData>
 #include <QProcess>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSet>
 #include <QShortcut>
 #include <QSlider>
@@ -196,24 +198,58 @@ QWidget* ShotComposer::createShotsColumn()
         .arg(Theme::hex(c.surface2))
         .arg(Theme::hex(c.surface2)));
 
-    // Custom delegate that paints shot items with structured layout
+    // Custom delegate that paints shot items with structured layout.
+    // The thumbnail fills the card width at 16:9, so the card height follows
+    // the list width (a fixed height let the next card cover the name).
     class ShotItemDelegate : public QStyledItemDelegate {
     public:
-        using QStyledItemDelegate::QStyledItemDelegate;
+        // Card layout, top to bottom: 14px gap (divider), 3px, thumbnail,
+        // 6px, name 24px, 2px, subtitle 20px, 6px bottom padding.
+        enum { kMargin = 8, kChromeH = 14 + 3 + 6 + 24 + 2 + 20 + 6 };
+
+        explicit ShotItemDelegate(QListView* view)
+            : QStyledItemDelegate(view), m_view(view)
+        {
+            // A top-to-bottom QListView does not re-lay out when only its
+            // width changes, so ask for a layout ourselves.
+            view->viewport()->installEventFilter(this);
+        }
+
+        bool eventFilter(QObject* obj, QEvent* ev) override
+        {
+            if (obj == m_view->viewport()) {
+                if (ev->type() == QEvent::Resize) {
+                    auto* re = static_cast<QResizeEvent*>(ev);
+                    if (re->size().width() != re->oldSize().width())
+                        emit sizeHintChanged(QModelIndex());
+                }
+                return false;
+            }
+            return QStyledItemDelegate::eventFilter(obj, ev);
+        }
+
         void paint(QPainter* painter, const QStyleOptionViewItem& option,
                    const QModelIndex& index) const override
         {
+            QRect r = option.rect;
+            const int margin = kMargin;
+            const int innerW = r.width() - margin * 2;
+            // Fit the thumbnail in the card height too: the card can be a
+            // little wider than its height was sized for (no scroll bar).
+            int thumbW = innerW;
+            int thumbH = static_cast<int>(innerW * 9.0 / 16.0);
+            const int maxThumbH = r.height() - kChromeH;
+            if (thumbH > maxThumbH) {
+                thumbH = maxThumbH;
+                thumbW = static_cast<int>(thumbH * 16.0 / 9.0);
+            }
+            if (thumbH < 60) return; // too narrow
+
             painter->save();
             painter->setRenderHint(QPainter::Antialiasing);
 
             QStyleOptionViewItem opt = option;
             initStyleOption(&opt, index);
-
-            QRect r = option.rect;
-            const int margin = 8;
-            const int innerW = r.width() - margin * 2;
-            const int thumbH = static_cast<int>(innerW * 9.0 / 16.0);
-            if (thumbH < 60) return; // too narrow
 
             bool isDefault = index.data(Qt::UserRole + 3).toBool();
 
@@ -261,9 +297,10 @@ QWidget* ShotComposer::createShotsColumn()
             // Thumbnail - full width
             QIcon icon = index.data(Qt::DecorationRole).value<QIcon>();
             if (!icon.isNull()) {
-                QPixmap pix = icon.pixmap(innerW, thumbH);
+                QPixmap pix = icon.pixmap(thumbW, thumbH);
                 if (!pix.isNull()) {
-                    QRect thumbRect(contentR.left() + margin, contentR.top() + 3, innerW, thumbH);
+                    QRect thumbRect(contentR.left() + (r.width() - thumbW) / 2,
+                                    contentR.top() + 3, thumbW, thumbH);
                     painter->drawPixmap(thumbRect, pix);
                 }
             }
@@ -320,9 +357,18 @@ QWidget* ShotComposer::createShotsColumn()
         {
             Q_UNUSED(option);
             Q_UNUSED(index);
-            // Height: 14px top gap + thumbnail (16:9) + name (24px) + subtitle (20px) + padding
-            return QSize(0, 210);
+            // Size for the width the card gets with the scroll bar showing,
+            // so a scroll bar that comes and goes cannot flip the height.
+            int cardW = m_view->viewport()->width() - 2 * m_view->spacing();
+            const QScrollBar* vbar = m_view->verticalScrollBar();
+            if (!vbar->isVisibleTo(m_view))
+                cardW -= m_view->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, vbar);
+            const int thumbH = static_cast<int>((cardW - kMargin * 2) * 9.0 / 16.0);
+            return QSize(0, kChromeH + std::max(thumbH, 60));
         }
+
+    private:
+        QListView* m_view;
     };
     m_shotList->setItemDelegate(new ShotItemDelegate(m_shotList));
 

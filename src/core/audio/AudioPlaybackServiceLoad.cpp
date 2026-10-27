@@ -872,6 +872,7 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
         spdlog::info("loadAudioSources: refreshed {} audio track source(s)", sources.size());
     }
     m_audioEngine->setTrackSources(std::move(sources));
+    m_loadedSourcesRevision = m_audioEngine->trackSourcesRevision();
     m_topologyDirty = false;
 
     if (!allowBlockingMisses && deferredCacheMisses > 0) {

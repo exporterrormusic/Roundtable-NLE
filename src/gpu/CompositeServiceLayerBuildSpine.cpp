@@ -63,10 +63,33 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
     double beginMs = 0, recordMs = 0, endMs = 0;
 
     try {
+                // The UI may have reconciled a newer edit before this queued
+                // snapshot acquired the render lock. Evaluate this snapshot's
+                // character settings, never whichever edit ran most recently.
+                resyncSpineClip(spineClip);
                 // Try GPU Spine rendering first (faster + better quality)
                 bool gpuSpineDone = false;
                 if (GpuContext::get().isInitialized()) {
                     const std::string charKey = spineCharKey(*spineClip);
+                    // The FBO grows taller than the output when this
+                    // animation reaches above or below the setup pose; the
+                    // layer build scales it back so the character keeps her
+                    // setup-pose size (spineRenderHeight).
+                    uint32_t renderH = outH;
+                    {
+                        auto pre = m_spineCache.find(spineClip->id());
+                        if (pre == m_spineCache.end()) {
+                            tryGetSpineState(spineClip);
+                            pre = m_spineCache.find(spineClip->id());
+                        }
+                        if (pre != m_spineCache.end() && pre->second &&
+                            pre->second->shared && pre->second->shared->boundsCached) {
+                            const auto& sd = *pre->second->shared;
+                            renderH = spineRenderHeight(
+                                outH, sd.framingBox(""),
+                                sd.framingBox(spineClip->animationName()));
+                        }
+                    }
                     // Reuse one persistent renderer across edits of the same
                     // immutable character asset. Only simultaneous duplicate
                     // instances require separate mutable framebuffers.
@@ -74,10 +97,10 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                         spineRendererContentKey(charKey,
                                                 simultaneousAssetInstance);
                     const SpineRendererCacheKey rendererKey{
-                        outW, outH, rendererContentKey};
+                        outW, renderH, rendererContentKey};
                     const auto rendererT0 = SpineClock::now();
                     auto sr = renderSpineRenderer(
-                        outW, outH, rendererContentKey);
+                        outW, renderH, rendererContentKey);
                     rendererMs = std::chrono::duration<double, std::milli>(
                         SpineClock::now() - rendererT0).count();
                     if (sr && sr->isInitialized()) {
@@ -274,25 +297,21 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                 }
 
                                 if (!renderData.batches.empty()) {
-                                    // Frame to THIS animation's box (setup pose ∪ the
-                                    // animation's own envelope) so a taller-than-idle pose
-                                    // (e.g. an "action" animation that raises the head/arms)
-                                    // fits inside the FBO instead of being clipped — while
-                                    // normal animations keep their original setup-pose size.
-                                    // The box is constant per animation, so it still avoids
-                                    // the zoom/sway that live per-frame bounds would cause.
-                                    // Fall back to setup-pose, then live bounds, when missing.
+                                    // Size and centre by the setup pose, as COMPOSE
+                                    // does, whatever the animation: switching idle to
+                                    // action used to shrink the character to fit the
+                                    // action's reach.  That reach is drawn into the
+                                    // FBO's extra height instead (renderH), and nothing
+                                    // zooms or sways the way it would with live
+                                    // per-frame bounds.  Live bounds are only a
+                                    // fallback for a degenerate box.
                                     float liveBx{0}, liveBy{0}, liveBw{0}, liveBh{0};
                                     state.engine.getBounds(liveBx, liveBy, liveBw, liveBh);
-                                    const SpineSharedData::AnimBounds* ab = nullptr;
-                                    {
-                                        auto abIt = shared.animBounds.find(spineClip->animationName());
-                                        if (abIt != shared.animBounds.end()) ab = &abIt->second;
-                                    }
-                                    const float boundsW = ab ? ab->w : shared.stableBoundsW;
-                                    const float boundsH = ab ? ab->h : shared.stableBoundsH;
-                                    const float boundsX = ab ? ab->x : shared.stableBoundsX;
-                                    const float boundsY = ab ? ab->y : shared.stableBoundsY;
+                                    const SpineBox box = shared.framingBox("");
+                                    const float boundsW = box.w;
+                                    const float boundsH = box.h;
+                                    const float boundsX = box.x;
+                                    const float boundsY = box.y;
                                     const float bw = (boundsW > 1.0f) ? boundsW
                                                     : ((liveBw > 1.0f) ? liveBw : boundsW);
                                     const float bh = (boundsH > 1.0f) ? boundsH
@@ -324,15 +343,17 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                                          liveBx, liveBy, liveBw, liveBh);
                                             spdlog::info("  usedBounds:   w={:.1f} h={:.1f}", bw, bh);
                                             spdlog::info("  FBO={}x{} fitZoom={:.4f} cx={:.1f} cy={:.1f}",
-                                                         outW, outH, fitZoom, cx, cy);
+                                                         outW, renderH, fitZoom, cx, cy);
                                             spdlog::info("  sx={:.4f} finalSx={:.4f}",
                                                          sx, sx);
                                             spdlog::info("=====================================");
                                         }
                                     }
 
+                                    // Same zoom and centre over the taller FBO:
+                                    // the extra height is reach above and below.
                                     glm::mat4 proj = SpineRenderer::orthoProjection(
-                                        fW, fH, cx, cy, fitZoom);
+                                        fW, static_cast<float>(renderH), cx, cy, fitZoom);
                                     glm::mat4 model = SpineRenderer::modelMatrix(0.0f, 0.0f);
                                     glm::mat4 mvp = proj * model;
 
@@ -361,7 +382,7 @@ CompositeService::SpineLayerResult CompositeService::buildSpineClipLayer(
                                         gpuSpineDescriptor = sr->outputDescriptorInfo();
                                         gpuSpineOwner = sr;
                                         gpuSpineW = outW;
-                                        gpuSpineH = outH;
+                                        gpuSpineH = renderH;
                                     }
                                 }
                             }

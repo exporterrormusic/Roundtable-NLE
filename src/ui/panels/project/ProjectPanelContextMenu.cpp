@@ -73,7 +73,7 @@ void ProjectPanel::showContextMenu(const QPoint& pos)
         if (ok && !newName.isEmpty() && newName != name)
             emit renameProject(name, newName);
     });
-    menu.addAction("Duplicate", this,
+    menu.addAction("Duplicate...", this,
                    [this, name]() { emit duplicateProject(name); });
     menu.addSeparator();
     menu.addAction("Show in Explorer", this,
@@ -145,20 +145,10 @@ void ProjectPanel::showOpenListContextMenu(const QPoint& pos)
         }
         populateOpenList();
     });
-    menu.addAction("Duplicate", this, [this, path, fi]() {
-        QString baseName = fi.completeBaseName() + " Copy";
-        QString newPath = fi.absolutePath() + "/" + baseName + "." + fi.suffix();
-        int counter = 2;
-        while (QFile::exists(newPath)) {
-            newPath = fi.absolutePath() + "/" + baseName + " " +
-                      QString::number(counter++) + "." + fi.suffix();
-        }
-        if (!QFile::copy(path, newPath)) {
-            QMessageBox::warning(this, "Duplicate",
-                QString("Couldn't duplicate \"%1\".\n\nMake sure the drive is writable "
-                        "and has free space.").arg(fi.fileName()));
-            return;
-        }
+    // Same as the Projects list's Duplicate (asks where and under what name);
+    // every project in this list is in that one too, under the same name.
+    menu.addAction("Duplicate...", this, [this, fi]() {
+        emit duplicateProject(fi.completeBaseName());
         populateOpenList();
     });
     menu.addSeparator();

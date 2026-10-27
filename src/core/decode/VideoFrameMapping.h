@@ -50,13 +50,19 @@ struct MappedSourceFrame {
     double  blendPhase{0.0};///< Fractional position from lowerFrame to upperFrame
 };
 
+/// Source tick the clip shows at timeline `tick`, before the clamp at 0
+/// (negative = earlier than the media has; mapTickToSourceFrame shows frame 0).
+inline int64_t unclampedSourceTick(const VideoClip& clip, int64_t tick)
+{
+    const int64_t localTick = tick - clip.timelineIn();
+    return clip.sourceIn() + static_cast<int64_t>(localTick * clip.effectiveSpeed(localTick));
+}
+
 inline MappedSourceFrame mapTickToSourceFrame(const VideoClip& clip,
                                               int64_t tick,
                                               const VideoStreamInfo* info)
 {
-    const int64_t localTick = tick - clip.timelineIn();
-    int64_t srcTick = clip.sourceIn() +
-        static_cast<int64_t>(localTick * clip.effectiveSpeed(localTick));
+    int64_t srcTick = unclampedSourceTick(clip, tick);
     if (srcTick < 0) srcTick = 0;
 
     double fps = clip.sourceFps();

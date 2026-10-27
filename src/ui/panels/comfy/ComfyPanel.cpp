@@ -953,6 +953,11 @@ bool ComfyPanel::needsRender(const ShotSettings& settings)
     return settings.review == ShotReview::Retake || !usableRender(settings);
 }
 
+bool ComfyPanel::isRendering() const
+{
+    return m_runner && m_runner->isRunning();
+}
+
 void ComfyPanel::useRender(int renderIndex, bool showBig)
 {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
