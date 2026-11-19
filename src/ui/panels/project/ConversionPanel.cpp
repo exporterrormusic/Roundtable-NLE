@@ -896,8 +896,7 @@ void ConversionPanel::onTableContextMenu(const QPoint& pos)
                 QString selectPath = it.hasNext()
                     ? QDir::toNativeSeparators(it.next())
                     : QDir::toNativeSeparators(dirPath);
-                QProcess::startDetached("explorer.exe",
-                    {"/select,", selectPath});
+                rt::revealInExplorer(selectPath);
                 return;
             }
 

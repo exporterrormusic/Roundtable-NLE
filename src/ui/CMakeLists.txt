@@ -137,6 +137,7 @@ add_library(roundtable_ui STATIC
     panels/audio/TranscriptionRunner.cpp
     panels/audio/VideoFrameGrabber.cpp
     panels/comfy/ComfyPanel.cpp
+    panels/comfy/ComfyPanelMask.cpp
     panels/comfy/ComfyPanelRender.cpp
     panels/comfy/ComfyPanelAssemble.cpp
     panels/comfy/ComfyTimelineTemplate.cpp

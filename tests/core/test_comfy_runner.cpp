@@ -13,10 +13,12 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QStandardPaths>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
 
 #include <iostream>
 #include <memory>
@@ -34,6 +36,7 @@ class FakeComfy : public QObject
 {
 public:
     bool        alive{true};
+    QString     entryPoint;
     bool        rejectPrompts{false};
     bool        failCacheDownloads{false};
     int         failFirstN{0};            ///< the first N queued prompts end in execution_error
@@ -45,6 +48,10 @@ public:
     int         frees{0};
     QJsonObject freeRequest;
     QStringList released;
+    QStringList kept;
+    QStringList sweeps;
+    bool        batchNodesInstalled{true};
+    QStringList nodeQueries;
 
     FakeComfy()
     {
@@ -86,7 +93,14 @@ private:
     void handle(QTcpSocket* s, const QString& method, const QString& path, const QByteArray& body)
     {
         if (!alive) { s->abort(); return; }
-        if (path == QLatin1String("/system_stats")) { reply(s, 200, "{}"); return; }
+        if (path == QLatin1String("/system_stats")) {
+            reply(s, 200, QJsonDocument(QJsonObject{{"system", QJsonObject{{"argv", QJsonArray{entryPoint}}}}}).toJson());
+            return;
+        }
+        if (path == QLatin1String("/queue")) {
+            reply(s, 200, R"({"queue_running":[[1,"other-job"]],"queue_pending":[]})");
+            return;
+        }
         if (path == QLatin1String("/upload/image")) {
             static const QRegularExpression nameRe(QStringLiteral("filename=\"([^\"]+)\""));
             const QString name = nameRe.match(QString::fromUtf8(body)).captured(1);
@@ -149,8 +163,26 @@ private:
             if (failCacheDownloads && path.contains("frames.pt")) { reply(s, 500, "cache unavailable"); return; }
             reply(s, 200, "FAKE-MP4-BYTES", "video/mp4"); return;
         }
+        if (path.startsWith(QLatin1String("/object_info/"))) {   // real shape: {type: info}, or {} if unknown
+            const QString type = QUrl::fromPercentEncoding(path.mid(13).toUtf8());
+            nodeQueries << type;
+            if (type == "ToonOut Selected BG JNK") {
+                reply(s, 200, R"({"ToonOut Selected BG JNK":{"input":{"required":{"model_name":[["birefnet_finetuned_toonout.pth"]]}}}})");
+                return;
+            }
+            reply(s, 200, batchNodesInstalled ? QJsonDocument(QJsonObject{{type, QJsonObject{}}}).toJson() : QByteArray("{}"));
+            return;
+        }
         if (path == QLatin1String("/interrupt")) { ++interrupts; reply(s, 200, "{}"); return; }
         if (path == QLatin1String("/free")) { ++frees; freeRequest = QJsonDocument::fromJson(body).object(); reply(s, 200, "{}"); return; }
+        if (path == QLatin1String("/roundtable_batch/keep")) {
+            kept << QJsonDocument::fromJson(body).object().value("artifact_key").toString();
+            reply(s, 200, "{}"); return;
+        }
+        if (path == QLatin1String("/roundtable_batch/sweep")) {
+            sweeps << QJsonDocument::fromJson(body).object().value("batch_id").toString();
+            reply(s, 200, "{}"); return;
+        }
         if (path == QLatin1String("/roundtable_batch/release")) {
             released << QJsonDocument::fromJson(body).object().value("artifact_key").toString();
             reply(s, 200, "{}"); return;
@@ -250,6 +282,61 @@ protected:
 std::unique_ptr<QCoreApplication> ComfyRunnerTest::app;
 
 } // namespace
+
+TEST_F(ComfyRunnerTest, MissingH3CutoutModelStopsBeforeFirstGenerationPass)
+{
+    FakeComfy fake;
+    auto c = config(fake);
+    c.targets.engine = comfy::Engine::H3;
+    auto node = [](const char* type, QJsonObject inputs) {
+        return QJsonObject{{"class_type", type}, {"inputs", inputs}};
+    };
+    c.prompt["describe"] = node("TextGenerate", {});
+    c.prompt["track"] = node("SAM3_VideoTrack", {{"prompt", QJsonArray{"describe", 0}}});
+    c.prompt["encode"] = node("MiniMaxH3ChainContext", {{"track", QJsonArray{"track", 0}}});
+    c.prompt["generate"] = node("MiniMaxH3ChainAssemble", {{"context", QJsonArray{"encode", 0}}});
+    c.prompt["cutout"] = node("ToonOut Selected BG JNK", {{"image", QJsonArray{"generate", 0}},
+        {"model_name", "ToonOut\\birefnet_finetuned_toonout.pth"}});
+    c.prompt["25"] = node("VHS_VideoCombine", {{"images", QJsonArray{"cutout", 0}}});
+    ComfyRunner runner;
+    QStringList logs;
+    QObject::connect(&runner, &ComfyRunner::log, [&](const QString& line) { logs << line; });
+    runner.start(c, twoJobs());
+    bool stopped = false;
+    ASSERT_TRUE(waitFinished(runner, &stopped));
+    EXPECT_TRUE(stopped);
+    EXPECT_TRUE(fake.prompts.empty());
+    EXPECT_TRUE(logs.join('\n').contains("models/RMBG"));
+}
+
+TEST_F(ComfyRunnerTest, SwitchingInstallationsDoesNotSubmitToThePreviousQueue)
+{
+    FakeComfy fake;
+    auto launcher = [&](QString name) {
+        const QString entry = dir.filePath(name + "/main.py");
+        QDir(dir.path()).mkpath(name);
+        QFile script(entry);
+        if (!script.open(QIODevice::WriteOnly)) return QString{};
+        const QString path = dir.filePath(name + ".bat");
+        QFile bat(path);
+        if (!bat.open(QIODevice::WriteOnly)) return QString{};
+        bat.write("python \"" + entry.toUtf8() + "\"\r\n");
+        return path;
+    };
+    auto c = config(fake);
+    c.launcher = launcher("scail");
+    c.otherLauncher = launcher("minimax");
+    fake.entryPoint = dir.filePath("minimax/main.py");
+    QStringList logs;
+    ComfyRunner runner;
+    QObject::connect(&runner, &ComfyRunner::log, [&](const QString& line) { logs << line; });
+    runner.start(c, twoJobs());
+    bool stopped = false;
+    ASSERT_TRUE(waitFinished(runner, &stopped));
+    EXPECT_TRUE(stopped);
+    EXPECT_TRUE(fake.prompts.isEmpty());
+    EXPECT_TRUE(logs.join('\n').contains("queue must be idle"));
+}
 
 TEST_F(ComfyRunnerTest, RendersEveryShotAndFillsTheWorkflow)
 {
@@ -399,6 +486,13 @@ TEST_F(ComfyRunnerTest, StagedBatchGroupsReferencesWithoutChangingShotIdentity)
     ASSERT_TRUE(waitFinished(runner));
     EXPECT_TRUE(QFileInfo::exists(runner.jobs().front().outputFile));
     EXPECT_TRUE(cacheFailure.released.empty()); // never delete the sole raw copy after an archive error
+    // ...and it is marked on the server, so the next batch's clean-up leaves it alone too.
+    ASSERT_TRUE(QTest::qWaitFor([&]() { return cacheFailure.kept.size() == 1; }, 3000));
+    EXPECT_EQ(cacheFailure.kept.front(), runner.jobs().front().artifactKey);
+    // Every batch first clears what earlier crashed batches left behind, once, naming itself.
+    ASSERT_EQ(cacheFailure.sweeps.size(), 1);
+    EXPECT_TRUE(runner.jobs().front().artifactKey.startsWith(cacheFailure.sweeps.front() + "_"));
+    EXPECT_EQ(fake.sweeps.size(), 1);
 }
 
 TEST_F(ComfyRunnerTest, LiveStagedBatch)
@@ -522,6 +616,98 @@ TEST_F(ComfyRunnerTest, SkipsAShotAfterThreeFailuresAndCarriesOn)
     EXPECT_EQ(fake.prompts.size(), 4);
 }
 
+TEST_F(ComfyRunnerTest, MissingDrivingClipFailsThatShotWithoutRetryingOrRestarting)
+{
+    FakeComfy fake;
+    ComfyRunner runner;
+    QStringList log;
+    QObject::connect(&runner, &ComfyRunner::log, [&](const QString& l) { log << l; });
+    auto jobs = twoJobs();
+    ASSERT_TRUE(QFile::remove(jobs[0].drivingVideo));
+    bool stopped = true;
+    runner.start(config(fake), jobs);
+    ASSERT_TRUE(waitFinished(runner, &stopped));
+    EXPECT_FALSE(stopped);
+    EXPECT_EQ(runner.jobs()[0].state, RenderJob::State::Failed);
+    EXPECT_EQ(runner.jobs()[0].attempt, 0);                       // no retry
+    EXPECT_TRUE(runner.jobs()[0].status.contains("driving clip"));
+    EXPECT_FALSE(log.join('\n').contains("Restart"));              // ComfyUI stays up
+    EXPECT_EQ(runner.jobs()[1].state, RenderJob::State::Done);    // the batch carries on
+    EXPECT_EQ(fake.prompts.size(), 1);
+}
+
+TEST_F(ComfyRunnerTest, ShotsAddedWhileRenderingJoinTheSameBatch)
+{
+    FakeComfy fake;
+    ComfyRunner runner;
+    auto jobs = twoJobs();
+    const RenderJob second = jobs[1];
+    jobs.resize(1);
+    EXPECT_FALSE(runner.append({second}));          // nothing running yet
+    runner.start(config(fake), jobs);
+    ASSERT_TRUE(runner.append({second}));
+    bool stopped = true;
+    ASSERT_TRUE(waitFinished(runner, &stopped));
+    EXPECT_FALSE(stopped);
+    ASSERT_EQ(runner.jobs().size(), 2u);
+    EXPECT_EQ(runner.jobs()[0].state, RenderJob::State::Done);
+    EXPECT_EQ(runner.jobs()[1].state, RenderJob::State::Done);
+    EXPECT_EQ(runner.jobs()[1].key, "debate");
+    EXPECT_EQ(fake.prompts.size(), 2);
+}
+
+TEST_F(ComfyRunnerTest, RemovedShotsAreSkippedButTheRenderingOneStays)
+{
+    FakeComfy fake;
+    ComfyRunner runner;
+    runner.start(config(fake), twoJobs());
+    ASSERT_EQ(runner.jobs()[0].state, RenderJob::State::Running);
+    EXPECT_EQ(runner.remove({0, 1, 7}), 1);                   // the running shot stays; 7 is no job
+    EXPECT_EQ(runner.jobs()[1].state, RenderJob::State::Skipped);
+    EXPECT_EQ(runner.remove({1}), 0);                         // already removed
+    bool stopped = true;
+    ASSERT_TRUE(waitFinished(runner, &stopped));
+    EXPECT_FALSE(stopped);
+    EXPECT_EQ(runner.jobs()[0].state, RenderJob::State::Done);
+    EXPECT_EQ(runner.jobs()[1].state, RenderJob::State::Skipped);
+    EXPECT_EQ(runner.jobs()[1].status, "Removed");
+    EXPECT_EQ(fake.prompts.size(), 1);                         // never submitted
+}
+
+TEST_F(ComfyRunnerTest, MissingBatchNodeStopsWithInstallInstructionsBeforeQueueing)
+{
+    FakeComfy fake;
+    auto c = config(fake);
+    auto node = [](const char* type, QJsonObject in) { return QJsonObject{{"class_type", type}, {"inputs", in}}; };
+    // SaveVideo <- CreateVideo <- ToonOut: the alpha output adds RoundtableAlphaRepair.
+    c.prompt.insert("91", node("ToonOut Selected BG JNK", {{"image", QJsonArray{"60", 0}}, {"model_name", "toon.pth"}}));
+    c.prompt.insert("24", node("CreateVideo", {{"images", QJsonArray{"91", 0}}, {"fps", 16.0}}));
+    c.prompt.insert("25", node("SaveVideo", {{"video", QJsonArray{"24", 0}}, {"filename_prefix", "video/x"}}));
+
+    {   // installed: asked once for the whole batch, then rendered as usual
+        ComfyRunner runner;
+        bool stopped = true;
+        runner.start(c, twoJobs());
+        ASSERT_TRUE(waitFinished(runner, &stopped));
+        EXPECT_FALSE(stopped);
+        EXPECT_EQ(fake.nodeQueries, QStringList{"RoundtableAlphaRepair"});
+        EXPECT_EQ(fake.prompts.size(), 2);
+    }
+
+    FakeComfy bare;
+    bare.batchNodesInstalled = false;
+    c.url = config(bare).url;
+    ComfyRunner runner;
+    bool stopped = false;
+    runner.start(c, twoJobs());
+    ASSERT_TRUE(waitFinished(runner, &stopped));
+    EXPECT_TRUE(stopped);
+    EXPECT_TRUE(bare.prompts.isEmpty());                        // never reached ComfyUI's own rejection
+    const QString status = runner.jobs()[0].status;
+    EXPECT_TRUE(status.contains("RoundtableAlphaRepair")) << status.toStdString();
+    EXPECT_TRUE(status.contains("install_batch.py")) << status.toStdString();   // fits the 200-character status
+}
+
 TEST_F(ComfyRunnerTest, ValidationErrorStopsTheBatch)
 {
     FakeComfy fake;
@@ -620,6 +806,50 @@ TEST_F(ComfyRunnerTest, LauncherCdLineSetsServerWorkingDirectory)
     EXPECT_EQ(QDir::cleanPath(ComfyRunner::serverWorkingDirFromLauncher(bat)), QDir::cleanPath(dir.path()));
 }
 
+TEST_F(ComfyRunnerTest, SwitchesBetweenTwoIdleLocalInstallations)
+{
+    const QString python = QStandardPaths::findExecutable("python");
+    if (python.isEmpty()) GTEST_SKIP() << "Python unavailable for the local HTTP fixture";
+    QTcpServer probe;
+    ASSERT_TRUE(probe.listen(QHostAddress::LocalHost));
+    const int port = probe.serverPort();
+    probe.close();
+    const QString url = QStringLiteral("http://127.0.0.1:%1").arg(port);
+    QStringList launchers;
+    for (QString profile : {"h3", "scail"}) {
+        ASSERT_TRUE(QDir(dir.path()).mkdir(profile));
+        const QString main = dir.filePath(profile + "/main.py");
+        QFile server(main);
+        ASSERT_TRUE(server.open(QIODevice::WriteOnly));
+        server.write(R"(import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class Stats(BaseHTTPRequestHandler):
+    def do_GET(self):
+        data = {"system":{"argv":sys.argv}} if self.path == "/system_stats" else {"queue_running":[],"queue_pending":[]}
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+HTTPServer(("127.0.0.1", int(sys.argv[1])), Stats).serve_forever()
+)");
+        server.close();
+        QFile bat(dir.filePath(profile + ".bat"));
+        ASSERT_TRUE(bat.open(QIODevice::WriteOnly));
+        bat.write(QString("set PYTHONUTF8=1&& \"%1\" \"%2\" %3\r\n")
+                  .arg(python, main).arg(port).toLocal8Bit());
+        launchers << bat.fileName();
+    }
+    ComfyRunner runner;
+    QStringList lines;
+    QObject::connect(&runner, &ComfyRunner::log, [&](const QString& line) { lines << line; });
+    for (int i : {0, 1, 0}) {
+        runner.launchServer(url, launchers[i], launchers[1 - i], !lines.isEmpty());
+        ASSERT_TRUE(QTest::qWaitFor([&]() { return !runner.isStartingServer(); }, 60000));
+        ASSERT_TRUE(lines.filter("Could not start").isEmpty()) << lines.join('\n').toStdString();
+    }
+    EXPECT_EQ(lines.filter("Starting ComfyUI:").size(), 3);
+    EXPECT_EQ(lines.filter("Switching ComfyUI installations").size(), 2);
+}
+
 TEST_F(ComfyRunnerTest, StopInterruptsTheRunningRender)
 {
     FakeComfy fake;
@@ -634,6 +864,9 @@ TEST_F(ComfyRunnerTest, StopInterruptsTheRunningRender)
     EXPECT_TRUE(stopped);
     EXPECT_FALSE(runner.isRunning());
     EXPECT_TRUE(QTest::qWaitFor([&]() { return fake.interrupts == 1; }, 3000));
+    // Stop hands the VRAM back: the models are unloaded like after a finished batch.
+    EXPECT_TRUE(QTest::qWaitFor([&]() { return fake.frees == 1; }, 3000));
+    EXPECT_TRUE(fake.freeRequest.value("unload_models").toBool());
 }
 
 // ─── ComfyUI event feed (WebSocket frames) ─────────────────────────────────
@@ -660,6 +893,47 @@ QByteArray wsFrame(int opcode, const QByteArray& payload, bool fin = true)
     return f + payload;
 }
 } // namespace
+
+TEST_F(ComfyRunnerTest, H3LatentFramesLoopBetweenSamplingSteps)
+{
+    QTcpServer server;
+    ASSERT_TRUE(server.listen(QHostAddress::LocalHost));
+    ComfyEventStream stream;
+    QList<QRgb> pixels;
+    QObject::connect(&stream, &ComfyEventStream::previewImage, &stream,
+            [&](const QImage& img) { pixels << img.pixel(0, 0); });
+    stream.open(QUrl(QString("http://127.0.0.1:%1").arg(server.serverPort())), "test", true);
+    ASSERT_TRUE(QTest::qWaitFor([&]() { return server.hasPendingConnections(); }));
+    auto* socket = server.nextPendingConnection();
+    QByteArray frames = "HTTP/1.1 101 Switching Protocols\r\n\r\n";
+    const QString captured = qEnvironmentVariable("ROUNDTABLE_TEST_H3_PREVIEW_FEED");
+    int count = 2;
+    if (!captured.isEmpty()) {
+        QFile f(captured);
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+        frames += f.readAll();   // eight frames from the installed H3 VideoHelperSuite
+        count = 8;
+    } else {
+        frames += wsFrame(1, R"({"type":"VHS_latentpreview","data":{"id":"60","rate":30,"length":2}})");
+        for (int index = 0; index < count; ++index) {
+            QByteArray header(32, 0);
+            for (int offset : {0, 4, 8}) qToBigEndian<quint32>(1, header.data() + offset);
+            qToBigEndian<quint32>(index, header.data() + 12);
+            header[16] = 2; header.replace(17, 2, "60");
+            QImage image(16, 16, QImage::Format_RGB32);
+            image.fill(index ? Qt::green : Qt::red);
+            QByteArray jpeg;
+            QBuffer buffer(&jpeg);
+            buffer.open(QIODevice::WriteOnly);
+            ASSERT_TRUE(image.save(&buffer, "JPEG"));
+            frames += wsFrame(2, header + jpeg);
+        }
+    }
+    socket->write(frames);
+    ASSERT_TRUE(QTest::qWaitFor([&]() { return pixels.size() >= count * 2; }, 5000));
+    EXPECT_NE(pixels[0], pixels[1]);
+    EXPECT_EQ(pixels.mid(0, count), pixels.mid(count, count));
+}
 
 TEST(ComfyEventStreamTest, ParsesProgressExecutingAndPreviewFrames)
 {

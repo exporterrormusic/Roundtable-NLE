@@ -17,7 +17,7 @@
 #include "edit/EditSession.h"
 #include "decode/VideoDecoder.h"
 #include "effects/ChromaKey.h"
-#include "panels/audio/AudioSync.h"
+#include "panels/audio/ShowSession.h"
 #include "timeline/AudioClip.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
@@ -91,9 +91,9 @@ Track* assemblyAudioTrack(Timeline& tl)
 
 int ComfyPanel::assembleIntoTimeline(Timeline* timeline, CommandStack* stack, QString* error)
 {
-    if (!timeline || !m_audioSync) return 0;
+    if (!timeline || !m_show) return 0;
     refresh();
-    const auto& state = m_audioSync->pipeline();
+    const auto& state = m_show->pipeline();
 
     // ── Collect the chosen render of every shot, in script order ─────────
     struct Item { const ShowShot* shot; const RenderVersion* render; AssemblyProbe probe; };

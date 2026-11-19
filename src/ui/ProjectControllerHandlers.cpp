@@ -10,6 +10,7 @@
  * onOpenProject, onSaveProject, onSaveProjectAs.
  */
 
+#include "QtHelpers.h"
 #include "ProjectController.h"
 #include "MainWindow.h"
 #include "PathUtils.h"
@@ -749,8 +750,7 @@ void ProjectController::onRevealProjectInExplorer(const QString& name)
     }
     QFileInfo fi(filePath);
     if (fi.exists()) {
-        QProcess::startDetached("explorer.exe",
-            {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+        rt::revealInExplorer(QDir::toNativeSeparators(fi.absoluteFilePath()));
     }
 }
 

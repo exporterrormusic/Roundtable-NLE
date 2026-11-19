@@ -1,3 +1,7 @@
+#include <QUrl>
+#include <QProcess>
+#include <QFileInfo>
+#include <QDesktopServices>
 #include "QtHelpers.h"
 
 #include <QCoreApplication>
@@ -114,4 +118,22 @@ void rt::rescanCharacterModels(ModelManager* modelManager)
 #else
     Q_UNUSED(modelManager);
 #endif
+}
+
+void rt::revealInExplorer(const QString& path)
+{
+    if (path.isEmpty()) return;
+    const QFileInfo info(QFileInfo(path).absoluteFilePath());
+    if (info.exists()) {
+        // explorer.exe parses its own command line: Qt's argument list would
+        // quote "/select," and the path as two tokens, and paths with spaces
+        // or commas are then not highlighted. Pass the exact native line.
+        QProcess proc;
+        proc.setProgram(QStringLiteral("explorer.exe"));
+        proc.setNativeArguments(QStringLiteral("/select,\"") +
+                                QDir::toNativeSeparators(info.canonicalFilePath()) + QStringLiteral("\""));
+        proc.startDetached();
+    } else if (QFileInfo::exists(info.absolutePath())) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(info.absolutePath()));
+    }
 }

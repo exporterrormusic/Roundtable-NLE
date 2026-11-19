@@ -17,7 +17,7 @@ import uuid
 WORK = Path(__file__).resolve().parents[2]
 AUDIT = WORK / 'artifacts/alpha-comparison/belorta-alpha-migration-audit.json'
 RUN = WORK / 'artifacts/belorta-alpha-rebuild'
-COMFY = Path('F:/1_PROGRAMS/BERNINI/ComfyUI')
+COMFY = Path('F:/IMAGES/BERNINI/ComfyUI')
 PROJECT = Path('G:/9_PROJECT ARCHIVE/GACHA IS SUFFERING NLE/EPISODE ASSETS/BELORTA/GACHA IS SUFFERING - BELORTA')
 URL = 'http://127.0.0.1:8188'
 FFMPEG = WORK / 'build/bin/Release/ffmpeg.exe'

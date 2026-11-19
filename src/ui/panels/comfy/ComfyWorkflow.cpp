@@ -9,6 +9,7 @@
 #include <QSet>
 
 #include <functional>
+#include <map>
 #include <optional>
 
 namespace rt::comfy {
@@ -181,6 +182,38 @@ ConvertResult convertUiWorkflow(const QJsonObject& workflow)
     return result;
 }
 
+ConvertResult convertApiWorkflow(const QJsonObject& prompt)
+{
+    ConvertResult result;
+    for (auto it = prompt.begin(); it != prompt.end(); ++it) {
+        const QJsonObject node = it.value().toObject();
+        const QString type = node.value(QLatin1String("class_type")).toString();
+        if (type.isEmpty() || !node.value(QLatin1String("inputs")).isObject()) {
+            result.error = QStringLiteral("Not a ComfyUI workflow (node %1 has no class_type/inputs).").arg(it.key());
+            return result;
+        }
+        const QString id = it.key();
+        auto claim = [&](QString& slot) { if (slot.isEmpty()) slot = id; };
+        if (type == QLatin1String("VHS_LoadVideo")) claim(result.targets.drivingVideo);
+        else if (type == QLatin1String("LoadImage")) claim(result.targets.referenceImage);
+        else if (type == QLatin1String("H3OneClickSwapPlan")) {
+            claim(result.targets.runSettings);
+            result.targets.engine = Engine::H3;
+        } else if (type == QLatin1String("SaveVideo")) claim(result.targets.save);
+        else if (type == QLatin1String("VHS_VideoCombine") &&
+                 node.value("inputs").toObject().value("format").toString() == QLatin1String("video/ProRes"))
+            result.targets.save = id;   // the alpha master wins over any preview save
+    }
+    if (prompt.isEmpty()) result.error = QStringLiteral("The workflow has no runnable nodes.");
+    else result.prompt = prompt;
+    return result;
+}
+
+ConvertResult convertWorkflow(const QJsonObject& json)
+{
+    return json.contains(QLatin1String("nodes")) ? convertUiWorkflow(json) : convertApiWorkflow(json);
+}
+
 QJsonObject applyShotParams(QJsonObject prompt, const WorkflowSlots& targets,
                             const ShotParams& params, QStringList* missing)
 {
@@ -327,6 +360,224 @@ QJsonObject batchStagePrompt(const QJsonObject& original, const WorkflowSlots& t
     };
     visit(output);
     return result;
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  H3 swap
+// ═════════════════════════════════════════════════════════════════════════
+
+namespace {
+
+bool isLink(const QJsonValue& value)
+{
+    const QJsonArray link = value.toArray();
+    return link.size() == 2 && link[0].isString() && link[1].isDouble();
+}
+
+QString titleOf(const QJsonObject& node)
+{
+    return node.value("_meta").toObject().value("title").toString();
+}
+
+void setInput(QJsonObject& graph, const QString& id, const QString& name, const QJsonValue& value)
+{
+    QJsonObject node = graph.value(id).toObject();
+    QJsonObject inputs = node.value("inputs").toObject();
+    if (value.isUndefined()) inputs.remove(name); else inputs.insert(name, value);
+    node.insert("inputs", inputs);
+    graph.insert(id, node);
+}
+
+/// Every link to `from` (any output when `slot` < 0) becomes `to`; with an
+/// undefined `to` the input is removed.
+void relink(QJsonObject& graph, const QString& from, int slot, const QJsonValue& to)
+{
+    for (const QString& id : graph.keys()) {
+        const QJsonObject inputs = graph.value(id).toObject().value("inputs").toObject();
+        for (auto it = inputs.begin(); it != inputs.end(); ++it) {
+            const QJsonArray link = it.value().toArray();
+            if (isLink(link) && link[0].toString() == from && (slot < 0 || link[1].toInt() == slot))
+                setInput(graph, id, it.key(), to);
+        }
+    }
+}
+
+/// The model pass whose cost a node carries (0 = cheap, rerun wherever needed).
+int h3HeavyStage(const QString& type)
+{
+    if (type == QLatin1String("TextGenerate")) return 1;
+    if (type == QLatin1String("SAM3_VideoTrack")) return 2;
+    if (type == QLatin1String("MiniMaxH3ReferenceToVideo") || type == QLatin1String("H3SourceSlice") ||
+        type == QLatin1String("MiniMaxH3FantasticVideoEditLatent") || type == QLatin1String("MiniMaxH3ChainContext"))
+        return 3;
+    if (type == QLatin1String("MiniMaxH3ChainAssemble")) return 4;
+    return 0;
+}
+
+} // namespace
+
+QJsonObject h3ShotPrompt(QJsonObject graph, const WorkflowSlots& targets, bool singleClip)
+{
+    if (targets.engine != Engine::H3) return graph;
+
+    // Lip-sync on: the shots are dialogue. Openjutsu's export has No lip-sync
+    // switched on; take its nodes out the way its dropNoLipSync() does.
+    static const QRegularExpression mute(QStringLiteral(R"(^Mute the (clip|reference) audio H3 hears$)"));
+    static const QRegularExpression noLipSync(
+        QStringLiteral(R"(^(No lip-sync in the prompt|SAM: faces|SAM 3\.1 track faces|Faces \(shown on the mannequins?\))$)"));
+    // The hat pass costs ~45 s a clip; Openjutsu has it off by default.
+    static const QRegularExpression hat(QStringLiteral(R"(\bhats?\b)"), QRegularExpression::CaseInsensitiveOption);
+    for (const QString& id : graph.keys()) {
+        const QJsonObject node = graph.value(id).toObject();
+        const QString title = titleOf(node);
+        if (mute.match(title).hasMatch()) {
+            relink(graph, id, -1, node.value("inputs").toObject().value("audio"));
+            graph.remove(id);
+        } else if (title == QLatin1String("People + hats")) {
+            relink(graph, id, -1, node.value("inputs").toObject().value("destination"));
+            graph.remove(id);
+        }
+    }
+    for (const QString& id : graph.keys()) {
+        const QString title = titleOf(graph.value(id).toObject());
+        if (noLipSync.match(title).hasMatch() || hat.match(title).hasMatch()) {
+            relink(graph, id, -1, QJsonValue(QJsonValue::Undefined));
+            graph.remove(id);
+        }
+    }
+
+    // The describer's sentence is all H3 reads about the character's look, and
+    // Openjutsu's asks for no eye colour: H3 then repaints the eyes its own way.
+    static const QRegularExpression describePicture(QStringLiteral(R"(^Describe picture \d+$)"));
+    for (const QString& id : graph.keys()) {
+        const QJsonObject node = graph.value(id).toObject();
+        const QString type = node.value("class_type").toString();
+        if (type == QLatin1String("GrowMaskWithBlur") && titleOf(node).startsWith(QLatin1String("Grow mask")))
+            setInput(graph, id, QStringLiteral("expand"), kH3MaskGrow);
+        else if (type == QLatin1String("TextGenerate") && describePicture.match(titleOf(node)).hasMatch()) {
+            setInput(graph, id, QStringLiteral("prompt"), QString::fromLatin1(kH3DescribePrompt));
+            setInput(graph, id, QStringLiteral("max_length"), kH3DescribeTokens);
+        }
+        // H3 frames reach ToonOut through 4:2:0 H.264, which tints thin dark
+        // hair strands green; the hard green cut would delete them.
+        else if (type == QLatin1String("RoundtableAlphaRepair"))
+            setInput(graph, id, QStringLiteral("edge_mode"), QStringLiteral("unmix"));
+    }
+
+    // 24 fps, cropped to the SCAIL canvas before anything reads the frames,
+    // so SAM, the masks, the mannequin and the render share one shape.
+    if (graph.contains(targets.drivingVideo)) {
+        setInput(graph, targets.drivingVideo, QStringLiteral("force_rate"), kH3Fps);
+        const QString crop = QStringLiteral("rt_h3_size");
+        relink(graph, targets.drivingVideo, 0, QJsonArray{crop, 0});
+        graph.insert(crop, QJsonObject{{"class_type", "ImageScale"},
+            {"inputs", QJsonObject{{"image", QJsonArray{targets.drivingVideo, 0}}, {"upscale_method", "bilinear"},
+                                   {"width", kH3Width}, {"height", kH3Height}, {"crop", "center"}}},
+            {"_meta", QJsonObject{{"title", "Roundtable size (centre crop)"}}}});
+
+        // A shot's AAC track can end a frame before its picture; Source Timeline
+        // then refuses the last frame ("audio window 0:56 exceeds 0:55"). Pad
+        // every reader's soundtrack with silence to the loaded frames, as
+        // Openjutsu's own loader does (silenceWhenSoundless in lib/comfy.ts).
+        const QString soundtrack = QStringLiteral("rt_h3_soundtrack");
+        bool heard = false;
+        for (const QString& id : graph.keys()) {
+            const QJsonObject inputs = graph.value(id).toObject().value("inputs").toObject();
+            for (auto it = inputs.begin(); it != inputs.end(); ++it)
+                if (it.value().toArray() == QJsonArray{targets.drivingVideo, 2}) heard = true;
+        }
+        if (heard) {
+            relink(graph, targets.drivingVideo, 2, QJsonArray{soundtrack, 0});
+            graph.insert(soundtrack, QJsonObject{{"class_type", "H3SoundtrackOrSilence"},
+                {"inputs", QJsonObject{{"audio", QJsonArray{targets.drivingVideo, 2}},
+                                       {"video_info", QJsonArray{targets.drivingVideo, 3}}}},
+                {"_meta", QJsonObject{{"title", "Soundtrack (silence if none)"}}}});
+        }
+    }
+    if (graph.contains(targets.runSettings)) {
+        QJsonObject plan = graph.value(targets.runSettings).toObject().value("inputs").toObject();
+        plan.insert("short_edge", std::min(kH3Width, kH3Height));
+        if (singleClip) plan.insert("clip_seconds", 15.0);
+        // The Swap Plan's seed is 32-bit; ours can be wider.
+        if (plan.value("seed").isDouble())
+            plan.insert("seed", static_cast<double>(static_cast<quint64>(plan.value("seed").toDouble()) % 0x100000000ULL));
+        QJsonObject node = graph.value(targets.runSettings).toObject();
+        node.insert("inputs", plan);
+        graph.insert(targets.runSettings, node);
+    }
+    return graph;
+}
+
+QString h3StageName(int stage)
+{
+    static const char* names[] = {"", "described", "tracked", "encoded", "generated", "finished"};
+    return stage > 0 && stage <= kH3StageCount ? QString::fromLatin1(names[stage]) : QString();
+}
+
+QJsonObject h3StagePrompt(const QJsonObject& prompt, const WorkflowSlots& targets, int stage, const QString& artifactKey)
+{
+    if (targets.engine != Engine::H3 || stage < 1 || stage > kH3StageCount || !prompt.contains(targets.save)) return {};
+    auto heavy = [&](const QString& id) {
+        return h3HeavyStage(prompt.value(id).toObject().value("class_type").toString());
+    };
+    auto stashName = [](const QString& id, int slot) {
+        QString name = id + QLatin1Char('_') + QString::number(slot);
+        static const QRegularExpression unsafe(QStringLiteral("[^A-Za-z0-9_]"));
+        return name.replace(unsafe, QStringLiteral("_"));
+    };
+
+    // Build the passes from the last back: each one tells the earlier passes
+    // which of their outputs it reads, so only those are written to disk.
+    std::map<std::pair<QString, int>, int> needed;   // (node, output) → its pass
+    for (int k = kH3StageCount; k >= stage; --k) {
+        QJsonObject graph;
+        bool ok = true;
+        std::function<void(const QString&)> visit = [&](const QString& id) {
+            if (graph.contains(id) || !ok) return;
+            QJsonObject node = prompt.value(id).toObject();
+            if (node.isEmpty()) { ok = false; return; }
+            QJsonObject inputs = node.value("inputs").toObject();
+            graph.insert(id, node);
+            for (auto it = inputs.begin(); it != inputs.end(); ++it) {
+                if (!isLink(it.value())) continue;
+                const QJsonArray link = it.value().toArray();
+                const QString source = link[0].toString();
+                const int slot = link[1].toInt(), pass = heavy(source);
+                if (pass > k) { ok = false; return; }   // a later model feeding an earlier pass
+                if (pass > 0 && pass < k) {
+                    needed[{source, slot}] = pass;
+                    const QString load = QStringLiteral("rt_unstash_") + stashName(source, slot);
+                    graph.insert(load, QJsonObject{{"class_type", "RoundtableUnstash"},
+                        {"inputs", QJsonObject{{"artifact_key", artifactKey}, {"name", stashName(source, slot)}}}});
+                    it.value() = QJsonArray{load, 0};
+                } else {
+                    visit(source);
+                }
+            }
+            node.insert("inputs", inputs);
+            graph.insert(id, node);
+        };
+        bool any = false;
+        if (k == kH3StageCount) {
+            visit(targets.save);
+            any = true;
+        } else {
+            for (const auto& [output, pass] : needed) {
+                if (pass != k) continue;
+                any = true;
+                graph.insert(QStringLiteral("rt_stash_") + stashName(output.first, output.second),
+                    QJsonObject{{"class_type", "RoundtableStash"},
+                        {"inputs", QJsonObject{{"value", QJsonArray{output.first, output.second}},
+                                               {"artifact_key", artifactKey},
+                                               {"name", stashName(output.first, output.second)},
+                                               {"stage", h3StageName(k)}}}});
+                visit(output.first);
+            }
+        }
+        if (!ok || !any) return {};
+        if (k == stage) return graph;
+    }
+    return {};
 }
 
 } // namespace rt::comfy

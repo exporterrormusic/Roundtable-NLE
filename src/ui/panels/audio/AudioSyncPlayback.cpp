@@ -170,12 +170,35 @@ bool AudioSync::loadPreviewAudioForTake(int clipId, double rangeStart, double ra
 {
     const SyncClip* clip = nullptr;
     for (const auto& c : session().clips) if (c.id == clipId) { clip = &c; break; }
-    if (!clip) return false;
-    auto it = session().audioSamples.find(clip->sourceFile);
-    if (it == session().audioSamples.end() || it->second.samples.empty()) return false;
+    if (!clip || !m_audioEngine || rangeEnd <= rangeStart) return false;
     char key[64];
     std::snprintf(key, sizeof(key), "|%.4f|%.4f", rangeStart, rangeEnd);
-    return loadPreviewAudio(clip->sourceFile + key, it->second, rangeStart, rangeEnd);
+    const std::string previewKey = clip->sourceFile + key;
+    if (m_player.hasPreview(previewKey)) return true;
+    auto it = session().audioSamples.find(clip->sourceFile);
+    if (it != session().audioSamples.end() && !it->second.samples.empty())
+        return loadPreviewAudio(previewKey, it->second, rangeStart, rangeEnd);
+
+    // The shot can be played as soon as the project opens, while the AUDIO
+    // page is still populating its waveforms. Read just the visible range.
+    AudioFile file;
+    if (!file.open(clip->sourceFile)) return false;
+    const auto& info = file.info();
+    if (!info.sampleRate || !info.channels) return false;
+    const auto first = static_cast<int64_t>(std::max(0.0, rangeStart) * info.sampleRate);
+    const auto end = static_cast<int64_t>(std::ceil(rangeEnd * info.sampleRate));
+    std::vector<float> interleaved;
+    const int64_t frames = file.readRegion(first, end - first, interleaved);
+    if (frames <= 0) return false;
+    std::vector<float> mono(static_cast<size_t>(frames));
+    for (size_t i = 0; i < mono.size(); ++i) {
+        for (uint32_t ch = 0; ch < info.channels; ++ch) mono[i] += interleaved[i * info.channels + ch];
+        mono[i] /= info.channels;
+    }
+    AudioSampleData data;
+    data.sampleRate = info.sampleRate;
+    data.samples = SampleBuffer(std::move(mono));
+    return loadPreviewAudio(previewKey, data, rangeStart, rangeEnd, static_cast<double>(first) / info.sampleRate);
 }
 
 bool AudioSync::loadPreviewAudioForMedia(const std::string& path)
@@ -187,14 +210,14 @@ bool AudioSync::loadPreviewAudioForMedia(const std::string& path)
 }
 
 bool AudioSync::loadPreviewAudio(const std::string& key, const AudioSampleData& data,
-                                 double rangeStart, double rangeEnd)
+                                 double rangeStart, double rangeEnd, double dataStart)
 {
     if (!m_audioEngine || data.samples.empty() || data.sampleRate == 0) return false;
     if (m_player.hasPreview(key)) return true;   // already loaded
     stopTakeAudio();
     stopPlayback();
     stopFilePlayback();
-    return m_player.loadPreview(key, data, rangeStart, rangeEnd);
+    return m_player.loadPreview(key, data, rangeStart, rangeEnd, dataStart);
 }
 
 bool AudioSync::playPreviewAudio(double fromSec, double speed)

@@ -648,8 +648,7 @@ QWidget* ShotComposer::createLeftPanel()
             QFileInfo fi(oldPath);
             if (fi.exists()) {
 #ifdef _WIN32
-                QProcess::startDetached("explorer.exe",
-                    {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+                rt::revealInExplorer(QDir::toNativeSeparators(fi.absoluteFilePath()));
 #else
                 QDesktopServices::openUrl(QUrl::fromLocalFile(fi.absolutePath()));
 #endif
@@ -816,8 +815,7 @@ QWidget* ShotComposer::createLeftPanel()
             QFileInfo fi(oldPath);
             if (fi.exists()) {
 #ifdef _WIN32
-                QProcess::startDetached("explorer.exe",
-                    {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+                rt::revealInExplorer(QDir::toNativeSeparators(fi.absoluteFilePath()));
 #else
                 QDesktopServices::openUrl(QUrl::fromLocalFile(fi.absolutePath()));
 #endif

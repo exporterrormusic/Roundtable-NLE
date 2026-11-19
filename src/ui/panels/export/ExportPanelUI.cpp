@@ -7,6 +7,7 @@
  * each carry a blue enable switch; turning VIDEO off (or just leaving AUDIO on)
  * makes the export audio-only.
  */
+#include "QtHelpers.h"
 #include "ExportPanel.h"
 #include "ExportMiniTimeline.h"
 #include "Theme.h"
@@ -661,8 +662,7 @@ void ExportPanel::setupUI()
                 QString path = QString::fromStdString(pathToUtf8(job->config.outputPath));
                 QFileInfo fi(path);
                 if (fi.exists()) {
-                    QProcess::startDetached("explorer.exe",
-                        {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+                    rt::revealInExplorer(QDir::toNativeSeparators(fi.absoluteFilePath()));
                 }
             }
         }
@@ -821,8 +821,7 @@ void ExportPanel::setJobRowState(uint32_t jobId, JobRowState st, int pct,
         if (!job) return;
         QFileInfo fi(QString::fromStdString(pathToUtf8(job->config.outputPath)));
         if (fi.exists())
-            QProcess::startDetached("explorer.exe",
-                {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+            rt::revealInExplorer(QDir::toNativeSeparators(fi.absoluteFilePath()));
     });
     lay->addWidget(reveal);
 

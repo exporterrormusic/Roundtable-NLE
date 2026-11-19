@@ -6,9 +6,12 @@
 
 #include "panels/comfy/ComfyWorkflow.h"
 
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+
+#include <iostream>
 
 using namespace rt::comfy;
 
@@ -205,3 +208,216 @@ TEST(ComfyWorkflowTest, RejectsNonWorkflows)
     EXPECT_FALSE(convertUiWorkflow(QJsonObject{{"1", QJsonObject{}}}).ok());
 }
 
+
+// ── H3 swap (Openjutsu's simple.api.json, trimmed to one node per role) ──────
+
+namespace {
+
+const char* kH3Workflow = R"JSON({
+  "2":  {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "4":  {"class_type": "TextGenerate", "inputs": {"prompt": "describe", "clip": ["13", 0], "image": ["2", 0]}},
+  "5":  {"class_type": "VHS_LoadVideo", "inputs": {"video": "", "force_rate": 24}},
+  "13": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_8b.safetensors"}},
+  "11": {"class_type": "H3OneClickSwapPlan", "_meta": {"title": "Swap Plan"},
+         "inputs": {"clip_seconds": 6, "resolution": "736p", "seed": 0, "roles": "",
+                    "no_lip_sync": ["68", 0], "source_frames": ["5", 0], "picture_1": ["2", 0], "picture_1_text": ["4", 0]}},
+  "28": {"class_type": "MiniMaxH3ChainLoopStart", "inputs": {"plan": ["11", 0]}},
+  "29": {"class_type": "MiniMaxH3ChainCurrent", "inputs": {"state": ["28", 1]}},
+  "44": {"class_type": "TextGenerate", "inputs": {"prompt": ["11", 4], "clip": ["13", 0], "image": ["5", 0]}},
+  "38": {"class_type": "SAM3_VideoTrack", "inputs": {"images": ["5", 0], "clip_frames": ["29", 6]}},
+  "39": {"class_type": "H3PeopleMask", "inputs": {"track_data": ["38", 0]}},
+  "47": {"class_type": "SAM3_VideoTrack", "_meta": {"title": "SAM 3.1 track hats"}, "inputs": {"images": ["5", 0]}},
+  "52": {"class_type": "MaskComposite", "_meta": {"title": "People + hats"},
+         "inputs": {"destination": ["39", 0], "source": ["47", 0]}},
+  "42": {"class_type": "GrowMaskWithBlur", "_meta": {"title": "Grow mask (~4% of the frame)"}, "inputs": {"expand": 40, "mask": ["52", 0]}},
+  "68": {"class_type": "PrimitiveBoolean", "_meta": {"title": "No lip-sync in the prompt"}, "inputs": {"value": true}},
+  "73": {"class_type": "AudioAdjustVolume", "_meta": {"title": "Mute the reference audio H3 hears"},
+         "inputs": {"volume": -100, "audio": ["29", 12]}},
+  "30": {"class_type": "MiniMaxH3ReferenceToVideo",
+         "inputs": {"prompt": ["44", 0], "width": ["29", 8], "ref_images.ref_image_0": ["2", 0],
+                    "ref_videos.ref_video_0": ["39", 0], "ref_video_audios.ref_video_audio_0": ["73", 0]}},
+  "57": {"class_type": "MiniMaxH3ChainContext", "inputs": {"state": ["29", 0], "conditioning": ["30", 0], "mask": ["42", 0]}},
+  "60": {"class_type": "SamplerCustomAdvanced", "inputs": {"guider": ["57", 0], "latent_image": ["57", 3]}},
+  "66": {"class_type": "MiniMaxH3ChainLoopEnd", "inputs": {"flow": ["28", 0], "state": ["29", 0], "images": ["60", 0]}},
+  "67": {"class_type": "MiniMaxH3ChainAssemble", "inputs": {"manifest": ["66", 0]}},
+  "alpha_load": {"class_type": "VHS_LoadVideoPath", "inputs": {"video": ["67", 0]}},
+  "alpha_save": {"class_type": "VHS_VideoCombine",
+                 "inputs": {"images": ["alpha_load", 0], "format": "video/ProRes", "filename_prefix": "h3_alpha/swap"}}
+})JSON";
+
+ConvertResult convertH3()
+{
+    return convertWorkflow(QJsonDocument::fromJson(kH3Workflow).object());
+}
+
+bool linksTo(const QJsonObject& prompt, const QString& node, const QString& input, const QString& source, int slot)
+{
+    return prompt.value(node).toObject().value("inputs").toObject().value(input).toArray() == QJsonArray{source, slot};
+}
+
+/// The stash names of every node of `type`, sorted.
+QStringList ofType(const QJsonObject& prompt, const QString& type)
+{
+    QStringList names;
+    for (auto it = prompt.begin(); it != prompt.end(); ++it)
+        if (it.value().toObject().value("class_type").toString() == type)
+            names << it.value().toObject().value("inputs").toObject().value("name").toString();
+    names.sort();
+    return names;
+}
+
+} // namespace
+
+TEST(ComfyWorkflowTest, ApiWorkflowWithSwapPlanIsTheH3Engine)
+{
+    const auto r = convertH3();
+    ASSERT_TRUE(r.ok()) << r.error.toStdString();
+    EXPECT_EQ(r.targets.engine, Engine::H3);
+    EXPECT_EQ(r.targets.drivingVideo, "5");
+    EXPECT_EQ(r.targets.referenceImage, "2");
+    EXPECT_EQ(r.targets.runSettings, "11");
+    EXPECT_EQ(r.targets.save, "alpha_save");
+    EXPECT_EQ(convert().targets.engine, Engine::Scail);
+}
+
+TEST(ComfyWorkflowTest, H3ShotPromptMatchesScailCanvasAndKeepsLipSync)
+{
+    const auto r = convertH3();
+    ShotParams p;
+    p.seed = 0x100000007LL;   // wider than the Swap Plan's 32-bit seed
+    const QJsonObject prompt = h3ShotPrompt(applyShotParams(r.prompt, r.targets, p), r.targets, true);
+
+    for (const char* gone : {"68", "73", "47", "52"}) EXPECT_FALSE(prompt.contains(gone)) << gone;
+    EXPECT_FALSE(inputsOf(prompt, "11").contains("no_lip_sync"));
+    EXPECT_TRUE(linksTo(prompt, "30", "ref_video_audios.ref_video_audio_0", "29", 12));   // H3 hears the dialogue
+    EXPECT_TRUE(linksTo(prompt, "42", "mask", "39", 0));                                   // people mask, no hats
+    EXPECT_EQ(inputsOf(prompt, "42").value("expand").toInt(), kH3MaskGrow);                 // loose: ears fit
+
+    EXPECT_EQ(inputsOf(prompt, "5").value("force_rate").toInt(), kH3Fps);
+    EXPECT_EQ(inputsOf(prompt, "rt_h3_size").value("width").toInt(), 1280);
+    EXPECT_EQ(inputsOf(prompt, "rt_h3_size").value("height").toInt(), 704);
+    EXPECT_TRUE(linksTo(prompt, "rt_h3_size", "image", "5", 0));
+    EXPECT_TRUE(linksTo(prompt, "38", "images", "rt_h3_size", 0));
+    EXPECT_TRUE(linksTo(prompt, "44", "image", "rt_h3_size", 0));
+    EXPECT_TRUE(linksTo(prompt, "11", "source_frames", "rt_h3_size", 0));
+    EXPECT_EQ(inputsOf(prompt, "11").value("short_edge").toInt(), 704);
+    EXPECT_EQ(inputsOf(prompt, "11").value("clip_seconds").toDouble(), 15.0);
+    EXPECT_EQ(inputsOf(prompt, "11").value("seed").toInteger(), 7);
+
+    // A long shot keeps the workflow's clip length and renders as a chain.
+    EXPECT_EQ(inputsOf(h3ShotPrompt(r.prompt, r.targets, false), "11").value("clip_seconds").toInt(), 6);
+}
+
+TEST(ComfyWorkflowTest, H3PadsTheSoundtrackToTheLoadedFrames)
+{
+    const auto r = convertH3();
+    QJsonObject graph = r.prompt;
+    graph.insert("6", QJsonObject{{"class_type", "TrimAudioDuration"},
+                                  {"inputs", QJsonObject{{"audio", QJsonArray{"5", 2}}, {"duration", 2048}}}});
+    const QJsonObject prompt = h3ShotPrompt(graph, r.targets, true);
+
+    EXPECT_TRUE(linksTo(prompt, "6", "audio", "rt_h3_soundtrack", 0));
+    EXPECT_EQ(prompt.value("rt_h3_soundtrack").toObject().value("class_type").toString(), "H3SoundtrackOrSilence");
+    EXPECT_TRUE(linksTo(prompt, "rt_h3_soundtrack", "audio", "5", 2));
+    EXPECT_TRUE(linksTo(prompt, "rt_h3_soundtrack", "video_info", "5", 3));
+    // Nothing reads the soundtrack → no extra node.
+    EXPECT_FALSE(h3ShotPrompt(r.prompt, r.targets, true).contains("rt_h3_soundtrack"));
+}
+
+TEST(ComfyWorkflowTest, H3AsksForEyeColourAndUnmixesHairEdges)
+{
+    const auto r = convertH3();
+    QJsonObject graph = r.prompt;
+    QJsonObject describe = graph.value("4").toObject();
+    describe.insert("_meta", QJsonObject{{"title", "Describe picture 1"}});
+    graph.insert("4", describe);
+    graph.insert("repair", QJsonObject{{"class_type", "RoundtableAlphaRepair"},
+                                       {"inputs", QJsonObject{{"image", QJsonArray{"alpha_load", 0}}}}});
+    const QJsonObject prompt = h3ShotPrompt(graph, r.targets, true);
+
+    EXPECT_TRUE(inputsOf(prompt, "4").value("prompt").toString().contains("eye colour"));
+    EXPECT_EQ(inputsOf(prompt, "4").value("max_length").toInt(), kH3DescribeTokens);
+    EXPECT_EQ(inputsOf(prompt, "44").value("prompt"), QJsonValue(QJsonArray{"11", 4}));   // shot writer untouched
+    EXPECT_EQ(inputsOf(prompt, "repair").value("edge_mode").toString(), "unmix");
+    // SCAIL keeps the approved hard cut.
+    EXPECT_FALSE(inputsOf(h3ShotPrompt(graph, convert().targets, true), "repair").contains("edge_mode"));
+}
+
+TEST(ComfyWorkflowTest, H3PassesRunEachModelOnceAndHandOverThroughDisk)
+{
+    const auto r = convertH3();
+    const QJsonObject shot = h3ShotPrompt(r.prompt, r.targets, true);
+    auto pass = [&](int k) { return h3StagePrompt(shot, r.targets, k, "key_0"); };
+
+    const QJsonObject describe = pass(1), track = pass(2), encode = pass(3), generate = pass(4), finish = pass(5);
+    for (const auto* g : {&describe, &track, &encode, &generate, &finish}) ASSERT_FALSE(g->isEmpty());
+
+    // 1: both descriptions; nothing heavier.
+    EXPECT_EQ(ofType(describe, "RoundtableStash"), (QStringList{"44_0", "4_0"}));
+    EXPECT_TRUE(describe.contains("4") && describe.contains("44"));
+    EXPECT_FALSE(describe.contains("38") || describe.contains("30") || describe.contains("60"));
+
+    // 2: SAM reads the description back (the plan needs it) instead of running Qwen.
+    EXPECT_EQ(ofType(track, "RoundtableStash"), QStringList{"38_0"});
+    EXPECT_EQ(ofType(track, "RoundtableUnstash"), QStringList{"4_0"});
+    EXPECT_FALSE(track.contains("4") || track.contains("44"));
+
+    // 3: encoder + VAEs from the tracks and the shot list.
+    EXPECT_EQ(ofType(encode, "RoundtableStash"), (QStringList{"57_0", "57_3"}));
+    EXPECT_EQ(ofType(encode, "RoundtableUnstash"), (QStringList{"38_0", "44_0", "4_0"}));
+    EXPECT_FALSE(encode.contains("38") || encode.contains("60"));
+
+    // 4: H3 only; the loop state is recomputed (cheap), the conditioning read back.
+    EXPECT_EQ(ofType(generate, "RoundtableStash"), QStringList{"67_0"});
+    EXPECT_EQ(ofType(generate, "RoundtableUnstash"), (QStringList{"4_0", "57_0", "57_3"}));
+    EXPECT_TRUE(generate.contains("60") && generate.contains("29"));
+    EXPECT_FALSE(generate.contains("30") || generate.contains("38"));
+    for (auto it = generate.begin(); it != generate.end(); ++it)
+        EXPECT_NE(it.value().toObject().value("class_type").toString(), "TextGenerate");
+
+    // 5: cut out the assembled video with alpha.
+    EXPECT_EQ(ofType(finish, "RoundtableUnstash"), QStringList{"67_0"});
+    EXPECT_TRUE(finish.contains("alpha_save"));
+    EXPECT_FALSE(finish.contains("60") || finish.contains("67"));
+    EXPECT_EQ(inputsOf(describe, "rt_stash_4_0").value("stage").toString(), h3StageName(1));
+    EXPECT_EQ(inputsOf(describe, "rt_stash_4_0").value("artifact_key").toString(), "key_0");
+
+    // Not H3 → no H3 passes.
+    const auto scail = convert();
+    EXPECT_TRUE(h3StagePrompt(scail.prompt, scail.targets, 1, "k").isEmpty());
+}
+
+// The real Openjutsu export: set ROUNDTABLE_H3_WORKFLOW to its simple.api.json.
+TEST(ComfyWorkflowTest, LiveH3WorkflowSplitsIntoFivePasses)
+{
+    const QString path = qEnvironmentVariable("ROUNDTABLE_H3_WORKFLOW");
+    if (path.isEmpty()) GTEST_SKIP() << "ROUNDTABLE_H3_WORKFLOW not set";
+    QFile f(path);
+    ASSERT_TRUE(f.open(QIODevice::ReadOnly));
+    const auto r = convertWorkflow(QJsonDocument::fromJson(f.readAll()).object());
+    ASSERT_TRUE(r.ok()) << r.error.toStdString();
+    ASSERT_EQ(r.targets.engine, Engine::H3);
+    const QJsonObject shot = h3ShotPrompt(r.prompt, r.targets, true);
+    for (int k = 1; k <= kH3StageCount; ++k) {
+        const QJsonObject pass = h3StagePrompt(shot, r.targets, k, "key_0");
+        ASSERT_FALSE(pass.isEmpty()) << "pass " << k;
+        QStringList types;
+        for (auto it = pass.begin(); it != pass.end(); ++it) {
+            const QJsonObject node = it.value().toObject();
+            const QString type = node.value("class_type").toString();
+            types << (type.startsWith("Roundtable") && type.endsWith("stash")
+                ? type + ":" + node.value("inputs").toObject().value("name").toString() : type);
+            // Every link resolves inside the pass.
+            const QJsonObject in = node.value("inputs").toObject();
+            for (auto i = in.begin(); i != in.end(); ++i) {
+                const QJsonArray link = i.value().toArray();
+                if (link.size() == 2 && link[0].isString())
+                    EXPECT_TRUE(pass.contains(link[0].toString())) << "pass " << k << " " << it.key().toStdString()
+                                                                   << "." << i.key().toStdString();
+            }
+        }
+        types.sort();
+        std::cout << "PASS " << k << " (" << h3StageName(k).toStdString() << "): "
+                  << types.join(", ").toStdString() << "\n";
+    }
+}

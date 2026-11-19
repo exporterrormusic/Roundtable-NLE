@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-COMFY = Path("F:/1_PROGRAMS/BERNINI/ComfyUI")
+COMFY = Path("F:/IMAGES/BERNINI/ComfyUI")
 sys.path.insert(0, str(COMFY))
 sys.argv = [sys.argv[0], "--cpu"]
 import comfy.options
@@ -60,6 +60,23 @@ class BatchTest(unittest.TestCase):
         np.testing.assert_array_equal(np.rint(actual[0].numpy() * 255).astype(np.uint8), expected)
         with self.assertRaises(ValueError):
             b.RoundtableAlphaRepair().repair(torch.zeros(1, 4, 4, 3))
+
+    def test_unmix_keeps_chroma_bled_hair_and_clears_green_holes(self):
+        import numpy as np
+        rgba = np.zeros((64, 64, 4), np.uint8)
+        rgba[...] = (0, 250, 0, 0)                      # screen ToonOut already cleared
+        rgba[:, 20:40] = (30, 30, 40, 255)              # body
+        rgba[10:20, 25:35] = (0, 245, 0, 255)           # green hole ToonOut kept
+        rgba[:, 44:46] = (0, 60, 0, 255)                # 4:2:0 hair strand: dark but green
+        frames = torch.from_numpy(rgba.astype(np.float32) / 255)[None]
+        clip, = b.RoundtableAlphaRepair().repair(frames)
+        unmix, = b.RoundtableAlphaRepair().repair(frames, edge_mode="unmix")
+        alpha = lambda out, y, x: round(float(out[0, y, x, 3]) * 255)
+        self.assertLess(alpha(clip, 30, 44), 80)        # the hard cut mostly loses the strand
+        self.assertGreater(alpha(unmix, 30, 44), 200)   # unmix keeps it
+        self.assertEqual(alpha(unmix, 15, 30), 0)       # and still clears the hole
+        self.assertEqual(alpha(unmix, 50, 30), 255)     # body untouched
+        self.assertLessEqual(float(unmix[0, 30, 44, 1]), float(unmix[0, 30, 44, 0:3:2].max()))  # despilled
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -163,6 +180,26 @@ class BatchTest(unittest.TestCase):
         for key in ("../outside", "C:/outside", "", "a" * 32 + "_../../x"):
             with self.assertRaises(ValueError):
                 b.job_dir(key)
+
+    def test_sweep_removes_leftovers_but_not_the_running_batch_or_kept_shots(self):
+        old, running = "a" * 32, "b" * 32
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(b.folder_paths, "get_output_directory", return_value=temporary):
+            base = self.root   # setUp points b.root() here; GAP checkpoints sit in the output folder
+            for name in (old + "_0", old + "_1", running + "_0", "references", "text"):
+                (base / name).mkdir(parents=True)
+                (base / name / "frames.pt").write_bytes(b"x")
+            checkpoint = Path(temporary) / "gap_scail2_cache" / ("rt_batch_" + old + "_0")
+            checkpoint.mkdir(parents=True)
+            self.assertTrue(b.mark_keep(old + "_1"))          # finished video, raw frames not archived
+            self.assertFalse(b.mark_keep("c" * 32 + "_0"))    # nothing there to keep
+            self.assertEqual(b.sweep(running), [old + "_0"])
+            self.assertFalse((base / (old + "_0")).exists())
+            self.assertFalse(checkpoint.exists())
+            for name in (old + "_1", running + "_0", "references", "text"):
+                self.assertTrue((base / name / "frames.pt").exists(), name)
+            with self.assertRaises(ValueError):
+                b.sweep("../outside")
 
     def test_disk_full_preserves_previous_artifact(self):
         path = self.root / "frames.pt"

@@ -17,10 +17,13 @@ namespace rt {
 inline QSettings appSettings()
 {
 #ifdef ROUNDTABLE_DEV_BUILD
-    return QSettings("ROUNDTABLE", "NLE-Dev");
+    constexpr auto application = "NLE-Dev";
 #else
-    return QSettings("ROUNDTABLE", "NLE");
+    constexpr auto application = "NLE";
 #endif
+    // UI tests select a temporary INI store. The two-name constructor
+    // always uses native settings, including the user's Windows registry.
+    return QSettings(QSettings::defaultFormat(), QSettings::UserScope, "ROUNDTABLE", application);
 }
 
 } // namespace rt

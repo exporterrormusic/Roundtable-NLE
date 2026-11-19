@@ -6,7 +6,9 @@
 #include <gtest/gtest.h>
 
 #include "AudioMixdown.h"
+#include "audio/AudioEngine.h"
 #include "Constants.h"
+#include "Settings.h"
 #include "ai/ScriptMatcher.h"
 #include "command/CommandStack.h"
 #include "effects/ChromaKey.h"
@@ -23,12 +25,17 @@
 #include "panels/audio/AudioSync.h"
 #include "panels/audio/VideoFrameGrabber.h"
 #include "panels/comfy/ComfyPanel.h"
+#include "widgets/VideoFrameView.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QTimer>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonDocument>
@@ -66,6 +73,7 @@ protected:
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
         QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsDir.path());
+        appSettings().setValue("ComfyUI/url", "http://127.0.0.1:1");
         if (!QApplication::instance())
             app = std::make_unique<QApplication>(g_argc, g_argv);
     }
@@ -193,6 +201,139 @@ QString row(const char* shot, const char* action, const char* text)
 }
 
 } // namespace
+
+TEST_F(ComfyPanelTest, PaintsTransparencyOntoEveryFrameOfANewRender)
+{
+    const QString ffmpeg = QCoreApplication::applicationDirPath() + "/ffmpeg.exe";
+    if (!QFileInfo::exists(ffmpeg)) GTEST_SKIP() << "bundled ffmpeg not available";
+    const QString source = dir.filePath("original.mkv");
+    ASSERT_EQ(QProcess::execute(ffmpeg, {"-loglevel", "error", "-f", "lavfi", "-i",
+        "color=red@0.5:s=128x72:r=4:d=1,format=yuva444p", "-f", "lavfi", "-i",
+        "sine=duration=1", "-c:v", "ffv1", "-c:a", "pcm_s16le", source}), 0);
+    AudioSync sync;
+    const QString html = "<html><body><table>" + row("SHOT", "ACTION", "SCRIPT")
+        + row("WIDE", "", "Mask me.") + "</table></body></html>";
+    ASSERT_TRUE(sync.loadScript(html.toStdString(), "comfy-mask-test"));
+    sync.attachGeneratedAudio(source, QString::fromLatin1(kShotScriptCharacter), "Mask me.", 1, "INTRO", 1.0);
+    ASSERT_EQ(sync.showShots().size(), 1u);
+    ASSERT_TRUE(sync.showShots().front().hasTake);
+    auto& shot = sync.pipeline().shots[sync.showShots().front().key];
+    shot.renders.push_back({source.toStdString()});
+    shot.renders.front().trimOut = 0.75;
+    ComfyPanel panel(&sync);
+    panel.show();
+    panel.refresh();
+    auto* group = panel.shotTree()->topLevelItem(0);
+    ASSERT_TRUE(group && group->child(0));
+    panel.shotTree()->setCurrentItem(group->child(0));
+    QTest::qWait(50); // lay out the rebuilt strip and dispose of old thumbnails
+    VideoFrameView* thumbnail = nullptr;
+    for (auto* view : panel.findChildren<VideoFrameView*>())
+        if (view->isVisible() && view->contextMenuPolicy() == Qt::CustomContextMenu) {
+            thumbnail = view;
+            break;
+        }
+    ASSERT_TRUE(thumbnail && thumbnail->isEnabled());
+    QTest::mouseClick(thumbnail, Qt::LeftButton);
+    QPushButton* paint = nullptr;
+    for (auto* b : panel.findChildren<QPushButton*>())
+        if (b->text().startsWith("Paint alpha mask")) paint = b;
+    ASSERT_TRUE(paint && paint->isVisible());
+    QTimer draw;
+    QObject::connect(&draw, &QTimer::timeout, [&] {
+        auto* dialog = QApplication::activeModalWidget();
+        auto* canvas = dialog ? dialog->findChild<QWidget*>("comfyMaskCanvas") : nullptr;
+        if (!canvas) return;
+        QTest::mouseClick(canvas, Qt::LeftButton, Qt::NoModifier, canvas->rect().center());
+        auto* save = dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save);
+        if (save->isEnabled()) { draw.stop(); save->click(); }
+    });
+    QTimer::singleShot(15000, &panel, [] {
+        if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget())) modal->reject();
+    });
+    draw.start(50);
+    paint->click();
+    ASSERT_EQ(shot.renders.size(), 2u);
+    const auto* cleaned = shot.activeRender();
+    ASSERT_TRUE(cleaned && cleaned != &shot.renders.front());
+    EXPECT_TRUE(QFileInfo::exists(source));
+    EXPECT_DOUBLE_EQ(cleaned->trimOut, 0.75);
+    QProcess decode;
+    decode.start(ffmpeg, {"-loglevel", "error", "-i", QString::fromStdString(cleaned->file),
+        "-map", "0:a:0", "-f", "null", "-", "-map", "0:v:0", "-vf", "alphaextract",
+        "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"});
+    ASSERT_TRUE(decode.waitForFinished());
+    ASSERT_EQ(decode.exitCode(), 0) << decode.readAllStandardError().constData();
+    const QByteArray alpha = decode.readAllStandardOutput();
+    ASSERT_EQ(alpha.size(), 4 * 128 * 72);
+    for (int frame = 0; frame < 4; ++frame) {
+        const int start = frame * 128 * 72;
+        EXPECT_EQ(alpha[start + 36 * 128 + 64], 0);
+        EXPECT_NEAR(static_cast<unsigned char>(alpha[start + 5]), 127, 1);
+    }
+}
+
+TEST_F(ComfyPanelTest, InputPreviewPlaysTheSelectedTakesAudio)
+{
+    AudioEngine engine;
+    if (!engine.initialize()) GTEST_SKIP() << "Audio output unavailable";
+    AudioSync sync;
+    sync.setAudioEngine(&engine);
+    const QString projectPath = qEnvironmentVariable("ROUNDTABLE_TEST_FRAMING_PROJECT");
+    if (!projectPath.isEmpty()) {
+        const auto project = ProjectSerializer{}.load(std::filesystem::path(projectPath.toStdWString()));
+        ASSERT_TRUE(project);
+        sync.deserializeFromBlob(project->audioSyncBlob());
+    } else {
+        const QString video = makeRender("preview-audio.mp4");
+        if (video.isEmpty()) GTEST_SKIP() << "bundled ffmpeg not available";
+        const QString html = "<html><body><table>" + row("SHOT", "ACTION", "SCRIPT")
+            + row("WIDE", "", "First line.") + "</table></body></html>";
+        ASSERT_TRUE(sync.loadScript(html.toStdString(), "preview-audio-test"));
+        sync.attachGeneratedAudio(video, QString::fromLatin1(kShotScriptCharacter), "First line.", 1, "INTRO", 2);
+    }
+    ComfyPanel panel(&sync);
+    panel.refresh();
+    auto* play = panel.findChild<QPushButton*>("comfyShotPlay");
+    ASSERT_TRUE(play && play->isEnabled());
+    play->click();
+    EXPECT_TRUE(QTest::qWaitFor([&]() { return engine.meter().peakL > 0.01f; }, 3000));
+    sync.stopTakeAudio();
+}
+
+TEST_F(ComfyPanelTest, H3ShowsFixed24FpsAndRestoresScailShotRate)
+{
+    const QString video = makeRender("fps.mp4");
+    if (video.isEmpty()) GTEST_SKIP() << "bundled ffmpeg not available";
+    AudioSync sync;
+    const QString html = "<html><body><table>" + row("SHOT", "ACTION", "SCRIPT")
+        + row("WIDE", "", "First line.") + "</table></body></html>";
+    ASSERT_TRUE(sync.loadScript(html.toStdString(), "comfy-fps-test"));
+    sync.attachGeneratedAudio(video, QString::fromLatin1(kShotScriptCharacter), "First line.", 1, "INTRO", 2.0);
+    const auto shots = sync.showShots();
+    ASSERT_EQ(shots.size(), 1u);
+    sync.pipeline().shots[shots[0].key].fps = 12;
+    ComfyPanel panel(&sync);
+    panel.refresh();
+    auto* engine = panel.findChild<QComboBox*>("comfyEngine");
+    auto* fps = panel.findChild<QComboBox*>("comfyShotFps");
+    ASSERT_TRUE(engine && fps);
+    engine->setCurrentIndex(engine->findData("scail"));
+    EXPECT_EQ(fps->currentData().toInt(), 12);
+    engine->setCurrentIndex(engine->findData("h3"));
+    EXPECT_EQ(fps->currentText(), "24 fps");
+    EXPECT_EQ(fps->count(), 1);
+    EXPECT_FALSE(fps->isEnabled());
+    panel.refresh();
+    EXPECT_EQ(fps->currentData().toInt(), 24);
+    ComfyPanel reopened(&sync);
+    reopened.refresh();
+    EXPECT_EQ(reopened.findChild<QComboBox*>("comfyShotFps")->currentData().toInt(), 24);
+    engine->setCurrentIndex(engine->findData("scail"));
+    EXPECT_TRUE(fps->isEnabled());
+    EXPECT_EQ(fps->count(), 2);
+    EXPECT_EQ(fps->currentData().toInt(), 12);
+}
 
 TEST_F(ComfyPanelTest, AssemblesChosenRendersOntoTheTimeline)
 {
@@ -624,6 +765,23 @@ TEST_F(ComfyPanelTest, UsableRenderSkipsDeletedFilesAndFallsBackToNewestOnDisk)
     QFile::remove(QString::fromStdString(a.file));
     QFile::remove(QString::fromStdString(b.file));
     EXPECT_EQ(ComfyPanel::usableRender(s), nullptr);
+}
+
+TEST_F(ComfyPanelTest, RepeatedScriptLinesAreSeparateShots)
+{
+    AudioSync sync;
+    const QString html = "<html><body><table>" + row("SHOT", "ACTION", "SCRIPT")
+        + row("WIDE", "", "Yeah.") + row("CLOSE-UP", "", "Something else.") + row("CLOSE-UP", "", "Yeah.")
+        + "</table></body></html>";
+    ASSERT_TRUE(sync.loadScript(html.toStdString(), "comfy-repeat-test"));
+    const auto shots = sync.showShots();
+    ASSERT_EQ(shots.size(), 3u);
+    // The first keeps the plain key (projects saved before this), the repeat gets its own.
+    EXPECT_EQ(shots[0].key, ScriptMatcher::normalize("Yeah."));
+    EXPECT_NE(shots[2].key, shots[0].key);
+    EXPECT_NE(shots[2].key, shots[1].key);
+    sync.pipeline().shots[shots[0].key].review = ShotReview::Approved;
+    EXPECT_EQ(sync.pipeline().shots[shots[2].key].review, ShotReview::Unreviewed);
 }
 
 TEST_F(ComfyPanelTest, ReviewCheckboxesAreExclusiveAndRenderAllCountsMissingAndRetakes)

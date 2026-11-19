@@ -26,6 +26,10 @@ QString downloadedCharacterAssetsDir();
 /// Find an existing character directory, preferring the writable user copy.
 QString findCharacterDirectory(const QString& characterName);
 
+/// "Show in folder": open Explorer with `path` highlighted. If the file is
+/// gone, open the folder it was in (when that still exists).
+void revealInExplorer(const QString& path);
+
 /// Rebuild a catalog from legacy install-local and per-user character assets.
 void rescanCharacterModels(ModelManager* modelManager);
 

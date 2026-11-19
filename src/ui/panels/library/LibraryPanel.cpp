@@ -2,6 +2,7 @@
  * LibraryPanel.cpp — tabbed reusable-asset browser implementation.
  */
 
+#include "QtHelpers.h"
 #include "panels/library/LibraryPanel.h"
 #include "panels/backgrounds/BackgroundDownloadPanel.h"
 #include "panels/characters/CharactersPanel.h"
@@ -601,8 +602,7 @@ void LibraryPanel::setupContextMenu(MediaDragTreeWidget* tree, const QString& fi
             QFileInfo fi(oldPath);
             if (fi.exists()) {
 #ifdef _WIN32
-                QProcess::startDetached("explorer.exe",
-                    {"/select,", QDir::toNativeSeparators(fi.absoluteFilePath())});
+                rt::revealInExplorer(QDir::toNativeSeparators(fi.absoluteFilePath()));
 #else
                 QDesktopServices::openUrl(QUrl::fromLocalFile(fi.absolutePath()));
 #endif

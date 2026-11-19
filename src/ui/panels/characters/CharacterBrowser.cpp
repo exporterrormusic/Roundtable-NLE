@@ -1218,8 +1218,7 @@ void CharacterBrowser::onContextMenu(const QPoint& pos)
                 } else {
                     selectPath = QDir::toNativeSeparators(charDir);
                 }
-                QProcess::startDetached("explorer.exe",
-                    {"/select,", selectPath});
+                rt::revealInExplorer(selectPath);
             } else {
                 QString baseDir = QDir(rt::downloadedCharacterAssetsDir())
                                       .filePath(QStringLiteral("characters"));

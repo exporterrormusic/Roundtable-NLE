@@ -34,6 +34,8 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <string>
+#include <unordered_map>
 
 namespace rt {
 
@@ -507,6 +509,9 @@ std::vector<ShowShot> AudioSync::showShots() const
     std::vector<ShowShot> out;
     if (!isShotScript()) return out;
     out.reserve(session().script->lines.size());
+    // A line repeated in the script ("Yeah." twice) is a separate shot: the
+    // first keeps the plain key (saved projects), later ones get "#2", "#3".
+    std::unordered_map<std::string, int> seenKeys;
     for (const auto& line : session().script->lines) {
         ShowShot s;
         s.lineNumber = line.lineNumber;
@@ -515,6 +520,7 @@ std::vector<ShowShot> AudioSync::showShots() const
         s.segment    = line.segment;
         s.shot       = effectiveShot(line);
         s.key        = ScriptMatcher::normalize(line.dialogue);
+        if (const int n = ++seenKeys[s.key]; n > 1) s.key += " #" + std::to_string(n);
         for (const auto& clip : session().clips) {
             if (clip.scriptLineNumber == line.lineNumber && clip.matchState == 2) {
                 s.hasTake = true;

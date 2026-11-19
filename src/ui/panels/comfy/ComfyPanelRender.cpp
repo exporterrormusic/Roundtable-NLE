@@ -6,7 +6,7 @@
 #include "threading/ThreadRegistry.h"
 #include "panels/comfy/ComfyPanel.h"
 
-#include "panels/audio/AudioSync.h"
+#include "panels/audio/ShowSession.h"
 #include "panels/audio/VideoFrameGrabber.h"
 #include "panels/comfy/ComfyRunner.h"
 #include "widgets/VideoFrameView.h"
@@ -14,6 +14,7 @@
 #include "Theme.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
@@ -60,30 +61,13 @@ namespace {
 
 constexpr const char* kUrlKey      = "ComfyUI/url";
 constexpr const char* kLauncherKey = "ComfyUI/launcher";
+constexpr const char* kEngineKey   = "ComfyUI/engine";        // "scail" | "h3"
+constexpr const char* kH3WorkflowKey = "ComfyUI/h3Workflow";
+constexpr const char* kScailWorkflowKey = "ComfyUI/scailWorkflow";
+constexpr const char* kH3LauncherKey = "ComfyUI/h3Launcher";
 constexpr const char* kSplitterKey = "ComfyUI/renderSplitter";
 
 enum QueueColumn { QOrder, QShot, QLine, QFps, QTry, QStatus, QOutput, QCount };
-
-QString renderLabelStyle()
-{
-    return QString("QLabel { color: %1; }").arg(Theme::hex(Theme::colors().textSecondary));
-}
-
-QString renderButtonStyle(bool primary)
-{
-    const auto& tc = Theme::colors();
-    return QString("QPushButton { background: %1; color: %2; border: 1px solid %3; border-radius: %4px;"
-                   " padding: 6px 14px; font-weight: %5; }"
-                   "QPushButton:hover { background: %6; }"
-                   "QPushButton:disabled { color: %7; }")
-        .arg(Theme::hex(primary ? tc.primaryBtnBg : tc.surface2),
-             Theme::hex(primary ? tc.textBright : tc.textPrimary),
-             Theme::hex(primary ? tc.primaryBtnBg : tc.controlBorder))
-        .arg(Theme::metrics().radiusSm)
-        .arg(primary ? 700 : 500)
-        .arg(Theme::hex(primary ? tc.primaryBtnHover : tc.surface3),
-             Theme::hex(tc.textDisabled));
-}
 
 /// dev_defaults/comfy/ folder above the running roundtable.exe, or empty.
 QString devDefaultsDir()
@@ -99,12 +83,6 @@ QString devDefaultsDir()
         if (!dir.cdUp()) break;
     }
     return {};
-}
-
-QString settingsSectionStyle()
-{
-    return QString("QLabel { color: %1; font-weight: 800; letter-spacing: 1px; padding-top: 6px; }")
-        .arg(Theme::hex(Theme::colors().accent));
 }
 
 QString shotTag(const std::string& shot)
@@ -132,11 +110,11 @@ QWidget* ComfyPanel::setupSettingsPage()
     int row = 0;
     auto section = [&](const QString& title, const QString& note) {
         auto* t = new QLabel(title);
-        t->setStyleSheet(settingsSectionStyle());
+        t->setProperty("labelRole", "section");
         grid->addWidget(t, row, 0, 1, 2);
         if (!note.isEmpty()) {
             auto* n = new QLabel(note);
-            n->setStyleSheet(renderLabelStyle());
+            n->setProperty("labelRole", "secondary");
             n->setWordWrap(true);
             grid->addWidget(n, row, 2, 1, 5);
         }
@@ -144,7 +122,7 @@ QWidget* ComfyPanel::setupSettingsPage()
     };
     auto label = [&](const QString& text, int r, int c) {
         auto* l = new QLabel(text);
-        l->setStyleSheet(renderLabelStyle());
+        l->setProperty("labelRole", "secondary");
         grid->addWidget(l, r, c);
     };
     auto pathRow = [&](const QString& text, QLineEdit*& edit, int r, int c, const QString& filter,
@@ -156,7 +134,6 @@ QWidget* ComfyPanel::setupSettingsPage()
         grid->addWidget(e, r, c + 1);
         auto* browse = new QPushButton(QStringLiteral("…"));
         browse->setFixedWidth(32);
-        browse->setStyleSheet(renderButtonStyle(false));
         connect(browse, &QPushButton::clicked, this, [this, e, filter, onSet, text]() {
             const QString start = e->text().isEmpty() ? QString() : QFileInfo(e->text()).absolutePath();
             const QString f = QFileDialog::getOpenFileName(this, text, start, filter);
@@ -178,20 +155,42 @@ QWidget* ComfyPanel::setupSettingsPage()
     });
     grid->addWidget(m_urlEdit, row, 1);
     pathRow(QStringLiteral("Launcher (.bat)"), m_launcherEdit, row, 3, QStringLiteral("Batch files (*.bat *.cmd)"),
-            [](const QString& p) { appSettings().setValue(kLauncherKey, p); });
+            [this](const QString& p) { appSettings().setValue(h3Selected() ? kH3LauncherKey : kLauncherKey, p); });
+    ++row;
+    label(QStringLiteral("Engine"), row, 0);
+    m_engineCombo = new QComboBox;
+    m_engineCombo->setObjectName(QStringLiteral("comfyEngine"));
+    m_engineCombo->addItem(QStringLiteral("SCAIL"), QStringLiteral("scail"));
+    m_engineCombo->addItem(QStringLiteral("MiniMax H3 swap"), QStringLiteral("h3"));
+    m_engineCombo->setToolTip(QStringLiteral(
+        "SCAIL draws the character from scratch on green.\n"
+        "MiniMax H3 swap (Openjutsu) tracks the person and redraws only them, following their exact "
+        "outline; it renders at 24 fps. Each engine keeps its own workflow and launcher."));
+    connect(m_engineCombo, &QComboBox::currentIndexChanged, this, [this]() {
+        if (m_updatingControls) return;
+        appSettings().setValue(kEngineKey, m_engineCombo->currentData().toString());
+        m_workflowLoadedFrom.clear();
+        refreshRenderPage();
+        // Frame counts and the fps control follow the engine.
+        for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) updateShotRow(i);
+        loadFramingForSelection();
+        const QString url = m_urlEdit->text().trimmed();
+        m_runner->launchServer(url.isEmpty() ? m_urlEdit->placeholderText() : url, m_launcherEdit->text().trimmed(),
+                               appSettings().value(h3Selected() ? kLauncherKey : kH3LauncherKey).toString(), true);
+    });
+    grid->addWidget(m_engineCombo, row, 1);
     auto* serverRow = new QHBoxLayout;
     auto* startServerBtn = new QPushButton(QStringLiteral("Start ComfyUI now"));
-    startServerBtn->setStyleSheet(renderButtonStyle(false));
     startServerBtn->setToolTip(QStringLiteral("Optional: warm ComfyUI up before rendering."));
     connect(startServerBtn, &QPushButton::clicked, this, [this]() {
         const QString url = m_urlEdit->text().trimmed().isEmpty() ? m_urlEdit->placeholderText()
                                                                   : m_urlEdit->text().trimmed();
         showPage(kPageQueue);
-        m_runner->launchServer(url, m_launcherEdit->text().trimmed());
+        m_runner->launchServer(url, m_launcherEdit->text().trimmed(),
+                               appSettings().value(h3Selected() ? kLauncherKey : kH3LauncherKey).toString());
     });
     serverRow->addWidget(startServerBtn);
     auto* openUiBtn = new QPushButton(QStringLiteral("Open ComfyUI in browser"));
-    openUiBtn->setStyleSheet(renderButtonStyle(false));
     openUiBtn->setToolTip(QStringLiteral("ComfyUI's own editor (only when you click this)."));
     connect(openUiBtn, &QPushButton::clicked, this, [this]() {
         const QString url = m_urlEdit->text().trimmed().isEmpty() ? m_urlEdit->placeholderText()
@@ -206,10 +205,11 @@ QWidget* ComfyPanel::setupSettingsPage()
 
     // ── Workflow + what goes into it ───────────────────────────────────
     section(QStringLiteral("WORKFLOW"),
-            QStringLiteral("The SCAIL workflow and the inputs RENDER fills in for every shot."));
+            QStringLiteral("The engine's workflow and the inputs RENDER fills in for every shot."));
     pathRow(QStringLiteral("Workflow"), m_workflowEdit, row, 0, QStringLiteral("ComfyUI workflow (*.json)"),
             [this](const QString& p) {
-                m_audioSync->pipeline().workflowFile = p.toStdString();
+                if (h3Selected()) appSettings().setValue(kH3WorkflowKey, p);
+                else appSettings().setValue(kScailWorkflowKey, p);
                 m_workflowLoadedFrom.clear();
                 refreshRenderPage();
             });
@@ -219,9 +219,9 @@ QWidget* ComfyPanel::setupSettingsPage()
     ++row;
     const QString imgFilter = QStringLiteral("Images (*.png *.jpg *.jpeg *.webp)");
     pathRow(QStringLiteral("WIDE reference"), m_wideRefEdit, row, 0, imgFilter,
-            [this](const QString& p) { m_audioSync->pipeline().wideReferenceImage = p.toStdString(); });
+            [this](const QString& p) { m_show->pipeline().wideReferenceImage = p.toStdString(); });
     pathRow(QStringLiteral("CLOSE-UP reference"), m_closeRefEdit, row, 3, imgFilter,
-            [this](const QString& p) { m_audioSync->pipeline().closeUpReferenceImage = p.toStdString(); });
+            [this](const QString& p) { m_show->pipeline().closeUpReferenceImage = p.toStdString(); });
     ++row;
     label(QStringLiteral("Default expression"), row, 0);
     m_defaultExprEdit = new QLineEdit;
@@ -229,7 +229,7 @@ QWidget* ComfyPanel::setupSettingsPage()
         "Used when a shot has no expression of its own and no ACTION text in the script. "
         "Empty = the workflow's \"5. FACIAL EXPRESSION\"."));
     connect(m_defaultExprEdit, &QLineEdit::editingFinished, this, [this]() {
-        m_audioSync->pipeline().defaultExpression = m_defaultExprEdit->text().trimmed().toStdString();
+        m_show->pipeline().defaultExpression = m_defaultExprEdit->text().trimmed().toStdString();
     });
     grid->addWidget(m_defaultExprEdit, row, 1, 1, 6);
     ++row;
@@ -239,7 +239,7 @@ QWidget* ComfyPanel::setupSettingsPage()
     m_seedEdit->setToolTip(QStringLiteral("Same seed for every shot. Empty = the workflow's own seed."));
     connect(m_seedEdit, &QLineEdit::editingFinished, this, [this]() {
         const QString t = m_seedEdit->text().trimmed();
-        m_audioSync->pipeline().seed = t.isEmpty() ? -1 : t.toLongLong();
+        m_show->pipeline().seed = t.isEmpty() ? -1 : t.toLongLong();
     });
     grid->addWidget(m_seedEdit, row, 1);
     label(QStringLiteral("Frame limit @16 fps"), row, 3);
@@ -250,7 +250,7 @@ QWidget* ComfyPanel::setupSettingsPage()
         "Before rendering, shots that would render more frames than this at 16 fps are listed "
         "so you can switch them to 12 fps."));
     connect(m_frameLimitSpin, &QSpinBox::valueChanged, this, [this](int value) {
-        if (!m_updatingControls) m_audioSync->pipeline().frameCapThreshold = value;
+        if (!m_updatingControls) m_show->pipeline().frameCapThreshold = value;
     });
     grid->addWidget(m_frameLimitSpin, row, 4);
     ++row;
@@ -263,22 +263,20 @@ QWidget* ComfyPanel::setupSettingsPage()
     auto* folderRow = new QHBoxLayout;
     m_outputDirEdit = new QLineEdit;
     connect(m_outputDirEdit, &QLineEdit::editingFinished, this, [this]() {
-        m_audioSync->pipeline().outputDir = m_outputDirEdit->text().trimmed().toStdString();
+        m_show->pipeline().outputDir = m_outputDirEdit->text().trimmed().toStdString();
     });
     folderRow->addWidget(m_outputDirEdit, 1);
     auto* browse = new QPushButton(QStringLiteral("…"));
     browse->setFixedWidth(32);
-    browse->setStyleSheet(renderButtonStyle(false));
     connect(browse, &QPushButton::clicked, this, [this]() {
         const QString start = m_outputDirEdit->text().isEmpty() ? defaultOutputDir() : m_outputDirEdit->text();
         const QString dir = QFileDialog::getExistingDirectory(this, QStringLiteral("Shot folder"), start);
         if (dir.isEmpty()) return;
         m_outputDirEdit->setText(dir);
-        m_audioSync->pipeline().outputDir = dir.toStdString();
+        m_show->pipeline().outputDir = dir.toStdString();
     });
     folderRow->addWidget(browse);
     auto* openFolderBtn = new QPushButton(QStringLiteral("Open folder"));
-    openFolderBtn->setStyleSheet(renderButtonStyle(false));
     connect(openFolderBtn, &QPushButton::clicked, this, [this]() {
         const QString dir = m_outputDirEdit->text().isEmpty() ? defaultOutputDir() : m_outputDirEdit->text();
         if (QDir(dir).exists()) QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
@@ -295,7 +293,7 @@ QWidget* ComfyPanel::setupSettingsPage()
         "on the timeline. 0 = none. A shot can override it on the SHOTS page."));
     connect(m_defaultPadSpin, &QSpinBox::valueChanged, this, [this](int v) {
         if (m_updatingControls) return;
-        m_audioSync->pipeline().defaultPadFrames = v;
+        m_show->pipeline().defaultPadFrames = v;
         for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) updateShotRow(i);
     });
     grid->addWidget(m_defaultPadSpin, row, 1);
@@ -306,7 +304,7 @@ QWidget* ComfyPanel::setupSettingsPage()
             QStringLiteral("Used by ASSEMBLE ON TIMELINE."));
     pathRow(QStringLiteral("Background"), m_backgroundEdit, row, 0,
             QStringLiteral("Video or image (*.mp4 *.mov *.mkv *.webm *.png *.jpg *.jpeg);;All files (*)"),
-            [this](const QString& p) { m_audioSync->pipeline().background = p.toStdString(); });
+            [this](const QString& p) { m_show->pipeline().background = p.toStdString(); });
     m_backgroundEdit->setPlaceholderText(QStringLiteral("video or image under every shot"));
     ++row;
     label(QStringLiteral("CLOSE-UP zoom"), row, 0);
@@ -320,7 +318,7 @@ QWidget* ComfyPanel::setupSettingsPage()
         "How far the background zooms in under CLOSE-UP shots (it stays full size under WIDE). "
         "Auto = the recording's CLOSE-UP scale ÷ WIDE scale (e.g. 90% ÷ 50% = 1.8×)."));
     connect(m_cuZoomSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-        if (!m_updatingControls) m_audioSync->pipeline().closeUpBackgroundZoom = v;
+        if (!m_updatingControls) m_show->pipeline().closeUpBackgroundZoom = v;
     });
     grid->addWidget(m_cuZoomSpin, row, 1);
     label(QStringLiteral("Stinger gap"), row, 3);
@@ -332,7 +330,7 @@ QWidget* ComfyPanel::setupSettingsPage()
     m_gapSpin->setToolTip(QStringLiteral("Gap left before each segment (STORY, SKINS, …) for its stinger; "
                                          "a marker names each segment."));
     connect(m_gapSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-        if (!m_updatingControls) m_audioSync->pipeline().segmentGapSec = v;
+        if (!m_updatingControls) m_show->pipeline().segmentGapSec = v;
     });
     grid->addWidget(m_gapSpin, row, 4);
     ++row;
@@ -352,10 +350,10 @@ QWidget* ComfyPanel::setupSettingsPage()
                                        "960, 540 is centred. WIDE shots always stay centred at 100%."));
     }
     connect(m_cuBackgroundXSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-        if (!m_updatingControls) m_audioSync->pipeline().closeUpBackgroundOffsetX = v - 960.0;
+        if (!m_updatingControls) m_show->pipeline().closeUpBackgroundOffsetX = v - 960.0;
     });
     connect(m_cuBackgroundYSpin, &QDoubleSpinBox::valueChanged, this, [this](double v) {
-        if (!m_updatingControls) m_audioSync->pipeline().closeUpBackgroundOffsetY = v - 540.0;
+        if (!m_updatingControls) m_show->pipeline().closeUpBackgroundOffsetY = v - 540.0;
     });
     grid->addWidget(m_cuBackgroundXSpin, row, 1);
     grid->addWidget(m_cuBackgroundYSpin, row, 4);
@@ -363,7 +361,7 @@ QWidget* ComfyPanel::setupSettingsPage()
 
     pathRow(QStringLiteral("Timeline template"), m_timelineTemplateEdit, row, 0,
             QStringLiteral("Timeline assembly template (*.json)"),
-            [this](const QString& p) { m_audioSync->pipeline().timelineTemplate = p.toStdString(); });
+            [this](const QString& p) { m_show->pipeline().timelineTemplate = p.toStdString(); });
     m_timelineTemplateEdit->setObjectName(QStringLiteral("comfyTimelineTemplate"));
     m_timelineTemplateEdit->setPlaceholderText(QStringLiteral("Optional: character framing, stingers, music and overlays"));
     m_gapSpin->setToolTip(QStringLiteral("Gap between segments when no timeline template is selected. "
@@ -385,6 +383,52 @@ QWidget* ComfyPanel::setupQueuePage()
     m_queueTable->verticalHeader()->setVisible(false);
     m_queueTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_queueTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_queueTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    // Remove shots from the queue: right-click or Delete.
+    auto removeSelected = [this]() {
+        if (!m_runner) return;
+        std::vector<int> rows;
+        for (const QModelIndex& index : m_queueTable->selectionModel()->selectedRows())
+            rows.push_back(index.row());
+        if (rows.empty()) return;
+        const int removed = m_runner->remove(rows);
+        if (removed < static_cast<int>(rows.size()))
+            m_renderStatus->setText(QStringLiteral("The shot rendering now stays — right-click it and choose Stop this render."));
+        m_queueTable->clearSelection();
+        for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) updateShotRow(i);   // clear QUEUED
+        updateRenderButtons();
+    };
+    auto* removeAction = new QAction(QStringLiteral("Remove from queue"), m_queueTable);
+    removeAction->setShortcuts({QKeySequence::Delete, QKeySequence(Qt::Key_Backspace)});
+    removeAction->setShortcutContext(Qt::WidgetShortcut);
+    connect(removeAction, &QAction::triggered, this, removeSelected);
+    m_queueTable->addAction(removeAction);
+    m_queueTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_queueTable, &QWidget::customContextMenuRequested, this, [this, removeAction](const QPoint& pos) {
+        if (const QModelIndex at = m_queueTable->indexAt(pos);
+            at.isValid() && !m_queueTable->selectionModel()->isRowSelected(at.row(), {}))
+            m_queueTable->selectRow(at.row());
+        if (m_queueTable->selectionModel()->selectedRows().isEmpty()) return;
+        QMenu menu(m_queueTable);
+        // Stop only the shot rendering now; the rest of the queue carries on.
+        const int running = m_runner ? m_runner->runningIndex() : -1;
+        if (running >= 0 && m_queueTable->selectionModel()->isRowSelected(running, {})) {
+            QAction* stopShot = menu.addAction(QStringLiteral("Stop this render"));
+            stopShot->setToolTip(QStringLiteral("Interrupt this shot in ComfyUI and go on with the rest of the queue."));
+            connect(stopShot, &QAction::triggered, this, [this]() {
+                if (!m_runner || !m_runner->cancelCurrent()) return;
+                for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) updateShotRow(i);
+                updateRenderButtons();
+            });
+        }
+        if (m_runner && m_runner->isRunning()) {
+            QAction* stopAll = menu.addAction(QStringLiteral("Stop all renders"));
+            connect(stopAll, &QAction::triggered, m_stopRenderBtn, &QPushButton::click);
+            menu.addSeparator();
+        }
+        menu.addAction(removeAction);
+        menu.exec(m_queueTable->viewport()->mapToGlobal(pos));
+    });
     auto* queueHeader = m_queueTable->horizontalHeader();
     for (auto [col, width] : {std::pair{QOrder, 36}, {QShot, 80}, {QLine, 300}, {QFps, 44},
                               {QTry, 40}, {QStatus, 200}})
@@ -411,7 +455,7 @@ QWidget* ComfyPanel::setupQueuePage()
     pv->setContentsMargins(0, 0, 0, 0);
     pv->setSpacing(2);
     m_livePreviewLabel = new QLabel(QStringLiteral("LIVE PREVIEW — appears while a shot renders"));
-    m_livePreviewLabel->setStyleSheet(renderLabelStyle());
+    m_livePreviewLabel->setProperty("labelRole", "secondary");
     pv->addWidget(m_livePreviewLabel);
     m_livePreview = new VideoFrameView;
     m_livePreview->setMinimumSize(160, 90);
@@ -450,7 +494,7 @@ QWidget* ComfyPanel::setupActionBar()
     h->setSpacing(8);
 
     m_renderAllBtn = new QPushButton(QStringLiteral("RENDER ALL"));
-    m_renderAllBtn->setStyleSheet(renderButtonStyle(true));
+    m_renderAllBtn->setProperty("buttonRole", "primary");
     m_renderAllBtn->setToolTip(QStringLiteral(
         "Render shots with no video on disk and shots marked Retake, using fresh seeds. "
         "Approved renders and renders awaiting review are kept. "
@@ -461,11 +505,7 @@ QWidget* ComfyPanel::setupActionBar()
         startRender(all, /*includeRendered=*/false, /*freshSeeds=*/true);
     });
     h->addWidget(m_renderAllBtn);
-    auto* renderScope = new QLabel(QStringLiteral("Unrendered + retakes · new seeds"));
-    renderScope->setStyleSheet(renderLabelStyle());
-    h->addWidget(renderScope);
     m_stopRenderBtn = new QPushButton(QStringLiteral("Stop"));
-    m_stopRenderBtn->setStyleSheet(renderButtonStyle(false));
     connect(m_stopRenderBtn, &QPushButton::clicked, this, [this]() {
         if (m_ffmpeg) {                // still preparing shots
             m_exportCancelled = true;
@@ -482,11 +522,11 @@ QWidget* ComfyPanel::setupActionBar()
     m_progress->setVisible(false);
     h->addWidget(m_progress);
     m_renderStatus = new QLabel;
-    m_renderStatus->setStyleSheet(renderLabelStyle());
+    m_renderStatus->setProperty("labelRole", "secondary");
     h->addWidget(m_renderStatus, 1);
 
     m_assembleBtn = new QPushButton(QStringLiteral("ASSEMBLE ON TIMELINE"));
-    m_assembleBtn->setStyleSheet(renderButtonStyle(true));
+    m_assembleBtn->setProperty("buttonRole", "primary");
     m_assembleBtn->setToolTip(QStringLiteral(
         "Put the chosen render of every shot on a sequence in script order: tail pad trimmed, "
         "keyed with a fresh background for each shot. A timeline template also adds character framing, "
@@ -499,6 +539,7 @@ QWidget* ComfyPanel::setupActionBar()
 void ComfyPanel::setupRunner()
 {
     m_runner = new ComfyRunner(this);
+    connect(m_runner, &ComfyRunner::serverStartupChanged, this, &ComfyPanel::updateRenderButtons);
     connect(m_runner, &ComfyRunner::log, this, &ComfyPanel::appendLog);
     connect(m_runner, &ComfyRunner::serverOutput, this, &ComfyPanel::appendServerLine);
     connect(m_runner, &ComfyRunner::jobChanged, this, [this](int jobIndex) {
@@ -522,7 +563,7 @@ void ComfyPanel::setupRunner()
         rv.fps = job.fpsUsed;
         rv.tailPadSec = job.tailPadSec;
         rv.renderedAt = QDateTime::currentSecsSinceEpoch();
-        auto& settings = m_audioSync->pipeline().shots[m_jobShotKeys[static_cast<size_t>(index)]];
+        auto& settings = m_show->pipeline().shots[m_jobShotKeys[static_cast<size_t>(index)]];
         // A file name freed by a deletion can be reused: drop stale records of it.
         settings.renders.erase(std::remove_if(settings.renders.begin(), settings.renders.end(),
                                               [&](const RenderVersion& r) { return r.file == rv.file; }),
@@ -537,6 +578,7 @@ void ComfyPanel::setupRunner()
             if (i == m_selected) loadFramingForSelection();   // new render in the USE RENDER list
         }
         updateExportSummary();
+        emit renderRecorded();
     });
     connect(m_runner, &ComfyRunner::finished, this, [this](int done, int failed, bool stopped) {
         m_renderStatus->setText(QString("%1 · %2 rendered · %3 failed")
@@ -666,38 +708,72 @@ void ComfyPanel::updateRenderButtons()
 {
     // Busy = preparing shots (ffmpeg) or rendering (ComfyUI).
     const bool running = (m_runner && m_runner->isRunning()) || m_ffmpeg;
-    if (m_renderAllBtn) m_renderAllBtn->setEnabled(!running);
+    const bool starting = m_runner && m_runner->isStartingServer();
+    if (m_engineCombo) m_engineCombo->setEnabled(!running && !starting);
+    if (m_renderAllBtn) m_renderAllBtn->setEnabled(!running && !starting);
     if (m_stopRenderBtn) m_stopRenderBtn->setEnabled(running);
+}
+
+bool ComfyPanel::h3Selected() const
+{
+    return appSettings().value(kEngineKey).toString() == QLatin1String("h3");
+}
+
+QString ComfyPanel::workflowPath() const
+{
+    if (h3Selected()) return appSettings().value(kH3WorkflowKey).toString();
+    // Per computer, like H3. Until one is set here, a project saved before
+    // this (or the local dev defaults) still supplies its own SCAIL workflow.
+    const QString machine = appSettings().value(kScailWorkflowKey).toString();
+    return !machine.isEmpty() ? machine : QString::fromStdString(m_show->pipeline().workflowFile);
 }
 
 bool ComfyPanel::loadWorkflow(QString* error)
 {
-    const QString path = QString::fromStdString(m_audioSync->pipeline().workflowFile);
+    const QString path = workflowPath();
     if (path.isEmpty()) {
         if (error) *error = QStringLiteral("Choose the ComfyUI workflow (.json) on the SETTINGS page first.");
         return false;
     }
+    // Same file as last time (path, size, modified time): keep what is loaded
+    // instead of parsing it again on every page show.
+    const QFileInfo info(path);
+    const qint64 size = info.size();
+    const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
+    if (path == m_workflowLoadedFrom && info.exists() && size == m_workflowLoadedSize &&
+        mtime == m_workflowLoadedMtime && !m_workflowPrompt.isEmpty())
+        return true;
+    m_workflowLoadedFrom.clear();
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         if (error) *error = QStringLiteral("Cannot read %1").arg(path);
         return false;
     }
     const QJsonObject ui = QJsonDocument::fromJson(f.readAll()).object();
-    const auto result = comfy::convertUiWorkflow(ui);
+    const auto result = comfy::convertWorkflow(ui);
     if (!result.ok()) {
         if (error) *error = result.error;
         return false;
     }
-    m_workflowUi = ui;
+    if ((result.targets.engine == comfy::Engine::H3) != h3Selected()) {
+        if (error) *error = h3Selected()
+            ? QStringLiteral("Not an H3 swap workflow: choose Openjutsu's simple.api.json (API format with a Swap Plan).")
+            : QStringLiteral("This is an H3 swap workflow: switch Engine to MiniMax H3 swap, or choose the SCAIL workflow.");
+        return false;
+    }
+    // Only the editor format is sent back as extra_pnginfo.
+    m_workflowUi = ui.contains(QLatin1String("nodes")) ? ui : QJsonObject();
     m_workflowPrompt = result.prompt;
     m_workflowTargets = result.targets;
     m_workflowLoadedFrom = path;
+    m_workflowLoadedSize = size;
+    m_workflowLoadedMtime = mtime;
     return true;
 }
 
 void ComfyPanel::applyDevDefaults()
 {
-    if (!m_audioSync) return;
+    if (!m_show) return;
     const QString dir = devDefaultsDir();
     if (dir.isEmpty()) return;
     QFile f(dir + QStringLiteral("/comfy_defaults.json"));
@@ -709,7 +785,7 @@ void ComfyPanel::applyDevDefaults()
         const QString abs = QDir::isAbsolutePath(v) ? v : QDir(dir).absoluteFilePath(v);
         return QFileInfo::exists(abs) ? QDir::toNativeSeparators(abs).toStdString() : std::string{};
     };
-    auto& state = m_audioSync->pipeline();
+    auto& state = m_show->pipeline();
     auto fill = [](std::string& field, const std::string& value) {
         if (field.empty() && !value.empty()) field = value;
     };
@@ -732,22 +808,27 @@ void ComfyPanel::applyDevDefaults()
         state.backgroundFramingRevision = static_cast<uint32_t>(revision);
     }
     auto settings = appSettings();
-    if (settings.value(kLauncherKey).toString().isEmpty()) {
-        const std::string launcher = pathOf("launcher");
-        if (!launcher.empty()) settings.setValue(kLauncherKey, QString::fromStdString(launcher));
+    for (auto [key, field] : {std::pair{kLauncherKey, "launcher"}, {kH3LauncherKey, "h3Launcher"},
+                             {kH3WorkflowKey, "h3Workflow"}}) {
+        if (!settings.value(key).toString().isEmpty()) continue;
+        const std::string path = pathOf(field);
+        if (!path.empty()) settings.setValue(key, QString::fromStdString(path));
     }
 }
 
 void ComfyPanel::refreshRenderPage()
 {
-    if (!m_audioSync || !m_urlEdit) return;
+    if (!m_show || !m_urlEdit) return;
     applyDevDefaults();
-    const auto& state = m_audioSync->pipeline();
+    const auto& state = m_show->pipeline();
     auto settings = appSettings();
     m_updatingControls = true;
     m_urlEdit->setText(settings.value(kUrlKey).toString());
-    m_launcherEdit->setText(settings.value(kLauncherKey).toString());
-    m_workflowEdit->setText(QString::fromStdString(state.workflowFile));
+    const bool h3 = h3Selected();
+    m_engineCombo->setCurrentIndex(h3 ? 1 : 0);
+    m_launcherEdit->setText(settings.value(h3 ? kH3LauncherKey : kLauncherKey).toString());
+    m_workflowEdit->setText(QDir::toNativeSeparators(workflowPath()));
+    m_frameLimitSpin->setEnabled(!h3);   // H3 always renders 24 fps
     m_wideRefEdit->setText(QString::fromStdString(state.wideReferenceImage));
     m_closeRefEdit->setText(QString::fromStdString(state.closeUpReferenceImage));
     m_seedEdit->setText(state.seed >= 0 ? QString::number(state.seed) : QString());
@@ -763,8 +844,9 @@ void ComfyPanel::refreshRenderPage()
 
     const auto& tc = Theme::colors();
     QString error;
-    if (state.workflowFile.empty()) {
-        m_workflowStatus->setText(QStringLiteral("Choose the SCAIL workflow (e.g. SCAIL 2 FINAL V10.json)."));
+    if (workflowPath().isEmpty()) {
+        m_workflowStatus->setText(h3 ? QStringLiteral("Choose the H3 swap workflow (Openjutsu's workflows/simple.api.json).")
+                                     : QStringLiteral("Choose the SCAIL workflow (e.g. SCAIL 2 FINAL V10.json)."));
         m_workflowStatus->setStyleSheet(QString("QLabel { color: %1; }").arg(Theme::hex(tc.warning)));
     } else if (!loadWorkflow(&error)) {
         m_workflowStatus->setText(error);
@@ -774,8 +856,8 @@ void ComfyPanel::refreshRenderPage()
         const auto& t = m_workflowTargets;
         if (t.drivingVideo.isEmpty()) missing << "1. DRIVING VIDEO";
         if (t.referenceImage.isEmpty()) missing << "2. REFERENCE IMAGE";
-        if (t.expression.isEmpty()) missing << "5. FACIAL EXPRESSION";
-        if (t.runSettings.isEmpty()) missing << "6. RUN SETTINGS";
+        if (t.expression.isEmpty() && !h3) missing << "5. FACIAL EXPRESSION";   // H3 follows the actor's face
+        if (t.runSettings.isEmpty()) missing << (h3 ? "Swap Plan" : "6. RUN SETTINGS");
         if (t.save.isEmpty()) missing << "7. SAVE";
         const qint64 seed = comfy::workflowSeed(m_workflowPrompt, t);
         m_seedEdit->setPlaceholderText(seed >= 0 ? QStringLiteral("workflow seed (%1)").arg(seed)
@@ -797,7 +879,7 @@ void ComfyPanel::refreshRenderPage()
 
 QString ComfyPanel::expressionFor(const ShowShot& shot) const
 {
-    const auto& state = m_audioSync->pipeline();
+    const auto& state = m_show->pipeline();
     auto it = state.shots.find(shot.key);
     if (it != state.shots.end() && !it->second.expression.empty())
         return QString::fromStdString(it->second.expression);
@@ -807,7 +889,7 @@ QString ComfyPanel::expressionFor(const ShowShot& shot) const
 
 QString ComfyPanel::rendersDir() const
 {
-    QString source = QString::fromStdString(m_audioSync->pipeline().outputDir);
+    QString source = QString::fromStdString(m_show->pipeline().outputDir);
     if (source.isEmpty()) source = defaultOutputDir();
     QDir dir(source);
     if (dir.dirName().compare(QLatin1String("source"), Qt::CaseInsensitive) == 0) {
@@ -819,14 +901,17 @@ QString ComfyPanel::rendersDir() const
 
 void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRendered, bool freshSeeds)
 {
-    if (!m_audioSync || !m_runner || m_runner->isRunning()) return;
-    applyDevDefaults();
-    auto& state = m_audioSync->pipeline();
+    if (!m_show || !m_runner) return;
+    const bool adding = m_runner->isRunning();   // these shots join the running batch
+    auto& state = m_show->pipeline();
 
-    QString error;
-    if (!loadWorkflow(&error)) {
-        QMessageBox::warning(this, QStringLiteral("Render"), error);
-        return;
+    if (!adding) {   // a running batch keeps the workflow it started with
+        applyDevDefaults();
+        QString error;
+        if (!loadWorkflow(&error)) {
+            QMessageBox::warning(this, QStringLiteral("Render"), error);
+            return;
+        }
     }
 
     std::vector<int> picked;
@@ -854,8 +939,8 @@ void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRe
         return;
     }
 
-    // ── Pre-flight: shots over the frame limit at 16 fps ─────────────────
-    if (state.frameCapThreshold > 0) {
+    // ── Pre-flight: shots over the frame limit at 16 fps (SCAIL only) ────
+    if (state.frameCapThreshold > 0 && !h3Selected()) {
         std::vector<int> over;
         for (int i : picked) {
             const ShowShot& shot = m_shots[static_cast<size_t>(i)];
@@ -906,15 +991,36 @@ void ComfyPanel::startRender(const std::vector<int>& shotIndices, bool includeRe
     }
 
     // ── Export the shots (always fresh), then hand them to ComfyUI ───────
-    if (picked.size() > 1) showPage(kPageQueue);
+    if (adding) {
+        // A shot already waiting or rendering in this batch is not queued twice.
+        std::vector<int> fresh;
+        for (int i : picked) {
+            const std::string& key = m_shots[static_cast<size_t>(i)].key;
+            const auto& jobs = m_runner->jobs();
+            const bool queued = std::any_of(jobs.begin(), jobs.end(), [&](const RenderJob& job) {
+                return job.key == key && (job.state == RenderJob::State::Pending ||
+                                          job.state == RenderJob::State::Running ||
+                                          job.state == RenderJob::State::WaitingForNextPass);
+            });
+            if (!queued) fresh.push_back(i);
+        }
+        if (fresh.empty()) {
+            m_renderStatus->setText(QStringLiteral("Already in the render queue."));
+            return;
+        }
+        picked = std::move(fresh);
+    } else if (picked.size() > 1) {
+        showPage(kPageQueue);
+    }
     appendLog(QStringLiteral("Preparing %1 shot(s) for ComfyUI…").arg(picked.size()));
     prepareShots(picked, [this, picked, freshSeeds]() { launchRender(picked, freshSeeds); });
 }
 
 void ComfyPanel::launchRender(const std::vector<int>& shotIndices, bool freshSeeds)
 {
-    if (!m_audioSync || !m_runner || m_runner->isRunning()) return;
-    auto& state = m_audioSync->pipeline();
+    if (!m_show || !m_runner) return;
+    const bool adding = m_runner->isRunning();
+    auto& state = m_show->pipeline();
     std::vector<int> picked;
     for (int i : shotIndices)
         if (m_preparedKeys.count(m_shots[static_cast<size_t>(i)].key)) picked.push_back(i);
@@ -925,7 +1031,7 @@ void ComfyPanel::launchRender(const std::vector<int>& shotIndices, bool freshSee
 
     // ── Jobs ─────────────────────────────────────────────────────────────
     std::vector<RenderJob> jobs;
-    m_jobShotKeys.clear();
+    if (!adding) m_jobShotKeys.clear();
     for (int i : picked) {
         const ShowShot& shot = m_shots[static_cast<size_t>(i)];
         auto& settings = state.shots[shot.key];
@@ -947,22 +1053,41 @@ void ComfyPanel::launchRender(const std::vector<int>& shotIndices, bool freshSee
         job.fps = state.fpsFor(shot.key);
         job.tailPadSec = settings.exportedTailPadSec;
         job.frames = state.renderFramesFor(shot.key, shot.take.end - shot.take.start);
+        if (m_workflowTargets.engine == comfy::Engine::H3) {
+            // The exported clip (take + tail pad) resampled to H3's 24 fps.
+            job.fps = comfy::kH3Fps;
+            job.frames = static_cast<int>(std::ceil((shot.take.end - shot.take.start + job.tailPadSec) * comfy::kH3Fps - 1e-6));
+        }
         jobs.push_back(std::move(job));
         m_jobShotKeys.push_back(shot.key);
     }
     if (freshSeeds) loadFramingForSelection();
 
+    if (adding) {
+        const int added = static_cast<int>(jobs.size());
+        if (m_runner->append(std::move(jobs))) {
+            for (int i = 0; i < static_cast<int>(m_shots.size()); ++i) updateShotRow(i);
+            m_renderStatus->setText(QStringLiteral("Added %1 shot(s) to the render queue.").arg(added));
+        } else {
+            m_jobShotKeys.resize(m_jobShotKeys.size() - static_cast<size_t>(added));
+            m_renderStatus->setText(QStringLiteral("The batch ended first — render the shot(s) again."));
+        }
+        updateRenderButtons();
+        return;
+    }
+
     ComfyRunner::Config config;
     const QString url = m_urlEdit->text().trimmed();
     if (!url.isEmpty()) config.url = url;
     config.launcher = m_launcherEdit->text().trimmed();
+    config.otherLauncher = appSettings().value(h3Selected() ? kLauncherKey : kH3LauncherKey).toString();
     config.prompt = m_workflowPrompt;
     config.uiWorkflow = m_workflowUi;
     config.targets = m_workflowTargets;
     config.wideReference = QString::fromStdString(state.wideReferenceImage);
     config.closeUpReference = QString::fromStdString(state.closeUpReferenceImage);
     config.rendersDir = rendersDir();
-    QString safe = m_audioSync->activeScriptName();
+    QString safe = m_show->activeScriptName();
     safe.replace(QRegularExpression(QStringLiteral(R"([^A-Za-z0-9 _-])")), QString());
     config.filenamePrefix = QStringLiteral("roundtable/") + (safe.trimmed().isEmpty() ? QStringLiteral("show") : safe.trimmed());
 
@@ -1008,6 +1133,7 @@ void ComfyPanel::updateQueueRow(int jobIndex)
     set(QStatus, job.state == RenderJob::State::Pending && job.status.isEmpty() ? QStringLiteral("Waiting") : job.status,
         color);
     set(QOutput, QFileInfo(job.outputFile).fileName());
+    m_queueTable->setRowHidden(jobIndex, job.state == RenderJob::State::Skipped);   // removed
 }
 
 } // namespace rt

@@ -19,6 +19,7 @@
 
 #include <QByteArray>
 #include <QImage>
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <QUrl>
@@ -37,7 +38,8 @@ public:
 
     /// Connect (and keep reconnecting) to `httpUrl`'s /ws as `clientId`.
     /// Calling again with the same arguments is a no-op.
-    void open(const QUrl& httpUrl, const QString& clientId);
+    void open(const QUrl& httpUrl, const QString& clientId, bool animateLatents = false);
+    void resetLatentPreview();
     void close();
     [[nodiscard]] bool isConnected() const noexcept { return m_state == State::Open; }
 
@@ -70,6 +72,11 @@ private:
 
     QTcpSocket* m_socket{nullptr};
     QTimer*     m_retry{nullptr};
+    QTimer*     m_latentTimer{nullptr};
+    QList<QImage> m_latentFrames;
+    QString     m_latentNode;
+    int         m_latentIndex{0};
+    bool        m_animateLatents{false};
     QUrl        m_url;
     QString     m_clientId;
     bool        m_wanted{false};

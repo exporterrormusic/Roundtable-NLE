@@ -271,17 +271,41 @@ class RoundtableToonModel:
         return (model.cpu(),)
 
 
+def unmixed_background(rgba, excess):
+    """How much of each pixel is the green screen, smoothstepped so thin dark
+    lines stay and flat green goes.
+
+    For frames that went through 4:2:0 video (H3): colour is stored at half
+    resolution, so a 1-2 px dark hair strand comes back dark GREEN (0,60,0).
+    Its green excess alone reads as background; its brightness does not, since
+    the screen is far brighter. The share of background is the smaller of the
+    two estimates, each measured against this frame's own screen."""
+    rgb = rgba[:, :, :3].astype(np.float32)
+    luma = rgb @ np.float32([0.299, 0.587, 0.114])
+    screen = (rgba[:, :, 3] < 8) & (excess > 60)
+    screen_excess, screen_luma = 230.0, 150.0
+    if screen.sum() > 100:
+        screen_excess = float(np.median(excess[screen]))
+        screen_luma = float(np.median(luma[screen]))
+    share = np.minimum(np.clip((excess - 20) / max(screen_excess - 20, 1), 0, 1),
+                       np.clip(luma / max(screen_luma, 1), 0, 1))
+    share = np.clip((share - 0.15) / 0.7, 0, 1)
+    return share * share * (3 - 2 * share)
+
+
 class RoundtableAlphaRepair:
-    """Approved green-interior repair on ToonOut's straight RGBA, without erosion."""
+    """Approved green-interior repair on ToonOut's straight RGBA, without erosion.
+    edge_mode "unmix" is for frames that went through 4:2:0 video (H3)."""
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "repair"
     CATEGORY = "Roundtable/Batch"
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"image": ("IMAGE",)}}
+        return {"required": {"image": ("IMAGE",)},
+                "optional": {"edge_mode": (["clip", "unmix"], {"default": "clip"})}}
 
-    def repair(self, image):
+    def repair(self, image, edge_mode="clip"):
         if image.ndim != 4 or image.shape[-1] != 4:
             raise ValueError("Alpha repair requires transparent ToonOut RGBA output")
         result = torch.empty(image.shape, dtype=torch.float32, device="cpu")
@@ -289,14 +313,72 @@ class RoundtableAlphaRepair:
             rgba = np.rint(frame.detach().cpu().float().numpy().clip(0, 1) * 255).astype(np.uint8)
             rgb = rgba[:, :, :3].astype(np.float32)
             excess = rgb[:, :, 1] - np.maximum(rgb[:, :, 0], rgb[:, :, 2])
-            confidence = np.clip((excess - 20) / 60, 0, 1)
-            confidence = confidence * confidence * (3 - 2 * confidence)
-            rgba[:, :, 3] = np.rint(rgba[:, :, 3] * (1 - confidence)).astype(np.uint8)
+            if edge_mode == "unmix":
+                confidence = unmixed_background(rgba, excess)
+                rgba[:, :, 3] = np.minimum(rgba[:, :, 3], np.rint(255 * (1 - confidence))).astype(np.uint8)
+            else:
+                confidence = np.clip((excess - 20) / 60, 0, 1)
+                confidence = confidence * confidence * (3 - 2 * confidence)
+                rgba[:, :, 3] = np.rint(rgba[:, :, 3] * (1 - confidence)).astype(np.uint8)
             edge = cv2.erode(rgba[:, :, 3], np.ones((25, 25), np.uint8)) < 250
             rgba[:, :, 1] = np.where(edge | (confidence > 0),
                 np.minimum(rgba[:, :, 1], np.maximum(rgba[:, :, 0], rgba[:, :, 2])), rgba[:, :, 1])
             result[index].copy_(torch.from_numpy(rgba.astype(np.float32) / 255))
         return (result,)
+
+
+class AnyType(str):
+    """Wildcard socket type: links to and from any input or output."""
+    def __ne__(self, other):
+        return False
+
+
+ANY = AnyType("*")
+
+
+def stash_path(artifact_key, name):
+    if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+        raise ValueError("Invalid Roundtable stash name")
+    return job_dir(artifact_key) / ("stash_" + name + ".pt")
+
+
+class RoundtableStash:
+    """Saves one node output to disk so a later pass can use it without reloading that output's model."""
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
+    FUNCTION = "stash"
+    CATEGORY = "Roundtable/Batch"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"value": (ANY,), "artifact_key": ("STRING",), "name": ("STRING",),
+                             "stage": ("STRING",)}}
+
+    def stash(self, value, artifact_key, name, stage):
+        save(stash_path(artifact_key, name), value)
+        return {"ui": {"roundtable_stage": [stage], "artifact_key": [artifact_key]}, "result": ()}
+
+
+class RoundtableUnstash:
+    RETURN_TYPES = (ANY,)
+    FUNCTION = "unstash"
+    CATEGORY = "Roundtable/Batch"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"artifact_key": ("STRING",), "name": ("STRING",)}}
+
+    @classmethod
+    def IS_CHANGED(cls, artifact_key, name):
+        path = stash_path(artifact_key, name)
+        return path.stat().st_mtime_ns if path.is_file() else float("nan")
+
+    def unstash(self, artifact_key, name):
+        path = stash_path(artifact_key, name)
+        if not path.is_file():
+            raise RuntimeError(f"Missing batch intermediate {name} for {artifact_key}; render the shot again")
+        # Our own file from an earlier pass; H3 conditioning holds non-tensor objects.
+        return (torch.load(path, map_location="cpu", weights_only=False),)
 
 
 @PromptServer.instance.routes.post("/roundtable_batch/release")
@@ -305,6 +387,9 @@ async def release(request):
     directory = job_dir(key)
     for name in ("prepared.pt", "media.pt", "frames.pt"):
         (directory / name).unlink(missing_ok=True)
+    if directory.exists():
+        for path in directory.glob("stash_*.pt"):
+            path.unlink()
     if directory.exists() and not any(directory.iterdir()):
         directory.rmdir()
     # The GAP checkpoint is redundant once the delivered video is saved.
@@ -318,6 +403,54 @@ async def release(request):
     return web.json_response({"released": key})
 
 
+KEEP = "keep"
+
+
+def mark_keep(key):
+    """This shot's files are the only copy of finished work: sweeps leave them alone."""
+    directory = job_dir(key)
+    if directory.is_dir():
+        (directory / KEEP).touch()
+    return directory.is_dir()
+
+
+def sweep(current_batch):
+    """Delete what crashed or abandoned batches left behind: every shot folder
+    that is not part of `current_batch` and is not marked to keep. The shared
+    reference / text caches are reusable and stay."""
+    if not re.fullmatch(r"[a-f0-9]{32}", current_batch):
+        raise ValueError("Invalid Roundtable batch id")
+    removed = []
+    base = root()
+    if not base.is_dir():
+        return removed
+    checkpoints = Path(folder_paths.get_output_directory()) / "gap_scail2_cache"
+    for directory in base.iterdir():
+        key = directory.name
+        if not directory.is_dir() or not re.fullmatch(r"[a-f0-9]{32}_[0-9]+", key):
+            continue
+        if key.startswith(current_batch + "_") or (directory / KEEP).exists():
+            continue
+        shutil.rmtree(directory, ignore_errors=True)
+        shutil.rmtree(checkpoints / ("rt_batch_" + key), ignore_errors=True)
+        removed.append(key)
+    return removed
+
+
+@PromptServer.instance.routes.post("/roundtable_batch/keep")
+async def keep(request):
+    key = (await request.json())["artifact_key"]
+    return web.json_response({"kept": key if mark_keep(key) else None})
+
+
+@PromptServer.instance.routes.post("/roundtable_batch/sweep")
+async def sweep_route(request):
+    removed = sweep((await request.json())["batch_id"])
+    if removed:
+        log.info("Removed %d leftover batch folder(s)", len(removed))
+    return web.json_response({"removed": removed})
+
+
 NODE_CLASS_MAPPINGS = {cls.__name__: cls for cls in (
     RoundtableReference, RoundtablePrepare, RoundtableGenerate, RoundtableLoadFrames, RoundtableToonModel,
-    RoundtableAlphaRepair)}
+    RoundtableAlphaRepair, RoundtableStash, RoundtableUnstash)}

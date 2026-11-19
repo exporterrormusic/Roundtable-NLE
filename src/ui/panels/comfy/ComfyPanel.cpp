@@ -1,10 +1,11 @@
 /*
  * ComfyPanel.cpp — see header.
  */
+#include "QtHelpers.h"
 #include "panels/comfy/ComfyPanel.h"
 #include "AppPaths.h"
 
-#include "panels/audio/AudioSync.h"
+#include "panels/audio/ShowSession.h"
 #include "panels/audio/VideoFrameGrabber.h"
 #include "panels/comfy/ComfyRunner.h"
 #include "panels/comfy/FramingEditor.h"
@@ -224,34 +225,11 @@ std::string exportSignatureOf(const ShotExportJob& job)
     return shotExportSignature(job, src.size(), src.lastModified().toMSecsSinceEpoch());
 }
 
-QString sectionLabelStyle()
-{
-    return QString("QLabel { color: %1; font-size: %2px; font-weight: 800; letter-spacing: 1px; }")
-        .arg(Theme::hex(Theme::colors().textSecondary))
-        .arg(Theme::typography().sizeXs);
-}
-
-QString buttonStyle(bool primary)
-{
-    const auto& tc = Theme::colors();
-    return QString("QPushButton { background: %1; color: %2; border: 1px solid %3; border-radius: %4px;"
-                   " padding: 6px 14px; font-weight: %5; }"
-                   "QPushButton:hover { background: %6; }"
-                   "QPushButton:disabled { color: %7; }")
-        .arg(Theme::hex(primary ? tc.primaryBtnBg : tc.surface2),
-             Theme::hex(primary ? tc.textBright : tc.textPrimary),
-             Theme::hex(primary ? tc.primaryBtnBg : tc.controlBorder))
-        .arg(Theme::metrics().radiusSm)
-        .arg(primary ? 700 : 500)
-        .arg(Theme::hex(primary ? tc.primaryBtnHover : tc.surface3),
-             Theme::hex(tc.textDisabled));
-}
-
 } // namespace
 
-ComfyPanel::ComfyPanel(AudioSync* audioSync, QWidget* parent)
+ComfyPanel::ComfyPanel(ShowSession* show, QWidget* parent)
     : QWidget(parent)
-    , m_audioSync(audioSync)
+    , m_show(show)
     , m_grabber(std::make_unique<VideoFrameGrabber>())
 {
     setupUi();
@@ -269,7 +247,7 @@ ComfyPanel::~ComfyPanel()
 void ComfyPanel::hideEvent(QHideEvent* event)
 {
     stopShotPlayback();   // don't keep playing on another page
-    if (m_audioSync) m_audioSync->stopTakeAudio();   // hand the engine back
+    if (m_show) m_show->stopTakeAudio();   // hand the engine back
     if (m_keyFilterInstalled) {
         qApp->removeEventFilter(this);
         m_keyFilterInstalled = false;
@@ -362,11 +340,15 @@ void ComfyPanel::setupUi()
     header->addWidget(m_hintLabel, 1);
     root->addLayout(header);
 
-    auto* guide = new QLabel(QStringLiteral(
-        "1  Pick a take for every line on the AUDIO page   ›   2  Check each shot's framing here   ›   "
-        "3  RENDER (exports + renders in ComfyUI)   ›   4  ASSEMBLE ON TIMELINE"));
-    guide->setStyleSheet(QString("QLabel { color: %1; }").arg(Theme::hex(tc.textTertiary)));
-    root->addWidget(guide);
+    // How the page works: on hover, not as permanent text.
+    m_titleLabel->setToolTip(QStringLiteral(
+        "1  Pick a take for every line on the AUDIO page\n"
+        "2  Check each shot's framing here\n"
+        "3  RENDER (exports + renders in ComfyUI)\n"
+        "4  ASSEMBLE ON TIMELINE\n\n"
+        "Double-click a shot to play it and set its in / out.\n"
+        "Right-click to render (select several with Ctrl / Shift).\n"
+        "A approves and R marks the selected shots for retake."));
 
     m_pages = new QStackedWidget;
     root->addWidget(m_pages, 1);
@@ -401,10 +383,10 @@ void ComfyPanel::setupUi()
     connect(m_shotTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int col) {
         if (col != ColApprove && col != ColRetake) return;
         const QVariant v = item->data(0, kShotIndexRole);
-        if (!v.isValid() || !m_audioSync) return;
+        if (!v.isValid() || !m_show) return;
         const int index = v.toInt();
         if (index < 0 || index >= static_cast<int>(m_shots.size())) return;
-        auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(index)].key];
+        auto& settings = m_show->pipeline().shots[m_shots[static_cast<size_t>(index)].key];
         const RenderVersion* render = usableRender(settings);
         const bool checked = item->checkState(col) == Qt::Checked;
         if (col == ColApprove && checked && !render) {
@@ -446,7 +428,7 @@ void ComfyPanel::setupUi()
     fl->setSpacing(8);
 
     auto* framingLabel = new QLabel(QStringLiteral("FRAMING"));
-    framingLabel->setStyleSheet(sectionLabelStyle());
+    framingLabel->setProperty("labelRole", "section");
     fl->addWidget(framingLabel);
     m_framingTitle = new QLabel;
     m_framingTitle->setWordWrap(true);
@@ -466,15 +448,16 @@ void ComfyPanel::setupUi()
     // Transport: play / pause, timeline (in/out handles on the take), time.
     auto* transport = new QHBoxLayout;
     m_playBtn = new QPushButton(QStringLiteral("▶"));
+    m_playBtn->setObjectName(QStringLiteral("comfyShotPlay"));
     m_playBtn->setFixedWidth(40);
-    m_playBtn->setStyleSheet(buttonStyle(false));
     m_playBtn->setToolTip(QStringLiteral("Play / pause (the take with its audio, or the render)"));
     connect(m_playBtn, &QPushButton::clicked, this, &ComfyPanel::togglePlayback);
     transport->addWidget(m_playBtn);
     m_trimBar = new ComfyTrimBar;
     m_trimBar->setToolTip(QStringLiteral(
         "Drag the handles to set the in / out (the take, or the render shown big). Click or drag elsewhere to scrub.\n"
-        "Keys: Space play · J/K/L shuttle · K+J/L step (hold = slow) · ←/→ frame · I/O set in/out · Home/End."));
+        "Keys: Space play · J/K/L shuttle · K+J/L step (hold = slow) · ←/→ frame · I/O set in/out · Home/End · "
+        "A approve · R retake."));
     m_trimBar->setFocusPolicy(Qt::ClickFocus);
     m_bigView->setFocusPolicy(Qt::ClickFocus);
     m_trimBar->onScrub = [this](double t) { stopShotPlayback(); seekTo(t); scrubAudio(t); };
@@ -492,6 +475,11 @@ void ComfyPanel::setupUi()
     m_timeLabel->setStyleSheet(QString("QLabel { color: %1; font-family: Consolas, monospace; }")
                                    .arg(Theme::hex(tc.textSecondary)));
     transport->addWidget(m_timeLabel);
+    m_maskBtn = new QPushButton(QStringLiteral("Paint alpha mask…"));
+    m_maskBtn->setToolTip(QStringLiteral("Brush away leftover background across this render."));
+    m_maskBtn->hide();
+    connect(m_maskBtn, &QPushButton::clicked, this, &ComfyPanel::editRenderMask);
+    transport->addWidget(m_maskBtn);
     fl->addLayout(transport);
 
     m_playTimer = new QTimer(this);
@@ -500,7 +488,7 @@ void ComfyPanel::setupUi()
         const double in = m_trimBar->in(), out = m_trimBar->out();
         double t;
         if (m_playWithAudio) {
-            t = m_audioSync->takeAudioTime();
+            t = m_show->takeAudioTime();
             if (t < 0.0) t = m_speed > 0.0 ? out : in;            // audio ran off the loaded range
         } else {
             t = m_playStartHead + m_speed * (QDateTime::currentMSecsSinceEpoch() - m_playStartMs) / 1000.0;
@@ -536,7 +524,7 @@ void ComfyPanel::setupUi()
     fl->addLayout(modeRow);
     connect(m_shotModeBtn, &QRadioButton::toggled, this, [this](bool on) {
         if (m_updatingControls || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-        auto& state = m_audioSync->pipeline();
+        auto& state = m_show->pipeline();
         const ShowShot& shot = m_shots[static_cast<size_t>(m_selected)];
         auto& settings = state.shots[shot.key];
         if (on) {
@@ -597,7 +585,7 @@ void ComfyPanel::setupUi()
     m_outputPreview->setStyleSheet("QLabel { background: #000; }");
     m_outputPreview->setToolTip(QStringLiteral("The 1920×1080 frame sent to ComfyUI (green = outside the recording). "
                                                "Click to frame / play the take in the big view."));
-    previewColumn(QStringLiteral("INPUT (framed)"), m_outputPreview);
+    previewColumn(QStringLiteral("INPUT"), m_outputPreview);
     previewRow->addSpacing(4);
     // Every render of this shot, newest first.
     auto* stripScroll = new QScrollArea;
@@ -614,7 +602,9 @@ void ComfyPanel::setupUi()
     m_renderStripLayout->addWidget(m_renderStripEmpty);
     m_renderStripLayout->addStretch();
     stripScroll->setWidget(m_renderStrip);
-    previewColumn(QStringLiteral("RENDERS — click to use & view · right-click for more"), stripScroll);
+    stripScroll->setToolTip(QStringLiteral("Every render of this shot, newest first. "
+                                           "Click to use & view big · hover to scrub · right-click for more."));
+    previewColumn(QStringLiteral("RENDERS"), stripScroll);
     previewRow->setStretch(previewRow->count() - 1, 1);
     fl->addLayout(previewRow);
 
@@ -624,7 +614,7 @@ void ComfyPanel::setupUi()
 
     // ── This shot's settings (actions live in the list's right-click menu) ─
     auto* shotLabel = new QLabel(QStringLiteral("THIS SHOT"));
-    shotLabel->setStyleSheet(sectionLabelStyle());
+    shotLabel->setProperty("labelRole", "section");
     fl->addWidget(shotLabel);
     m_expressionEdit = new QLineEdit;
     m_expressionEdit->setToolTip(QStringLiteral(
@@ -632,18 +622,17 @@ void ComfyPanel::setupUi()
         "else the default expression on SETTINGS."));
     connect(m_expressionEdit, &QLineEdit::editingFinished, this, [this]() {
         if (m_updatingControls || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-        m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key].expression =
+        m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key].expression =
             m_expressionEdit->text().trimmed().toStdString();
     });
     fl->addWidget(m_expressionEdit);
     auto* shotRow = new QHBoxLayout;
     m_fpsCombo = new QComboBox;
-    m_fpsCombo->addItem(QStringLiteral("16 fps"), kScailDefaultFps);
-    m_fpsCombo->addItem(QStringLiteral("12 fps (long shots)"), kScailReducedFps);
-    m_fpsCombo->setToolTip(QStringLiteral("\"1. DRIVING VIDEO\" force_rate. Use 12 for long shots."));
+    m_fpsCombo->setObjectName(QStringLiteral("comfyShotFps"));
+    updateFpsControl();
     connect(m_fpsCombo, &QComboBox::currentIndexChanged, this, [this]() {
         if (m_updatingControls || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-        m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key].fps =
+        m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key].fps =
             m_fpsCombo->currentData().toInt();
         updateShotRow(m_selected);
     });
@@ -660,7 +649,7 @@ void ComfyPanel::setupUi()
         "on the timeline. Default = the tail pad on SETTINGS."));
     connect(m_shotPadSpin, &QSpinBox::valueChanged, this, [this](int v) {
         if (m_updatingControls || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-        m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key].padFrames = v;
+        m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key].padFrames = v;
         updateShotRow(m_selected);
     });
     shotRow->addWidget(m_shotPadSpin);
@@ -669,12 +658,6 @@ void ComfyPanel::setupUi()
     shotRow->addWidget(m_seedLabel);
     shotRow->addStretch();
     fl->addLayout(shotRow);
-
-    auto* actionsHint = new QLabel(QStringLiteral(
-        "Double-click a shot to play it and set its in / out. "
-        "Right-click to render (select several with Ctrl / Shift)."));
-    actionsHint->setStyleSheet(QString("QLabel { color: %1; }").arg(Theme::hex(tc.textTertiary)));
-    fl->addWidget(actionsHint);
 
     splitter->addWidget(framingPane);
     splitter->setStretchFactor(0, 5);
@@ -720,10 +703,12 @@ void ComfyPanel::showShotContextMenu(const QPoint& pos)
 
     if (picked.empty()) return;   // no picked video take: nothing to do from here
 
-    const bool busy = m_ffmpeg || (m_runner && m_runner->isRunning());
+    const bool rendering = m_runner && m_runner->isRunning();
+    const bool preparing = m_ffmpeg;
+    const bool busy = preparing || rendering;
     const QString what = picked.size() == 1 ? QStringLiteral("this shot")
                                             : QStringLiteral("%1 shots").arg(picked.size());
-    auto& state = m_audioSync->pipeline();
+    auto& state = m_show->pipeline();
 
     // Actions only; per-shot settings (fps, tail pad, framing, expression)
     // stay in the pane on the right, and Play is next to USE RENDER.
@@ -734,11 +719,14 @@ void ComfyPanel::showShotContextMenu(const QPoint& pos)
         trim->setEnabled(!busy);
         menu.addSeparator();
     }
-    QAction* render = menu.addAction(QStringLiteral("Render %1").arg(what));
-    QAction* reroll = menu.addAction(QStringLiteral("Re-roll seed && render %1").arg(what));
+    // While a batch renders, these add the shots to the end of it.
+    QAction* render = menu.addAction(rendering ? QStringLiteral("Add %1 to the render queue").arg(what)
+                                               : QStringLiteral("Render %1").arg(what));
+    QAction* reroll = menu.addAction(rendering ? QStringLiteral("Re-roll seed && add %1 to the queue").arg(what)
+                                               : QStringLiteral("Re-roll seed && render %1").arg(what));
     reroll->setToolTip(QStringLiteral("New random seed; earlier renders are kept."));
-    render->setEnabled(!busy);
-    reroll->setEnabled(!busy);
+    render->setEnabled(!preparing);
+    reroll->setEnabled(!preparing);
     QAction* reveal = nullptr;
     const RenderVersion* active = nullptr;
     if (picked.size() == 1) {
@@ -763,18 +751,17 @@ void ComfyPanel::showShotContextMenu(const QPoint& pos)
         }
         startRender(picked, /*includeRendered=*/true);
     } else if (active && chosen == reveal) {
-        QProcess::startDetached(QStringLiteral("explorer.exe"),
-            {QStringLiteral("/select,"), QDir::toNativeSeparators(QString::fromStdString(active->file))});
+        rt::revealInExplorer(QDir::toNativeSeparators(QString::fromStdString(active->file)));
     }
 }
 
 void ComfyPanel::playAndTrimTake(int shotIndex)
 {
-    if (!m_audioSync || shotIndex < 0 || shotIndex >= static_cast<int>(m_shots.size())) return;
+    if (!m_show || shotIndex < 0 || shotIndex >= static_cast<int>(m_shots.size())) return;
     const ShowShot& shot = m_shots[static_cast<size_t>(shotIndex)];
     if (!shot.hasTake) return;
     const std::string key = shot.key;
-    if (m_audioSync->openTakePlayerForClipId(shot.take.id)) {
+    if (m_show->openTakePlayerForClipId(shot.take.id)) {
         refresh();   // new length / frames; RENDER re-exports it (signature changed)
         for (int i = 0; i < static_cast<int>(m_shots.size()); ++i)
             if (m_shots[static_cast<size_t>(i)].key == key) selectShot(i);
@@ -830,8 +817,8 @@ QString ComfyPanel::batchStatusFor(const std::string& key) const
 
 const RenderVersion* ComfyPanel::shownRender() const
 {
-    if (!m_audioSync || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return nullptr;
-    const auto& state = m_audioSync->pipeline();
+    if (!m_show || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return nullptr;
+    const auto& state = m_show->pipeline();
     auto it = state.shots.find(m_shots[static_cast<size_t>(m_selected)].key);
     if (it == state.shots.end() || it->second.renders.empty()) return nullptr;
     const auto& rs = it->second.renders;
@@ -870,8 +857,8 @@ void ComfyPanel::rebuildRenderStrip()
     m_renderThumbs.clear();
 
     const ShotSettings* settings = nullptr;
-    if (m_audioSync && m_selected >= 0 && m_selected < static_cast<int>(m_shots.size())) {
-        const auto& state = m_audioSync->pipeline();
+    if (m_show && m_selected >= 0 && m_selected < static_cast<int>(m_shots.size())) {
+        const auto& state = m_show->pipeline();
         auto it = state.shots.find(m_shots[static_cast<size_t>(m_selected)].key);
         if (it != state.shots.end()) settings = &it->second;
     }
@@ -929,8 +916,8 @@ void ComfyPanel::rebuildRenderStrip()
 
 void ComfyPanel::updateRenderStripMarks()
 {
-    if (!m_audioSync || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-    const auto& state = m_audioSync->pipeline();
+    if (!m_show || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
+    const auto& state = m_show->pipeline();
     auto it = state.shots.find(m_shots[static_cast<size_t>(m_selected)].key);
     if (it == state.shots.end()) return;
     const RenderVersion* used = usableRender(it->second);
@@ -961,7 +948,7 @@ bool ComfyPanel::isRendering() const
 void ComfyPanel::useRender(int renderIndex, bool showBig)
 {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-    auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
+    auto& settings = m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
     if (renderIndex < 0 || renderIndex >= static_cast<int>(settings.renders.size())) return;
     const RenderVersion* previous = usableRender(settings);
     if (!previous || previous->file != settings.renders[static_cast<size_t>(renderIndex)].file) {
@@ -979,7 +966,7 @@ void ComfyPanel::useRender(int renderIndex, bool showBig)
 void ComfyPanel::showRenderMenu(int renderIndex, const QPoint& globalPos)
 {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-    const auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
+    const auto& settings = m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
     if (renderIndex < 0 || renderIndex >= static_cast<int>(settings.renders.size())) return;
     const QString file = QString::fromStdString(settings.renders[static_cast<size_t>(renderIndex)].file);
     const RenderVersion* used = usableRender(settings);
@@ -999,8 +986,7 @@ void ComfyPanel::showRenderMenu(int renderIndex, const QPoint& globalPos)
     } else if (chosen == open) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(file));
     } else if (chosen == reveal) {
-        QProcess::startDetached(QStringLiteral("explorer.exe"),
-                                {QStringLiteral("/select,"), QDir::toNativeSeparators(file)});
+        rt::revealInExplorer(QDir::toNativeSeparators(file));
     } else if (chosen == del) {
         // Deferred: rebuilding the strip deletes the thumbnail this menu came from.
         QTimer::singleShot(0, this, [this, renderIndex]() { deleteRender(renderIndex); });
@@ -1010,7 +996,7 @@ void ComfyPanel::showRenderMenu(int renderIndex, const QPoint& globalPos)
 void ComfyPanel::deleteRender(int renderIndex)
 {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
-    auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
+    auto& settings = m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
     if (renderIndex < 0 || renderIndex >= static_cast<int>(settings.renders.size())) return;
     const std::string file = settings.renders[static_cast<size_t>(renderIndex)].file;
     const QString name = QFileInfo(QString::fromStdString(file)).fileName();
@@ -1084,6 +1070,7 @@ void ComfyPanel::updateTransport()
     const bool valid = m_selected >= 0 && m_selected < static_cast<int>(m_shots.size()) &&
                        isExportable(m_shots[static_cast<size_t>(m_selected)]);
     m_playBtn->setEnabled(valid);
+    m_maskBtn->setVisible(valid && !framingMode() && shownRender());
     m_trimBar->setEnabled(valid);
     if (!valid) { m_timeLabel->clear(); return; }
     const ShowShot& shot = m_shots[static_cast<size_t>(m_selected)];
@@ -1168,7 +1155,7 @@ void ComfyPanel::startPlayback(double speed)
     if (speed < 0.0 && (m_playhead <= in + 0.05 || m_playhead > out)) m_playhead = out;
     m_speed = speed;
     // Sound at every speed: shuttle, reverse and slow motion are time-stretched.
-    m_playWithAudio = ensurePreviewAudio() && m_audioSync->playPreviewAudio(m_playhead, speed);
+    m_playWithAudio = ensurePreviewAudio() && m_show->playPreviewAudio(m_playhead, speed);
     m_playStartHead = m_playhead;
     m_playStartMs = QDateTime::currentMSecsSinceEpoch();
     m_playing = true;
@@ -1179,7 +1166,7 @@ void ComfyPanel::startPlayback(double speed)
 void ComfyPanel::stopShotPlayback()
 {
     if (m_playTimer) m_playTimer->stop();
-    if (m_playWithAudio && m_audioSync) m_audioSync->pausePreviewAudio();   // stays loaded for scrubbing
+    if (m_playWithAudio && m_show) m_show->pausePreviewAudio();   // stays loaded for scrubbing
     m_playWithAudio = false;
     m_playing = false;
     m_speed = 1.0;
@@ -1212,18 +1199,18 @@ void ComfyPanel::stepFrames(int frames)
 
 bool ComfyPanel::ensurePreviewAudio()
 {
-    if (!m_audioSync || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return false;
+    if (!m_show || m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return false;
     if (framingMode())
-        return m_audioSync->loadPreviewAudioForTake(m_shots[static_cast<size_t>(m_selected)].take.id,
+        return m_show->loadPreviewAudioForTake(m_shots[static_cast<size_t>(m_selected)].take.id,
                                                     m_trimBar->viewStart(), m_trimBar->viewEnd());
     const RenderVersion* r = shownRender();
-    return r && m_audioSync->loadPreviewAudioForMedia(r->file);   // the render's own audio
+    return r && m_show->loadPreviewAudioForMedia(r->file);   // the render's own audio
 }
 
 void ComfyPanel::scrubAudio(double t)
 {
     if (m_playing || !ensurePreviewAudio()) return;
-    m_audioSync->scrubPreviewAudio(t);
+    m_show->scrubPreviewAudio(t);
 }
 
 bool ComfyPanel::handleTransportKey(QKeyEvent* e, bool press)
@@ -1275,6 +1262,10 @@ bool ComfyPanel::handleTransportKey(QKeyEvent* e, bool press)
     case Qt::Key_Right:
         stepFrames((key == Qt::Key_Right ? 1 : -1) * (shift ? 5 : 1));
         return true;
+    case Qt::Key_A:
+    case Qt::Key_R:
+        if (!repeat && !shift) reviewSelectedShots(key == Qt::Key_A);
+        return !shift;
     case Qt::Key_Home:
         stopShotPlayback();
         seekTo(m_trimBar->in());
@@ -1305,7 +1296,7 @@ void ComfyPanel::commitRenderTrim(double in, double out)
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
     const RenderVersion* shown = shownRender();
     if (!shown) return;
-    auto& settings = m_audioSync->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
+    auto& settings = m_show->pipeline().shots[m_shots[static_cast<size_t>(m_selected)].key];
     for (auto& r : settings.renders) {   // every record of that file
         if (r.file != shown->file) continue;
         r.trimIn = std::max(0.0, in);
@@ -1320,7 +1311,7 @@ void ComfyPanel::commitTrim(double in, double out)
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
     ShowShot& shot = m_shots[static_cast<size_t>(m_selected)];
     if (std::abs(in - shot.take.start) < 1e-6 && std::abs(out - shot.take.end) < 1e-6) return;
-    if (!m_audioSync->setTakeInOut(shot.take.id, in, out)) { updateTransport(); return; }
+    if (!m_show->setTakeInOut(shot.take.id, in, out)) { updateTransport(); return; }
     shot.take.start = in;    // our copy (the AUDIO page's clip is the source of truth)
     shot.take.end = out;
     updateShotRow(m_selected);
@@ -1338,28 +1329,30 @@ bool ComfyPanel::isExportable(const ShowShot& shot) const
 
 void ComfyPanel::refresh()
 {
-    if (!m_audioSync) return;
+    if (!m_show) return;
     const std::string selectedKey = (m_selected >= 0 && m_selected < static_cast<int>(m_shots.size()))
         ? m_shots[static_cast<size_t>(m_selected)].key : std::string{};
 
-    m_shots = m_audioSync->showShots();
+    m_shots = m_show->showShots();
     m_selected = -1;
 
     m_updatingControls = true;
-    const auto& state = m_audioSync->pipeline();
+    const auto& state = m_show->pipeline();
     m_outputDirEdit->setText(QString::fromStdString(state.outputDir));
     m_outputDirEdit->setPlaceholderText(defaultOutputDir());
     m_defaultPadSpin->setValue(state.defaultPadFrames);
     m_updatingControls = false;
 
-    const QString scriptName = m_audioSync->activeScriptName();
+    const QString scriptName = m_show->activeScriptName();
     m_titleLabel->setText(scriptName.isEmpty() ? QStringLiteral("COMFYUI")
                                                : QStringLiteral("COMFYUI — %1").arg(scriptName));
 
     QSignalBlocker blocker(m_shotTree);
     m_shotTree->setSortingEnabled(false);
     m_shotTree->clear();
-    if (!m_audioSync->isShotScript()) {
+    m_shotItems.assign(m_shots.size(), nullptr);
+    if (!m_show->isShotScript()) {
+        updateFpsControl();
         m_hintLabel->setText(QStringLiteral(
             "Load a SHOT | ACTION | SCRIPT script on the AUDIO page, import your green-screen video and pick takes."));
         m_framingEditor->setSource(QImage(), 0, 0);
@@ -1389,6 +1382,7 @@ void ComfyPanel::refresh()
         }
         auto* item = new ShotTreeItem(segmentItem);
         item->setData(0, kShotIndexRole, i);
+        m_shotItems[static_cast<size_t>(i)] = item;
         if (shot.key == selectedKey) reselect = item;
     }
     m_shotTree->expandAll();
@@ -1401,26 +1395,41 @@ void ComfyPanel::refresh()
     if (reselect) {
         m_shotTree->setCurrentItem(reselect);
         selectShot(reselect->data(0, kShotIndexRole).toInt());
-    }
+    } else updateFpsControl();
     refreshRenderPage();
+}
+
+QTreeWidgetItem* ComfyPanel::shotItem(int index) const
+{
+    return index >= 0 && index < static_cast<int>(m_shotItems.size()) ? m_shotItems[static_cast<size_t>(index)]
+                                                                      : nullptr;
+}
+
+void ComfyPanel::reviewSelectedShots(bool approve)
+{
+    std::vector<int> picked = selectedShotIndices();
+    if (picked.empty() && m_selected >= 0) picked.push_back(m_selected);
+    const int column = approve ? ColApprove : ColRetake;
+    // One key press = one outcome for the whole selection: set it unless
+    // every shot already has it (then clear).
+    bool allSet = !picked.empty();
+    for (int i : picked)
+        if (auto* item = shotItem(i); !item || item->checkState(column) != Qt::Checked) allSet = false;
+    for (int i : picked)
+        if (auto* item = shotItem(i))   // the tree's itemChanged applies it (and refuses Approve without a render)
+            item->setCheckState(column, allSet ? Qt::Unchecked : Qt::Checked);
 }
 
 void ComfyPanel::updateShotRow(int index)
 {
     if (index < 0 || index >= static_cast<int>(m_shots.size())) return;
-    QTreeWidgetItem* item = nullptr;
-    for (int s = 0; s < m_shotTree->topLevelItemCount() && !item; ++s) {
-        auto* seg = m_shotTree->topLevelItem(s);
-        for (int c = 0; c < seg->childCount(); ++c) {
-            if (seg->child(c)->data(0, kShotIndexRole).toInt() == index) { item = seg->child(c); break; }
-        }
-    }
+    QTreeWidgetItem* item = shotItem(index);
     if (!item) return;
     const QSignalBlocker blocker(m_shotTree);
 
     const auto& tc = Theme::colors();
     const ShowShot& shot = m_shots[static_cast<size_t>(index)];
-    const auto& state = m_audioSync->pipeline();
+    const auto& state = m_show->pipeline();
     item->setText(ColOrder, QString::number(index + 1));
     item->setData(ColOrder, kSortValueRole, index + 1);
     item->setText(ColShot, shot.shot.empty() ? QStringLiteral("SET SHOT") : QString::fromStdString(shot.shot));
@@ -1442,8 +1451,16 @@ void ComfyPanel::updateShotRow(int index)
             .arg(QFileInfo(QString::fromStdString(shot.take.sourceFile)).fileName())
             .arg(secs / 60).arg(secs % 60, 2, 10, QLatin1Char('0')));
         const double dur = std::max(0.0, shot.take.end - shot.take.start);
-        const int frames = static_cast<int>(std::ceil(dur * fps)) + pad;
-        item->setText(ColLength, QString("%1s · %2f@%3").arg(dur, 0, 'f', 1).arg(frames).arg(fps));
+        if (h3Selected()) {
+            // H3 always renders 24 fps: the take plus its tail pad (pad
+            // frames are counted at the shot's SCAIL rate), as RENDER sends it.
+            const int frames = static_cast<int>(
+                std::ceil((dur + static_cast<double>(pad) / fps) * comfy::kH3Fps - 1e-6));
+            item->setText(ColLength, QString("%1s · %2f@%3").arg(dur, 0, 'f', 1).arg(frames).arg(comfy::kH3Fps));
+        } else {
+            const int frames = static_cast<int>(std::ceil(dur * fps)) + pad;
+            item->setText(ColLength, QString("%1s · %2f@%3").arg(dur, 0, 'f', 1).arg(frames).arg(fps));
+        }
     } else {
         item->setText(ColTake, QStringLiteral("—"));
         item->setText(ColLength, QString());
@@ -1486,7 +1503,7 @@ void ComfyPanel::updateExportSummary()
     for (const auto& s : m_shots) {
         if (isExportable(s)) {
             ++ready;
-            const auto& settings = m_audioSync->pipeline().shots;
+            const auto& settings = m_show->pipeline().shots;
             const auto it = settings.find(s.key);
             if (it == settings.end() || needsRender(it->second)) ++toRender;
         }
@@ -1495,7 +1512,7 @@ void ComfyPanel::updateExportSummary()
     }
     if (m_renderAllBtn) m_renderAllBtn->setText(QStringLiteral("RENDER ALL (%1)").arg(toRender));
     updateRenderButtons();
-    if (m_audioSync && m_audioSync->isShotScript()) {
+    if (m_show && m_show->isShotScript()) {
         QStringList parts;
         parts << QString("%1 lines").arg(m_shots.size()) << QString("%1 ready").arg(ready);
         if (missingTake) parts << QString("%1 without a picked take").arg(missingTake);
@@ -1527,17 +1544,36 @@ QSize ComfyPanel::sourceSize(const std::string& path)
     return size;
 }
 
+void ComfyPanel::updateFpsControl(const ShowShot* shot)
+{
+    const QSignalBlocker blocker(m_fpsCombo);
+    const bool h3 = h3Selected();
+    m_fpsCombo->clear();
+    if (h3) {
+        m_fpsCombo->addItem(QStringLiteral("%1 fps").arg(comfy::kH3Fps), comfy::kH3Fps);
+        m_fpsCombo->setToolTip(QStringLiteral("MiniMax H3 swap renders at a fixed frame rate."));
+    } else {
+        m_fpsCombo->addItem(QStringLiteral("16 fps"), kScailDefaultFps);
+        m_fpsCombo->addItem(QStringLiteral("12 fps (long shots)"), kScailReducedFps);
+        if (shot) m_fpsCombo->setCurrentIndex(m_fpsCombo->findData(m_show->pipeline().fpsFor(shot->key)));
+        m_fpsCombo->setToolTip(QStringLiteral("\"1. DRIVING VIDEO\" force_rate. Use 12 for long shots."));
+    }
+    m_fpsCombo->setEnabled(shot && !h3);
+}
+
 void ComfyPanel::loadFramingForSelection()
 {
     const bool valid = m_selected >= 0 && m_selected < static_cast<int>(m_shots.size()) &&
                        isExportable(m_shots[static_cast<size_t>(m_selected)]);
     for (QWidget* w : std::initializer_list<QWidget*>{m_framingEditor, m_recordingModeBtn, m_shotModeBtn,
                                                       m_scaleSpin, m_xSpin, m_ySpin, m_shotPadSpin,
-                                                      m_expressionEdit, m_fpsCombo,
+                                                      m_expressionEdit,
                                                       m_renderStrip})
         w->setEnabled(valid);
+    updateFpsControl(valid ? &m_shots[static_cast<size_t>(m_selected)] : nullptr);
     if (!valid) {
         m_sourceFrame = QImage();
+        m_maskBtn->hide();
         m_sourcePath.clear();
         m_framingEditor->setSource(QImage(), 0, 0);
         m_outputPreview->clear();
@@ -1552,7 +1588,7 @@ void ComfyPanel::loadFramingForSelection()
     }
 
     const ShowShot& shot = m_shots[static_cast<size_t>(m_selected)];
-    const auto& state = m_audioSync->pipeline();
+    const auto& state = m_show->pipeline();
     const bool closeUp = shot.shot == "CLOSE-UP";
     const QSize src = sourceSize(shot.take.sourceFile);
     const auto settingsIt = state.shots.find(shot.key);
@@ -1570,7 +1606,6 @@ void ComfyPanel::loadFramingForSelection()
         : !state.defaultExpression.empty()
             ? QStringLiteral("Default: %1").arg(QString::fromStdString(state.defaultExpression))
             : QStringLiteral("Workflow's expression"));
-    m_fpsCombo->setCurrentIndex(state.fpsFor(shot.key) == kScailReducedFps ? 1 : 0);
     {
         const int64_t seed = state.seedFor(shot.key);
         const bool rerolled = settingsIt != state.shots.end() && settingsIt->second.seed >= 0;
@@ -1622,7 +1657,7 @@ void ComfyPanel::applyFraming(const ShotFraming& framing, bool commit)
 {
     if (m_selected < 0 || m_selected >= static_cast<int>(m_shots.size())) return;
     const ShowShot& shot = m_shots[static_cast<size_t>(m_selected)];
-    auto& state = m_audioSync->pipeline();
+    auto& state = m_show->pipeline();
     if (m_shotModeBtn->isChecked()) {
         auto& settings = state.shots[shot.key];
         settings.hasFraming = true;
@@ -1663,8 +1698,8 @@ QString ComfyPanel::defaultOutputDir() const
 {
     for (const auto& s : m_shots) {
         if (!s.hasTake) continue;
-        const QString name = m_audioSync->activeScriptName().isEmpty()
-            ? QStringLiteral("show") : m_audioSync->activeScriptName();
+        const QString name = m_show->activeScriptName().isEmpty()
+            ? QStringLiteral("show") : m_show->activeScriptName();
         QString safe = name;
         safe.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|])")), QStringLiteral("_"));
         return QFileInfo(QString::fromStdString(s.take.sourceFile)).absolutePath()
@@ -1682,7 +1717,7 @@ QString ComfyPanel::findFfmpeg()
 
 void ComfyPanel::prepareShots(const std::vector<int>& indices, std::function<void()> then)
 {
-    if (m_ffmpeg || !m_audioSync) return;
+    if (m_ffmpeg || !m_show) return;
     const QString ffmpeg = findFfmpeg();
     if (ffmpeg.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("Render"),
@@ -1696,7 +1731,7 @@ void ComfyPanel::prepareShots(const std::vector<int>& indices, std::function<voi
                              QStringLiteral("Cannot create the shot folder:\n%1").arg(outDir));
         return;
     }
-    auto& state = m_audioSync->pipeline();
+    auto& state = m_show->pipeline();
     state.outputDir = outDir.toStdString();
     m_outputDirEdit->setText(outDir);
 
@@ -1774,7 +1809,7 @@ void ComfyPanel::prepareShots(const std::vector<int>& indices, std::function<voi
             ++m_exportDone;
             m_preparedKeys.insert(m_currentExport.key);
             writeExportManifestEntry(m_currentExport.job.outputFile, m_currentExport.signature);
-            auto& settings = m_audioSync->pipeline().shots[m_currentExport.key];
+            auto& settings = m_show->pipeline().shots[m_currentExport.key];
             settings.exportedFile = m_currentExport.job.outputFile;
             settings.exportedTailPadSec = m_currentExport.tailPadSec;
             for (int i = 0; i < static_cast<int>(m_shots.size()); ++i)
@@ -1786,6 +1821,16 @@ void ComfyPanel::prepareShots(const std::vector<int>& indices, std::function<voi
                          m_lastError.toStdString());
         }
         m_progress->setValue(m_exportDone + m_exportFailed);
+        runNextExport();
+    });
+    // A process that never starts sends no finished(): without this the page
+    // would stay "preparing" forever.
+    connect(m_ffmpeg, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart) return;
+        m_exportFailed += 1 + static_cast<int>(m_exportQueue.size());
+        m_exportQueue.clear();
+        m_lastError = QStringLiteral("ffmpeg could not be started: %1").arg(m_ffmpeg->errorString());
+        spdlog::warn("ComfyPanel: {}", m_lastError.toStdString());
         runNextExport();
     });
     runNextExport();

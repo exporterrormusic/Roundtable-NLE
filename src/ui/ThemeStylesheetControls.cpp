@@ -406,6 +406,25 @@ QLabel#rt-caption {
    .arg(rgb(c.textTertiary));
 
     // ─────────────────────────────────────────────────────────────────────
+    //  LABEL ROLES  (setProperty("labelRole", ...), like buttonRole)
+    //    "secondary" — field labels and status text beside controls
+    //    "section"   — small caps heading over a group of controls
+    // ─────────────────────────────────────────────────────────────────────
+    qss += QStringLiteral(R"(
+QLabel[labelRole="secondary"] {
+    color: %1;
+}
+QLabel[labelRole="section"] {
+    color: %1;
+    font-size: %2px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    padding-top: 6px;
+}
+)").arg(rgb(c.textSecondary))
+   .arg(t.sizeXs);
+
+    // ─────────────────────────────────────────────────────────────────────
     //  BADGE  (small status pill — set objectName to "rt-badge")
     // ─────────────────────────────────────────────────────────────────────
     qss += QStringLiteral(R"(

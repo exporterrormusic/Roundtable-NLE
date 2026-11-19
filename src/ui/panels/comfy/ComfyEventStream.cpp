@@ -9,6 +9,7 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QtEndian>
+#include <algorithm>
 
 namespace rt {
 
@@ -27,7 +28,18 @@ ComfyEventStream::ComfyEventStream(QObject* parent)
     : QObject(parent)
     , m_socket(new QTcpSocket(this))
     , m_retry(new QTimer(this))
+    , m_latentTimer(new QTimer(this))
 {
+    connect(m_latentTimer, &QTimer::timeout, this, [this]() {
+        const int count = static_cast<int>(m_latentFrames.size());
+        for (int i = 0; i < count; ++i) {
+            m_latentIndex = (m_latentIndex + 1) % count;
+            if (!m_latentFrames[m_latentIndex].isNull()) {
+                emit previewImage(m_latentFrames[m_latentIndex]);
+                break;
+            }
+        }
+    });
     m_retry->setSingleShot(true);
     m_retry->setInterval(kRetryMs);
     connect(m_retry, &QTimer::timeout, this, &ComfyEventStream::connectNow);
@@ -46,8 +58,9 @@ ComfyEventStream::~ComfyEventStream()
     m_socket->abort();
 }
 
-void ComfyEventStream::open(const QUrl& httpUrl, const QString& clientId)
+void ComfyEventStream::open(const QUrl& httpUrl, const QString& clientId, bool animateLatents)
 {
+    m_animateLatents = animateLatents;
     if (m_wanted && httpUrl == m_url && clientId == m_clientId) {
         if (m_state == State::Closed && !m_retry->isActive()) connectNow();
         return;
@@ -61,12 +74,21 @@ void ComfyEventStream::open(const QUrl& httpUrl, const QString& clientId)
 
 void ComfyEventStream::close()
 {
+    resetLatentPreview();
     m_wanted = false;
     m_retry->stop();
     m_state = State::Closed;
     m_socket->abort();
     m_buffer.clear();
     m_fragment.clear();
+}
+
+void ComfyEventStream::resetLatentPreview()
+{
+    m_latentTimer->stop();
+    m_latentFrames.clear();
+    m_latentNode.clear();
+    m_latentIndex = 0;
 }
 
 void ComfyEventStream::connectNow()
@@ -201,6 +223,14 @@ void ComfyEventStream::dispatchText(const QByteArray& payload)
         const QJsonValue node = data.value(QLatin1String("node"));
         emit executing(promptId, node.isNull() ? QString()
                                  : node.isString() ? node.toString() : QString::number(node.toInt()));
+    } else if (m_animateLatents && type == QLatin1String("VHS_latentpreview")) {
+        resetLatentPreview();
+        const int count = data.value("length").toInt();
+        m_latentNode = data.value("id").toVariant().toString().left(15);
+        if (count > 0 && count <= 512 && !m_latentNode.isEmpty()) {
+            m_latentFrames.resize(count);
+            m_latentTimer->setInterval(qRound(1000.0 / std::clamp(data.value("rate").toDouble(8), 0.5, 60.0)));
+        }
     } else if (type == QLatin1String("kj_preview_override")) {
         // KJNodes' preview override suppresses ComfyUI's binary previews and
         // sends its own as base64 in JSON: a JPEG (one frame / the initial
@@ -243,7 +273,21 @@ void ComfyEventStream::dispatchBinary(const QByteArray& payload)
         return;
     }
     QImage decoded;
-    if (decoded.loadFromData(image)) emit previewImage(decoded);
+    if (!decoded.loadFromData(image)) return;
+    if (!m_latentFrames.empty() && type == 1 && payload.size() >= 35 &&
+        qFromBigEndian<quint32>(p + 4) == 1 && qFromBigEndian<quint32>(p + 8) == 1 &&
+        p[16] <= 15 && QString::fromLatin1(payload.constData() + 17, p[16]) == m_latentNode) {
+        const quint32 index = qFromBigEndian<quint32>(p + 12);
+        if (index >= static_cast<quint32>(m_latentFrames.size())) return;
+        m_latentFrames[index] = decoded;
+        if (!m_latentTimer->isActive()) {
+            m_latentIndex = static_cast<int>(index);
+            emit previewImage(decoded);
+            m_latentTimer->start();
+        }
+        return;
+    }
+    emit previewImage(decoded);
 }
 
 void ComfyEventStream::sendFrame(int opcode, const QByteArray& payload)

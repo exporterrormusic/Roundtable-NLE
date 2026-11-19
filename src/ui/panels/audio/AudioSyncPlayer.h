@@ -61,7 +61,8 @@ public:
     [[nodiscard]] bool hasPreview(const std::string& key) const;
     /// Load [from, to) of `data` (resampled to the engine rate) as the
     /// preview `key`. The caller stops other playback first.
-    bool loadPreview(const std::string& key, const AudioSampleData& data, double from, double to);
+    bool loadPreview(const std::string& key, const AudioSampleData& data, double from, double to,
+                     double dataStart = 0.0);
     /// A rendered media file's mono samples (decoded once; a few are kept).
     [[nodiscard]] const AudioSampleData* mediaAudio(const std::string& path);
     bool playPreview(double fromSec, double speed);

@@ -22,10 +22,12 @@
 #include "panels/comfy/ComfyWorkflow.h"
 
 #include <QElapsedTimer>
+#include <QFile>
 #include <QImage>
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringDecoder>
 
@@ -68,6 +70,7 @@ struct RenderJob
     bool        prepared{false};
     bool        generated{false};
     bool        staged{false};
+    bool        hasArtifacts{false}; ///< a pass left files for this shot on the server
     QString     artifactKey;
     // Live progress from ComfyUI's event feed (0 = none yet).
     int         step{0};
@@ -83,6 +86,7 @@ public:
     {
         QString                   url{QStringLiteral("http://127.0.0.1:8188")};
         QString                   launcher;           ///< run_nvidia_gpu.bat (empty → never launch)
+        QString                   otherLauncher;      ///< other engine's configured local installation
         QJsonObject               prompt;             ///< API prompt (from convertUiWorkflow)
         /// The editor-format workflow, sent as extra_pnginfo like the ComfyUI
         /// editor does: VideoHelperSuite reads its latent-preview switch from
@@ -103,15 +107,31 @@ public:
     ~ComfyRunner() override;
 
     void start(const Config& config, std::vector<RenderJob> jobs);
+    /// Add shots to the batch that is running (false if none is). They use
+    /// the running batch's workflow and references. Added during the first
+    /// pass they join the passes; later they render whole after the passes.
+    bool append(std::vector<RenderJob> jobs);
     /// Interrupts the running render and abandons the rest of the batch.
     void stop();
+    /// Takes these jobs out of the queue (State::Skipped, "Removed") and frees
+    /// their pass files on the server. The shot rendering right now is left
+    /// alone (Stop ends it). Returns how many were removed.
+    int remove(const std::vector<int>& indices);
+    /// Interrupts only the shot rendering right now (State::Skipped,
+    /// "Stopped") and goes on with the rest of the queue. False if no shot
+    /// is rendering.
+    bool cancelCurrent();
+    /// Index of the shot rendering right now, or -1.
+    [[nodiscard]] int runningIndex() const noexcept;
     [[nodiscard]] bool isRunning() const noexcept { return m_running; }
     [[nodiscard]] const std::vector<RenderJob>& jobs() const noexcept { return m_jobs; }
     /// Seconds per rendered frame measured so far (0 = unknown).
     [[nodiscard]] double secondsPerFrame() const noexcept;
 
     /// Launch the server now (without a batch). Result via log().
-    void launchServer(const QString& url, const QString& launcher);
+    void launchServer(const QString& url, const QString& launcher, const QString& otherLauncher = {},
+                      bool onlyIfRunning = false);
+    bool isStartingServer() const { return m_warming; }
 
     /// The launcher's "python ... main.py ..." line with the browser
     /// auto-open disabled, or empty if the .bat has no such line (then the
@@ -122,6 +142,7 @@ public:
     [[nodiscard]] static QString serverWorkingDirFromLauncher(const QString& launcherPath);
 
 signals:
+    void serverStartupChanged();
     void jobChanged(int index);
     void jobRendered(int index, const QString& file);
     void log(const QString& line);
@@ -139,8 +160,8 @@ private:
     using Done = std::function<void(bool ok, const QString& error)>;
 
     // Server
-    void checkAlive(std::function<void(bool)> then, int timeoutMs = 3000);
-    void ensureServer(Done then);
+    void checkAlive(std::function<void(bool, QString)> then, int timeoutMs = 3000);
+    void ensureServer(Done then, bool onlyIfRunning = false);
     void startServer(Done then);
     void onServerOutput();
     /// "Rendering · WanVideo Sampler 3/8 · 1:23 / ~4:10"
@@ -149,6 +170,7 @@ private:
     QStringDecoder m_serverDecoder{QStringDecoder::Utf8};
     QString        m_serverLineBuf;      ///< partial line awaiting CR / LF
     QString        m_serverLogPath;
+    QFile          m_serverLog;          ///< open while a server we launched runs
     /// The console's own bar ("4/8 [") drives job.step for this prompt: the
     /// event feed reports a sampler step as soon as its model pass ends
     /// (update_absolute(step + 1)), one ahead of the console.
@@ -168,17 +190,41 @@ private:
     void nextJob();
     void runCurrentJob();
     void submitCurrent();
+    void verifyH3Cutout(std::function<void()> then);
+    /// Before a prompt that uses Roundtable's own nodes is queued: ask the
+    /// server whether it has each one (once per server start). A missing node
+    /// stops the batch with install instructions instead of ComfyUI's raw
+    /// rejection.
+    void verifyBatchNodes(QStringList nodeTypes, std::function<void()> then);
+    void queuePrompt(const QJsonObject& prompt, const QJsonObject& sourcePrompt);
     void pollCurrent();
     void downloadOutput(const QJsonObject& outputs);
     void archiveCurrent(const QString& videoFile, int fileIndex, Done then);
-    void failCurrent(const QString& why);
-    void stopBatch(const QString& why);
+    /// `retry` false: a restart cannot fix it (a local file problem), so the
+    /// shot fails at once and ComfyUI keeps running for the next one.
+    void failCurrent(const QString& why, bool retry = true);
+    /// `keepArtifacts`: leave every pass file on the server (they are the
+    /// only copy of finished work).
+    void stopBatch(const QString& why, bool keepArtifacts = false);
+    /// Ask the server to delete one shot's pass files.
+    void releaseArtifacts(RenderJob& job);
+    /// A batch ended early: drop unfinished shots' pass files and unload
+    /// the models so the VRAM goes back to editing. `keepIndex` (a job index,
+    /// or -1) is the one shot whose files stay: the server marks them so
+    /// later clean-ups leave them alone too.
+    void releaseAfterEarlyEnd(int keepIndex = -1);
+    /// Polls /queue until `promptId` is no longer running or pending (or
+    /// `triesLeft` runs out), then calls `then`. Keeps an interrupt from
+    /// landing on the next shot's prompt.
+    void waitForPromptGone(const QString& promptId, int triesLeft, std::function<void()> then);
     void finishBatch();
     void setStatus(const QString& status);
     [[nodiscard]] RenderJob& current() { return m_jobs[static_cast<size_t>(m_index)]; }
 
     QNetworkAccessManager* m_net{nullptr};
     QPointer<QProcess>     m_server;          ///< ComfyUI launched by us
+    QString                m_serverLauncher;
+    bool                   m_warming{false};
     QTimer*                m_pollTimer{nullptr};
     QElapsedTimer          m_jobClock;
 
@@ -188,10 +234,14 @@ private:
     int                    m_index{-1};
     std::vector<int>        m_executionOrder;
     int                    m_orderPosition{-1};
-    int                    m_stage{0}; // 0 = whole shot, 1 = prepare, 2 = generate, 3 = finish
+    int                    m_stage{0}; // 0 = whole shot; SCAIL 1 = prepare, 2 = generate, 3 = finish; H3 see kH3StageCount
+    int                    m_stageCount{3};
     bool                   m_running{false};
     bool                   m_stopRequested{false};
     QString                m_promptId;
+    bool                   m_sweptLeftovers{false}; ///< this batch asked the server to clear old batches' files
+    QSet<QString>          m_verifiedNodes;   ///< Roundtable node types this server is known to have
+    QString                m_batchId;         ///< prefix of every artifact key in this batch
     QString                m_clientId;
     int                    m_pollFailures{0};
     QString                m_uploadedWide;

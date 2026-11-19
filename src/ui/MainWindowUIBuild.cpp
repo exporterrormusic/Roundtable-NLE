@@ -854,6 +854,8 @@ void MainWindow::buildPanels()
         return !m_destroying.load(std::memory_order_acquire) && m_comfyPanel
             && m_comfyPanel->isRendering();
     });
+    // Queued: the recovery copy is written after the panel finished updating.
+    connect(m_comfyPanel, &ComfyPanel::renderRecorded, this, &MainWindow::onAutoSave, Qt::QueuedConnection);
     connect(m_comfyPanel, &ComfyPanel::assembleRequested, this, [this]() {
         if (m_destroying.load(std::memory_order_acquire)) return;
         if (!m_currentProject || !m_comfyPanel) return;

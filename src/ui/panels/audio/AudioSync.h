@@ -94,6 +94,7 @@
 #include "ai/ShotPipeline.h"   // ShowPipelineState (per-session)
 #include "panels/audio/AudioSampleLoader.h"
 #include "panels/audio/AudioSyncPlayer.h"
+#include "panels/audio/ShowSession.h"
 #include "panels/audio/TranscriptionRunner.h"
 
 #include <atomic>
@@ -168,22 +169,9 @@ struct ScriptSession
     ShowPipelineState                       pipeline;      ///< see AudioSync::session().pipeline
 };
 
-/// One script line of a shot-table script as the COMFYUI page sees it.
-struct ShowShot
-{
-    int         lineNumber{-1};
-    std::string dialogue;
-    std::string action;
-    std::string segment;
-    std::string shot;        ///< effectiveShot(): doc value, in-app pick, or empty
-    std::string key;         ///< ScriptMatcher::normalize(dialogue) — pipeline key
-    bool        hasTake{false};
-    SyncClip    take;        ///< the CONFIRMED take (valid when hasTake)
-};
-
 // ─── AudioSync panel ────────────────────────────────────────────────────────
 
-class AudioSync : public QWidget
+class AudioSync : public QWidget, public ShowSession
 {
     Q_OBJECT
 
@@ -360,37 +348,37 @@ public:
     void setShotOverride(const ScriptLine& line, const std::string& shot);
 
     // ── COMFYUI page (shot-table scripts) ───────────────────────────────
-    [[nodiscard]] bool isShotScript() const;
-    [[nodiscard]] QString activeScriptName() const;
+    [[nodiscard]] bool isShotScript() const override;
+    [[nodiscard]] QString activeScriptName() const override;
     /// Every line of the active shot-table script in script order, with its
     /// picked take (if any).
-    [[nodiscard]] std::vector<ShowShot> showShots() const;
+    [[nodiscard]] std::vector<ShowShot> showShots() const override;
     /// Play a take (by SyncClip::id) in the take player and adjust its in/out
     /// points (one undo step).  Returns true if the in/out changed.
-    bool openTakePlayerForClipId(int clipId);
+    bool openTakePlayerForClipId(int clipId) override;
 
     // ── Preview audio for other pages (COMFYUI SHOTS transport) ────────
     // Load a source range once, then play it at any speed (reverse and slow
     // included — the engine time-stretches) or scrub it.
     /// Load [rangeStart, rangeEnd] of a take's source audio. False if none.
-    bool loadPreviewAudioForTake(int clipId, double rangeStart, double rangeEnd);
+    bool loadPreviewAudioForTake(int clipId, double rangeStart, double rangeEnd) override;
     /// Load a media file's own audio (e.g. a ComfyUI render), decoded once.
-    bool loadPreviewAudioForMedia(const std::string& path);
+    bool loadPreviewAudioForMedia(const std::string& path) override;
     /// Play the loaded range from `fromSec` at `speed` (1 = normal, <0 = reverse).
-    bool playPreviewAudio(double fromSec, double speed);
+    bool playPreviewAudio(double fromSec, double speed) override;
     /// A short burst at `atSec` (scrub / frame step).
-    void scrubPreviewAudio(double atSec);
+    void scrubPreviewAudio(double atSec) override;
     /// Pause without unloading (the next play / scrub is instant).
-    void pausePreviewAudio();
-    void stopTakeAudio();
+    void pausePreviewAudio() override;
+    void stopTakeAudio() override;
     /// Source time being heard while playing, or -1 when stopped.
-    [[nodiscard]] double takeAudioTime() const;
+    [[nodiscard]] double takeAudioTime() const override;
     /// Set a take's in/out (seconds in its source) as one undo step.
-    bool setTakeInOut(int clipId, double start, double end);
+    bool setTakeInOut(int clipId, double start, double end) override;
     /// Framing / per-shot settings of the active script session. Saved with
     /// the project (AudioSync blob v8); edits need no extra notification.
-    [[nodiscard]] ShowPipelineState& pipeline() noexcept { return session().pipeline; }
-    [[nodiscard]] const ShowPipelineState& pipeline() const noexcept { return session().pipeline; }
+    [[nodiscard]] ShowPipelineState& pipeline() noexcept override { return session().pipeline; }
+    [[nodiscard]] const ShowPipelineState& pipeline() const noexcept override { return session().pipeline; }
 
     /// Return the subset of script characters that have no default shot configured.
     /// Always empty for shot-table scripts (their announcer is video, not a sprite).
@@ -642,7 +630,8 @@ private:
     // TTS drafts): buffers, sync-clock detach. What plays and the widgets
     // that follow it stay here.
     AudioSyncPlayer m_player;
-    bool loadPreviewAudio(const std::string& key, const AudioSampleData& data, double rangeStart, double rangeEnd);
+    bool loadPreviewAudio(const std::string& key, const AudioSampleData& data, double rangeStart, double rangeEnd,
+                          double dataStart = 0.0);
 
     // Playback state
     int     m_playingClipIdx{-1};

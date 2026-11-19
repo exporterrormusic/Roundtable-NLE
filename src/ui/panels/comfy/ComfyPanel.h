@@ -7,8 +7,12 @@
  *            export status; per-recording WIDE / CLOSE-UP framing with
  *            per-shot overrides; tail padding; batch export via ffmpeg.
  *
- * All state lives in AudioSync's active session (ShowPipelineState), so it
- * follows script switching and is saved with the project.
+ *   QUEUE    — the running batch, ComfyUI's live preview and its console.
+ *   SETTINGS — ComfyUI server, workflow, references, shot files, assembly.
+ *
+ * All state lives in the open script's ShowSession (ShowPipelineState), so it
+ * follows script switching and is saved with the project. The AUDIO page
+ * implements ShowSession; this page never touches that widget directly.
  */
 
 #pragma once
@@ -53,7 +57,7 @@ class QTreeWidgetItem;
 
 namespace rt {
 
-class AudioSync;
+class ShowSession;
 class CommandStack;
 class ComfyRunner;
 class Timeline;
@@ -67,7 +71,7 @@ class ComfyPanel : public QWidget
 {
     Q_OBJECT
 public:
-    explicit ComfyPanel(AudioSync* audioSync, QWidget* parent = nullptr);
+    explicit ComfyPanel(ShowSession* show, QWidget* parent = nullptr);
     ~ComfyPanel() override;
 
     /// Rebuild the shot list from the AUDIO page's current script + takes.
@@ -86,6 +90,9 @@ signals:
     /// "ASSEMBLE ON TIMELINE" — MainWindow picks the sequence and calls
     /// assembleIntoTimeline().
     void assembleRequested();
+    /// A finished render was added to its shot. MainWindow writes a recovery
+    /// copy of the project so hours of renders survive a crash.
+    void renderRecorded();
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -104,10 +111,15 @@ private:
     void setupUi();
     void selectShot(int index);
     void loadFramingForSelection();
+    void updateFpsControl(const ShowShot* shot = nullptr);
     void applyFraming(const ShotFraming& framing, bool commit);
     void updateFramingControls(const ShotFraming& framing);
     void updateOutputPreview();
     void updateShotRow(int index);
+    [[nodiscard]] QTreeWidgetItem* shotItem(int index) const;
+    /// A / R on the SHOTS page: approve / mark for retake every selected
+    /// shot; the same key again clears it.
+    void reviewSelectedShots(bool approve);
     void updateExportSummary();
     [[nodiscard]] QSize sourceSize(const std::string& path);
     [[nodiscard]] QString defaultOutputDir() const;
@@ -158,6 +170,7 @@ private:
     void showRenderMenu(int renderIndex, const QPoint& globalPos);
     void deleteRender(int renderIndex);
     void showRenderPreview();
+    void editRenderMask();
 
     // Big view + transport (SHOTS pane).  Mode 0 = framing (the take:
     // plays with audio, in/out handles), 1 = the chosen render.
@@ -200,6 +213,9 @@ private:
     void applyDevDefaults();
     /// Loads + converts the workflow file; false (with a message) on error.
     bool loadWorkflow(QString* error);
+    /// MiniMax H3 swap chosen on SETTINGS (else SCAIL); kept per machine.
+    [[nodiscard]] bool h3Selected() const;
+    [[nodiscard]] QString workflowPath() const;
     /// Render the given shots (indices into m_shots). `includeRendered`
     /// re-renders shots that already have a render.
     void startRender(const std::vector<int>& shotIndices, bool includeRendered, bool freshSeeds = false);
@@ -211,9 +227,10 @@ private:
     void updateQueueRow(int jobIndex);
     void updateRenderButtons();
 
-    AudioSync*                         m_audioSync{nullptr};
+    ShowSession*                       m_show{nullptr};
     std::unique_ptr<VideoFrameGrabber> m_grabber;
     std::vector<ShowShot>              m_shots;
+    std::vector<QTreeWidgetItem*>      m_shotItems;   ///< row of m_shots[i]; rebuilt by refresh()
     int                                m_selected{-1};
     std::unordered_map<std::string, QSize> m_sourceSizes;
     QImage                             m_sourceFrame;
@@ -240,6 +257,7 @@ private:
     QStackedWidget* m_bigView{nullptr};          ///< FramingEditor | big render view
     VideoFrameView* m_bigRender{nullptr};
     QPushButton*   m_playBtn{nullptr};
+    QPushButton*   m_maskBtn{nullptr};
     QLabel*        m_timeLabel{nullptr};
     ComfyTrimBar*  m_trimBar{nullptr};
     QTimer*        m_playTimer{nullptr};
@@ -301,6 +319,7 @@ private:
 
     // SETTINGS / QUEUE pages + action bar
     QLineEdit*       m_urlEdit{nullptr};
+    QComboBox*       m_engineCombo{nullptr};
     QLineEdit*       m_launcherEdit{nullptr};
     QLineEdit*       m_workflowEdit{nullptr};
     QLabel*          m_workflowStatus{nullptr};
@@ -328,7 +347,9 @@ private:
     QJsonObject      m_workflowPrompt;
     QJsonObject      m_workflowUi;       ///< editor JSON (sent as extra_pnginfo)
     comfy::WorkflowSlots m_workflowTargets;
-    QString          m_workflowLoadedFrom;
+    QString          m_workflowLoadedFrom;   ///< file the loaded workflow came from (empty = load again)
+    qint64           m_workflowLoadedSize{-1};
+    qint64           m_workflowLoadedMtime{-1};
     std::vector<std::string> m_jobShotKeys;   ///< runner job index → shot key
 };
 

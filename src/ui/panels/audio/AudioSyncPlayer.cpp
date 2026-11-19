@@ -204,15 +204,15 @@ const AudioSampleData* AudioSyncPlayer::mediaAudio(const std::string& path)
 }
 
 bool AudioSyncPlayer::loadPreview(const std::string& key, const AudioSampleData& data,
-                                  double rangeStart, double rangeEnd)
+                                  double rangeStart, double rangeEnd, double dataStart)
 {
     if (!m_engine || data.samples.empty() || data.sampleRate == 0) return false;
 
     const double srcRate = static_cast<double>(data.sampleRate);
     const double engineRate = static_cast<double>(m_engine->config().sampleRate);
-    const double from = std::max(0.0, rangeStart);
+    const double from = std::max(0.0, rangeStart - dataStart);
     const auto s0 = std::min(data.samples.size(), static_cast<size_t>(from * srcRate));
-    const auto s1 = std::min(data.samples.size(), static_cast<size_t>(std::max(from, rangeEnd) * srcRate));
+    const auto s1 = std::min(data.samples.size(), static_cast<size_t>(std::max(from, rangeEnd - dataStart) * srcRate));
     if (s1 <= s0 + 1) return false;
 
     // Resample the range to the engine rate (linear, like playClip).
@@ -228,8 +228,8 @@ bool AudioSyncPlayer::loadPreview(const std::string& key, const AudioSampleData&
         m_previewBuffer[j] = a + (b - a) * frac;
     }
     m_previewKey = key;
-    m_previewFrom = static_cast<double>(s0) / srcRate;
-    m_previewEnd = static_cast<double>(s1) / srcRate;
+    m_previewFrom = dataStart + static_cast<double>(s0) / srcRate;
+    m_previewEnd = dataStart + static_cast<double>(s1) / srcRate;
     m_previewRate = engineRate;
     // Same isolation as playClip: never move the timeline's clock.
     detachSyncClock();
