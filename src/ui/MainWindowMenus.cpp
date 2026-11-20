@@ -251,12 +251,14 @@ void MainWindow::buildEditMenu(QMenuBar* menuBar)
         const bool canCopy = (binFocused && projectBin()->hasSelection())
             || (graphicsFocused && m_timelineWorkspace->graphicsEditorPanel()->selectedLayer())
             || (effectsFocused && effectControlsPanel()
-                && (effectControlsPanel()->hasSelectedEffect() || keySelection))
+                && (effectControlsPanel()->hasSelectedEffect()
+                    || effectControlsPanel()->hasSelectedMask() || keySelection))
             || timelineCopyTarget;
         const bool canPaste = (binFocused && projectBin()->hasClipboard())
             || (graphicsFocused && m_timelineWorkspace->graphicsEditorPanel()->hasCopiedLayer())
             || (effectControlsPanel() && effectControlsPanel()->clip()
                 && (effectControlsPanel()->hasCopiedEffect()
+                    || effectControlsPanel()->hasCopiedMask()
                     || effectControlsPanel()->hasKfClipboardData()))
             || (panel && !panel->clipboard().empty());
         const bool canDelete = (graphicsFocused && m_timelineWorkspace

@@ -663,6 +663,9 @@ private:
         /// The source clip's effects (filters), frozen at copy time. Null or
         /// empty = nothing to paste. Shared so the clipboard stays copyable.
         std::shared_ptr<const EffectStack> effects;
+        /// The source clip's Opacity masks (assigned ones only). Pasted with
+        /// the Opacity attribute, appended to the target's masks.
+        std::vector<OpacityMask> opacityMasks;
     };
     std::optional<AttributesClipboard> m_attrClipboard;
 

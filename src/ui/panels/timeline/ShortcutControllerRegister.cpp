@@ -246,6 +246,19 @@ void ShortcutController::registerKeyboardShortcuts()
             if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
             return;
         }
+        // Effect Controls has a copied mask → paste it onto the current
+        // clip (selected effect, else Opacity). Like effects, no EC focus
+        // needed; Ctrl+C on the timeline clears it.
+        if (m_ws->effectControlsPanel() && m_ws->effectControlsPanel()->hasCopiedMask()
+            && m_ws->effectControlsPanel()->clip()) {
+            if (m_ws->effectControlsPanel()->pasteMask()) {
+                m_ws->invalidateCompositeCache();
+                m_ws->updateTransformOverlay();
+                if (m_ws->programMonitor()) m_ws->programMonitor()->requestRefresh();
+                m_ws->schedulePostEditWork();
+            }
+            return;
+        }
         // Effect Controls has a copied effect → paste it onto the current
         // clip. Does NOT require EC focus — the user may have clicked a
         // different clip on the timeline after copying the effect.
@@ -328,6 +341,14 @@ void ShortcutController::registerKeyboardShortcuts()
                 m_ws->effectControlsPanel()->clearCopiedEffect();
                 m_ws->effectControlsPanel()->clearKfClipboard();
             }
+            return;
+        }
+        // Effect Controls focused with a selected mask → copy the mask
+        // (Premiere: select a mask, Ctrl+C, select Opacity on another clip,
+        // Ctrl+V).
+        if (m_ws->effectControlsPanel() && m_ws->effectControlsPanel()->isAncestorOf(fw)
+            && m_ws->effectControlsPanel()->hasSelectedMask()
+            && m_ws->effectControlsPanel()->copySelectedMask()) {
             return;
         }
         // Effect Controls focused with a selected effect → copy the effect

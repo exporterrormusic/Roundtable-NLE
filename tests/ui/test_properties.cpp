@@ -1430,6 +1430,72 @@ TEST(TimelinePanel, PasteAttributesPastesCheckedEffects)
     EXPECT_EQ(target()->effects().effect(1).effectType(), rt::EffectType::Blur);
 }
 
+// Paste Attributes with Opacity checked also pastes the source's Opacity
+// masks (Premiere: masks are part of Opacity); unassigned masks stay behind,
+// and undo removes only the pasted masks.
+TEST(TimelinePanel, PasteAttributesOpacityPastesOpacityMasks)
+{
+    rt::Timeline timeline;
+    rt::Track* v1 = timeline.addVideoTrack("V1");
+    auto src = std::make_unique<rt::VideoClip>();
+    src->setTimelineIn(0);
+    src->setDuration(48000);
+    rt::OpacityMask assigned;
+    assigned.name = "Mask 1";
+    assigned.inverted = true;
+    src->addMask(assigned);
+    rt::OpacityMask loose;
+    loose.name = "Mask 2";
+    loose.unassigned = true;
+    src->addMask(loose);
+    const uint64_t srcMaskId = src->masks()[0].maskId;
+    const uint64_t srcId = v1->addClip(std::move(src))->id();
+    auto dst = std::make_unique<rt::VideoClip>();
+    dst->setTimelineIn(96000);
+    dst->setDuration(48000);
+    rt::OpacityMask own;
+    dst->addMask(own);
+    const uint64_t ownId = dst->masks()[0].maskId;
+    const uint64_t dstId = v1->addClip(std::move(dst))->id();
+    auto target = [&]() -> rt::Clip* { return v1->clip(v1->findClipIndexById(dstId)); };
+
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    panel.setTimeline(&timeline);
+    panel.selection().selectClip({0, srcId});
+    panel.copyAttributesFromSelection();
+    panel.selection().selectClip({0, dstId});
+
+    QString opacityLabel;
+    QTimer::singleShot(0, [&opacityLabel]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        for (auto* box : dialog->findChildren<QCheckBox*>())
+            if (box->text().startsWith(QStringLiteral("Opacity"))) {
+                opacityLabel = box->text();
+                box->setChecked(true);
+            }
+        dialog->accept();
+    });
+    panel.showPasteAttributesDialog();
+
+    EXPECT_EQ(opacityLabel, QStringLiteral("Opacity (+ 1 mask)"));
+    ASSERT_EQ(target()->masks().size(), 2u);
+    EXPECT_EQ(target()->masks()[0].maskId, ownId);
+    EXPECT_NE(target()->masks()[1].maskId, srcMaskId);
+    EXPECT_TRUE(target()->masks()[1].inverted);
+    EXPECT_FALSE(target()->masks()[1].unassigned);
+
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(target()->masks().size(), 1u);
+    EXPECT_EQ(target()->masks()[0].maskId, ownId);
+
+    ASSERT_TRUE(stack.redo());
+    ASSERT_EQ(target()->masks().size(), 2u);
+    EXPECT_TRUE(target()->masks()[1].inverted);
+}
+
 TEST(TimelinePanel, RemoveAttributesRemovesChosenTypesAcrossSelectionAndUndoesExactly)
 {
     rt::Timeline timeline;
@@ -2624,6 +2690,64 @@ TEST(EffectControlsPanel, UnassignedMaskAssignsToOpacityAndEffectsWithUndo)
     ASSERT_EQ(clip.masks().size(), 1u);
     EXPECT_TRUE(clip.masks()[0].unassigned);
     EXPECT_EQ(clip.masks()[0].maskId, maskId);
+}
+
+// Premiere: select a mask, Ctrl+C, show another clip, Ctrl+V → the mask is
+// added to that clip's Opacity as a new mask (own id, keyframes kept), and
+// undo removes exactly that mask.
+TEST(EffectControlsPanel, CopiedMaskPastesOntoAnotherClipsOpacity)
+{
+    rt::VideoClip source;
+    rt::OpacityMask mask;
+    mask.name = "Face";
+    mask.shape = rt::MaskShape::Rectangle;
+    mask.base.centerX = 0.3f;
+    mask.feather.addKeyframe(0, 4.0f);
+    mask.feather.addKeyframe(24000, 12.0f);
+    source.addMask(mask);
+    const uint64_t sourceMaskId = source.masks()[0].maskId;
+
+    rt::VideoClip target;
+    rt::OpacityMask existing;
+    existing.name = "Face";   // same name → the paste gets renumbered
+    target.addMask(existing);
+    const uint64_t existingId = target.masks()[0].maskId;
+
+    rt::CommandStack stack;
+    rt::EffectControlsPanel panel;
+    panel.setCommandStack(&stack);
+    panel.resize(900, 600);
+    panel.setClip(&source);
+    EXPECT_FALSE(panel.copySelectedMask());   // nothing selected yet
+    ASSERT_TRUE(panel.selectMaskById(0, sourceMaskId));
+    ASSERT_TRUE(panel.copySelectedMask());
+    EXPECT_TRUE(panel.hasCopiedMask());
+    EXPECT_FALSE(panel.hasCopiedEffect());
+
+    panel.setClip(&target);
+    ASSERT_TRUE(panel.pasteMask());
+    ASSERT_EQ(target.masks().size(), 2u);
+    EXPECT_EQ(target.masks()[0].maskId, existingId);
+    const rt::OpacityMask& pasted = target.masks()[1];
+    EXPECT_NE(pasted.maskId, sourceMaskId);
+    EXPECT_FALSE(pasted.unassigned);
+    EXPECT_EQ(pasted.shape, rt::MaskShape::Rectangle);
+    EXPECT_FLOAT_EQ(pasted.base.centerX, 0.3f);
+    EXPECT_EQ(pasted.feather.keyframeCount(), 2u);
+    EXPECT_EQ(pasted.name, "Mask 2");
+    EXPECT_TRUE(panel.hasSelectedMask());   // the new mask is selected
+    EXPECT_EQ(source.masks().size(), 1u);   // source untouched
+
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(target.masks().size(), 1u);
+    EXPECT_EQ(target.masks()[0].maskId, existingId);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(target.masks().size(), 2u);
+
+    // Copying a clip elsewhere clears the mask clipboard.
+    panel.clearCopiedEffect();
+    EXPECT_FALSE(panel.hasCopiedMask());
+    EXPECT_FALSE(panel.pasteMask());
 }
 
 TEST(EffectControlsPanel, InPlaceCreatedPenMaskAppearsAndCanBeSelected)

@@ -204,6 +204,37 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "Neon: Vision Eye Dear Grace",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c019": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Marian: Queen",
+            "outfits": {
+                "default": {
+                    "display_name": "Marian: Queen",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Marian: Queen Last Affection",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -450,6 +481,21 @@
             "outfits": {
                 "default": {
                     "display_name": "Mica: Snow Buddy",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c063": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Belorta: Pumpkin Witch",
+            "outfits": {
+                "default": {
+                    "display_name": "Belorta: Pumpkin Witch",
                     "variants": [
                         "default",
                         "aim",
@@ -1872,6 +1918,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_02": {
+                    "display_name": "Nayuta Trivisa",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -2050,6 +2104,36 @@
             "outfits": {
                 "default": {
                     "display_name": "Dorothy: Serendipity",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c235": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Noah",
+            "outfits": {
+                "default": {
+                    "display_name": "Noah",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c236": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Papillon",
+            "outfits": {
+                "default": {
+                    "display_name": "Papillon",
                     "variants": [
                         "default",
                         "aim",
@@ -3624,6 +3708,14 @@
                         "aim",
                         "cover"
                     ]
+                },
+                "outfit_01": {
+                    "display_name": "Snow White: Heavy Arms Lacrimosa",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
                 }
             }
         },
@@ -3649,6 +3741,21 @@
             "outfits": {
                 "default": {
                     "display_name": "Rapunzel",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c474": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Dorothy",
+            "outfits": {
+                "default": {
+                    "display_name": "Dorothy",
                     "variants": [
                         "default",
                         "aim",
@@ -3823,6 +3930,14 @@
                 },
                 "outfit_02": {
                     "display_name": "Anachiro | Cinderella Beatiful Me",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_03": {
+                    "display_name": "Cinderella Glass Curtsy",
                     "variants": [
                         "default",
                         "aim",
@@ -4211,6 +4326,14 @@
             "outfits": {
                 "default": {
                     "display_name": "Label",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Label Occultist",
                     "variants": [
                         "default",
                         "aim",
@@ -5687,6 +5810,21 @@
                 }
             }
         },
+        "c9027": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Heretic Dorothy",
+            "outfits": {
+                "default": {
+                    "display_name": "Heretic Dorothy",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "c9028": {
             "category": "NPC",
             "has_mouth_animation": true,
@@ -5897,6 +6035,36 @@
             "outfits": {
                 "default": {
                     "display_name": "Morgana",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9041": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Doctor Maria",
+            "outfits": {
+                "default": {
+                    "display_name": "Doctor Maria",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "c9042": {
+            "category": "NPC",
+            "has_mouth_animation": true,
+            "name": "Bernoullia",
+            "outfits": {
+                "default": {
+                    "display_name": "Bernoullia",
                     "variants": [
                         "default",
                         "aim",
@@ -6416,6 +6584,14 @@
             "outfits": {
                 "default": {
                     "display_name": "Commander (GODDESS)",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                },
+                "outfit_01": {
+                    "display_name": "Andersen",
                     "variants": [
                         "default",
                         "aim",
@@ -7076,6 +7252,186 @@
                 }
             }
         },
+        "ce009_char_01": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Queen (Makoto)",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Queen (Makoto)",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_char_02": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Yukiko",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Yukiko",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_char_03": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Aigis",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Aigis",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_enemy_ade": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Ade",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Ade",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_enemy_delta": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Delta",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Delta",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_enemy_miranda": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Miranda",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Miranda",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_enemy_phantom": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Phantom",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Phantom",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_enemy_poli": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Poli",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Poli",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_enemy_quency": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Quency",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Quency",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_skill_01": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Johanna",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Johanna",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_skill_02": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Amaterasu",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Amaterasu",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "ce009_skill_03": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Smol Athena",
+            "outfits": {
+                "default": {
+                    "display_name": "Smol Athena",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
         "cherryblossom": {
             "category": "Character",
             "has_mouth_animation": true,
@@ -7098,6 +7454,21 @@
             "outfits": {
                 "default": {
                     "display_name": "Claymore",
+                    "variants": [
+                        "default",
+                        "aim",
+                        "cover"
+                    ]
+                }
+            }
+        },
+        "coinrushshowdown": {
+            "category": "Character",
+            "has_mouth_animation": true,
+            "name": "Coin Rush Showdown",
+            "outfits": {
+                "default": {
+                    "display_name": "Coin Rush Showdown",
                     "variants": [
                         "default",
                         "aim",

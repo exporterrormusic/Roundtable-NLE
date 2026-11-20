@@ -1539,6 +1539,18 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
         }
     }
 
+    // CTRL+C / CTRL+V: a selected mask copies, a copied mask pastes.
+    if ((event->key() == Qt::Key_C) && (event->modifiers() & Qt::ControlModifier)
+        && m_hasSelectedMask && copySelectedMask()) {
+        event->accept();
+        return;
+    }
+    if ((event->key() == Qt::Key_V) && (event->modifiers() & Qt::ControlModifier)
+        && m_copiedMask && m_clip) {
+        pasteMask();
+        event->accept();
+        return;
+    }
     // CTRL+C: copy selected effect (only when no keyframes are selected)
     if ((event->key() == Qt::Key_C) && (event->modifiers() & Qt::ControlModifier)
         && m_selectedEffectIndex >= 0) {
@@ -1574,8 +1586,84 @@ void EffectControlsPanel::copySelectedEffect()
     size_t idx = static_cast<size_t>(m_selectedEffectIndex);
     if (idx >= m_clip->effects().effectCount()) return;
     m_copiedEffect = m_clip->effects().effect(idx).cloneWithMasks();
+    m_copiedMask.reset();
     spdlog::info("EffectControlsPanel: copied effect '{}'",
                  m_copiedEffect->name());
+}
+
+bool EffectControlsPanel::copySelectedMask()
+{
+    if (!m_hasSelectedMask || !m_clip) return false;
+    const auto* list = maskListFor(m_selectedMaskEffectId);
+    if (!list) return false;
+    const uint64_t maskId = m_selectedMaskId;
+    const auto it = std::find_if(list->begin(), list->end(),
+        [maskId](const OpacityMask& mask) { return mask.maskId == maskId; });
+    if (it == list->end()) return false;
+    m_copiedMask = *it;
+    m_copiedEffect.reset();
+    if (m_kfTimeline) m_kfTimeline->clearKfClipboard();
+    spdlog::info("EffectControlsPanel: copied mask '{}'", it->name);
+    return true;
+}
+
+bool EffectControlsPanel::pasteMask()
+{
+    if (!m_copiedMask || !m_clip || m_clip->isAudio()
+        || (m_track && m_track->isLocked())) return false;
+
+    // Destination, Premiere-style: the selected effect, else the selected
+    // mask's owner, else Opacity. A paste with nothing selected goes to
+    // Opacity (assigned) — that is what the user is copying it for.
+    NewMaskTarget target = newMaskTarget();
+    if (!m_hasSelectedMask && m_selectedEffectIndex < 0) target = {0, false};
+    const quint64 effectId = target.effectId;
+    auto* list = maskListFor(effectId);
+    if (!list) return false;
+
+    OpacityMask mask = *m_copiedMask;
+    mask.maskId = allocateOpacityMaskId();
+    mask.unassigned = effectId == 0 && target.unassigned;
+    const bool nameTaken = std::any_of(list->begin(), list->end(),
+        [&mask](const OpacityMask& m) { return m.name == mask.name; });
+    if (mask.name.empty() || nameTaken)
+        mask.name = "Mask " + std::to_string(list->size() + 1);
+    const uint64_t maskId = mask.maskId;
+
+    Clip* clip = m_clip;
+    auto resolveList = [clip, effectId]() -> std::vector<OpacityMask>* {
+        if (effectId == 0) return &clip->masks();
+        if (Effect* fx = clip->effects().effectById(effectId))
+            return &fx->masks();
+        return nullptr;
+    };
+    auto command = std::make_unique<LambdaCommand>(
+        "Paste Mask",
+        [resolveList, mask, maskId]() {
+            auto* masks = resolveList();
+            if (!masks) return;
+            const bool exists = std::any_of(masks->begin(), masks->end(),
+                [maskId](const OpacityMask& m) { return m.maskId == maskId; });
+            if (!exists) masks->push_back(mask);
+        },
+        [resolveList, maskId]() {
+            auto* masks = resolveList();
+            if (!masks) return;
+            masks->erase(std::remove_if(masks->begin(), masks->end(),
+                [maskId](const OpacityMask& m) { return m.maskId == maskId; }),
+                masks->end());
+        });
+    if (m_commandStack)
+        executeTimelineEdit(m_commandStack, nullptr, std::move(command));
+    else
+        command->execute();
+
+    refresh();
+    selectMaskById(effectId, maskId);
+    emit maskChanged();
+    emit propertyChanged();
+    spdlog::info("EffectControlsPanel: pasted mask '{}'", mask.name);
+    return true;
 }
 
 void EffectControlsPanel::pasteEffect()

@@ -63,6 +63,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -489,7 +490,19 @@ public:
     /// Clear the copied effect clipboard. Call this when the user copies
     /// a clip (or anything else) so that Ctrl+V doesn't keep pasting the
     /// stale effect.
-    void clearCopiedEffect() noexcept { m_copiedEffect.reset(); }
+    /// Also clears a copied mask (the effect/mask clipboard is one slot).
+    void clearCopiedEffect() noexcept { m_copiedEffect.reset(); m_copiedMask.reset(); }
+
+    /// Returns true if a mask has been copied and is ready to paste.
+    [[nodiscard]] bool hasCopiedMask() const noexcept { return m_copiedMask.has_value(); }
+
+    /// Copy the selected mask (Opacity, effect or unassigned) — Premiere:
+    /// select a mask, Ctrl+C. Returns false if no mask is selected.
+    bool copySelectedMask();
+
+    /// Paste the copied mask as a new mask on the current clip: into the
+    /// selected effect, the selected mask's owner, or Opacity otherwise.
+    bool pasteMask();
 
     /// Delete the currently selected effect (no-op if none selected).
     void deleteSelectedEffect();
@@ -739,6 +752,9 @@ protected:
     uint64_t       m_selectedMaskId{0};
     /// Clipboard for copy/paste of a single effect with its settings.
     std::unique_ptr<Effect> m_copiedEffect;
+    /// Clipboard for copy/paste of a single mask. Exclusive with
+    /// m_copiedEffect: copying one clears the other.
+    std::optional<OpacityMask> m_copiedMask;
     /// Sequence resolution for Position seq-px display conversion (defaults
     /// to 1920×1080 — same basis as the internal REF representation).
     uint32_t       m_seqW{1920};

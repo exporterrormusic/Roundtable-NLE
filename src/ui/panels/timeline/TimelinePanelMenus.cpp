@@ -1117,6 +1117,10 @@ void TimelinePanel::showPasteAttributesDialog()
         auto* chkSpeed     = new QCheckBox("Speed", &dlg);
         auto* chkSpeedRamp = new QCheckBox("Speed Ramp", &dlg);
         auto* chkTimeInterpolation = new QCheckBox("Time Interpolation", &dlg);
+        // Premiere: masks belong to Opacity, so they paste with it.
+        if (const size_t n = m_attrClipboard->opacityMasks.size(); n > 0)
+            chkOpacity->setText(QStringLiteral("Opacity (+ %1 mask%2)")
+                .arg(n).arg(n == 1 ? "" : "s"));
         checks = { chkOpacity, chkPosX, chkPosY, chkScaleX, chkScaleY,
                    chkRotation, chkSpeed, chkSpeedRamp, chkTimeInterpolation };
         int numChecks = static_cast<int>(checks.size());
@@ -1202,6 +1206,8 @@ void TimelinePanel::showPasteAttributesDialog()
             KeyframeTrack<float> oldPan{0.0f};
             // Effects present before the paste; undo removes all others.
             std::vector<uint64_t> oldEffectIds;
+            // Clip masks present before the paste; undo removes all others.
+            std::vector<uint64_t> oldMaskIds;
         };
         std::vector<AttrSnapshot> snapshots;
 
@@ -1215,6 +1221,20 @@ void TimelinePanel::showPasteAttributesDialog()
             for (size_t ei = 0; ei < states.size() && ei < attrs.effects->effectCount(); ++ei)
                 if (states[ei])
                     target->effects().addEffect(attrs.effects->effect(ei).cloneWithMasks());
+        };
+        // Opacity checked on a visual paste → append copies of the source's
+        // Opacity masks (fresh ids, so pasting twice never shares an id).
+        const bool pasteOpacityMasks = !(isAudio && !isVideo)
+            && !checks.empty() && checks[0]->isChecked()
+            && !pastedAttributes.opacityMasks.empty();
+        auto pasteMasksInto = [](Clip* target, const AttributesClipboard& attrs,
+                                 bool enabled) {
+            if (!enabled || target->isAudio()) return;
+            for (OpacityMask mask : attrs.opacityMasks) {
+                mask.maskId = allocateOpacityMaskId();
+                mask.unassigned = false;
+                target->masks().push_back(std::move(mask));
+            }
         };
 
         // The loop below applies values before the command runs, so the
@@ -1235,6 +1255,8 @@ void TimelinePanel::showPasteAttributesDialog()
             snap.clipId = sel.clipId;
             for (size_t ei = 0; ei < target->effects().effectCount(); ++ei)
                 snap.oldEffectIds.push_back(target->effects().effect(ei).id());
+            for (const auto& m : target->masks())
+                snap.oldMaskIds.push_back(m.maskId);
 
             if (isAudio && !isVideo) {
                 if (auto* ac = dynamic_cast<AudioClip*>(target)) {
@@ -1283,8 +1305,10 @@ void TimelinePanel::showPasteAttributesDialog()
             }
             // Effects are appended (not assigned), so they go through the
             // command's redo only — applying here too would paste them twice.
-            if (!m_commandStack)
+            if (!m_commandStack) {
                 pasteEffectsInto(target, pastedAttributes, effectStates);
+                pasteMasksInto(target, pastedAttributes, pasteOpacityMasks);
+            }
         }
         if (!m_commandStack) {
             onScrollChanged();
@@ -1302,7 +1326,8 @@ void TimelinePanel::showPasteAttributesDialog()
                     std::vector<bool> states;
                     for (auto* ck : checks) states.push_back(ck->isChecked());
                     return states;
-                }(), isAudio, isVideo, effectStates, pasteEffectsInto]() {
+                }(), isAudio, isVideo, effectStates, pasteEffectsInto,
+                 pasteOpacityMasks, pasteMasksInto]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
                     // Redo: re-apply the values captured by this command.
                     if (!m_timeline) return;
@@ -1337,6 +1362,7 @@ void TimelinePanel::showPasteAttributesDialog()
                             if (checks_states.size() > 8 && checks_states[8]) target->setTimeInterpolation(pastedAttributes.timeInterpolation);
                         }
                         pasteEffectsInto(target, pastedAttributes, effectStates);
+                        pasteMasksInto(target, pastedAttributes, pasteOpacityMasks);
                     }
                     onScrollChanged();
                     emit contentChanged();
@@ -1375,6 +1401,13 @@ void TimelinePanel::showPasteAttributesDialog()
                                 == snap.oldEffectIds.end())
                                 (void)fx.removeEffect(ei);
                         }
+                        auto& masks = target->masks();
+                        masks.erase(std::remove_if(masks.begin(), masks.end(),
+                            [&snap](const OpacityMask& m) {
+                                return std::find(snap.oldMaskIds.begin(),
+                                                 snap.oldMaskIds.end(), m.maskId)
+                                    == snap.oldMaskIds.end();
+                            }), masks.end());
                     }
                     onScrollChanged();
                     emit contentChanged();
@@ -1419,6 +1452,8 @@ void TimelinePanel::copyAttributesFromSelection()
     ac.timeInterpolation = clip->timeInterpolation();
     if (!clip->effects().isEmpty())
         ac.effects = std::shared_ptr<const EffectStack>(clip->effects().clone());
+    for (const auto& mask : clip->masks())
+        if (!mask.unassigned) ac.opacityMasks.push_back(mask);
     m_attrClipboard = std::move(ac);
 }
 
