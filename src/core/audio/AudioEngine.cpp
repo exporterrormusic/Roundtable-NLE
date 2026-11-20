@@ -810,11 +810,17 @@ void AudioEngine::mixSource(const AudioTrackSource& src, TimeStretch* stretcher,
     const double effSpeed  = speed * clipSpd;
     const double absEff    = std::abs(effSpeed);
 
-    // At exactly 1x effective speed, use direct copy (no time-stretch needed)
+    // Buffer position of this callback's first output sample.  The window
+    // holds SOURCE samples, so the timeline offset is scaled by clip speed.
+    const double srcPos0 =
+        audioSourcePosition(playPos, effView.startFrame, clipSpd);
+
+    // At exactly 1x effective speed, use direct copy (no time-stretch needed).
+    // (Shuttle x clip can be 1x with neither being 1x, e.g. 0.5 x 2.)
     if (absEff > 0.999 && absEff < 1.001 && effSpeed > 0.0) {
+        const int64_t srcFrame0 = static_cast<int64_t>(std::floor(srcPos0));
         for (unsigned long f = 0; f < frameCount; ++f) {
-            const int64_t timelineFrame = playPos + static_cast<int64_t>(f);
-            const int64_t srcFrame = timelineFrame - effView.startFrame;
+            const int64_t srcFrame = srcFrame0 + static_cast<int64_t>(f);
 
             if (srcFrame < 0 || srcFrame >= effView.totalFrames) continue;
 
@@ -852,7 +858,7 @@ void AudioEngine::mixSource(const AudioTrackSource& src, TimeStretch* stretcher,
     // or simple sample-skipping if maintainPitch is false.
     if (src.maintainPitch) {
         // Skip clips outside the prepared stretcher's playable range.
-        const int64_t srcStart = playPos - effView.startFrame;
+        const int64_t srcStart = static_cast<int64_t>(std::floor(srcPos0));
         if (srcStart >= effView.totalFrames)
             return;  // clip is fully past
 
@@ -860,10 +866,10 @@ void AudioEngine::mixSource(const AudioTrackSource& src, TimeStretch* stretcher,
             return;
         auto& ts = *stretcher;
 
-        // Source start is just the linear offset into the source buffer.
-        // SoundTouch handles consuming source samples at the correct rate
-        // based on the tempo setting — we must NOT pre-multiply by clipSpeed
-        // or the audio gets double-sped.
+        // srcStart is where the playhead says this callback's audio starts
+        // in the buffer (timeline offset x clip speed).  The stretcher
+        // starts there, then consumes source at the tempo rate on its own;
+        // it re-anchors to srcStart only if it drifts (see TimeStretch).
         ts.process(effView.samples, effView.totalFrames, srcStart,
                    output, frameCount,
                    volume, pan, outCh, effView.channels,
@@ -874,10 +880,10 @@ void AudioEngine::mixSource(const AudioTrackSource& src, TimeStretch* stretcher,
         computePan(pan, effView.channels, panL, panR);
 
         for (unsigned long f = 0; f < frameCount; ++f) {
-            const int64_t timelineFrame = playPos + static_cast<int64_t>(f);
-            // Map timeline frame to source frame using clip speed
-            const int64_t srcFrame = static_cast<int64_t>(
-                static_cast<double>(timelineFrame - effView.startFrame) * std::abs(clipSpd));
+            // Output sample f is f x shuttle timeline frames past playPos
+            // (the callback advances playPos by frameCount x shuttle).
+            const int64_t srcFrame = static_cast<int64_t>(std::floor(
+                srcPos0 + static_cast<double>(f) * speed * std::abs(clipSpd)));
 
             if (srcFrame < 0 || srcFrame >= effView.totalFrames) continue;
 

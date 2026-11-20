@@ -56,7 +56,16 @@ void TimeStretch::reset()
     if (m_st) m_st->clear();
 #endif
     m_readPos = 0.0;
+    m_anchorPos = 0.0;
+    m_outSinceAnchor = 0;
     m_initialized = false;
+}
+
+double TimeStretch::outputSourcePosition() const noexcept
+{
+    const double dir = (m_speed < 0.0) ? -1.0 : 1.0;
+    return m_anchorPos
+         + dir * std::abs(m_speed) * static_cast<double>(m_outSinceAnchor);
 }
 
 void TimeStretch::setSpeed(double speed)
@@ -129,7 +138,20 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
         return static_cast<int64_t>(outFrames);
     }
 
-    // --- Initialize on first call (or after reset) ---
+    // --- Drift check: restart from the playhead when our output has moved
+    // away from it (a jump nothing reset us for, or accumulated rounding).
+    // Without this the stretcher ran open-loop forever after its first
+    // call, so any start error stayed for the rest of playback. ---
+    if (m_initialized) {
+        const double drift =
+            static_cast<double>(srcStart) - outputSourcePosition();
+        if (std::abs(drift) > kResyncSeconds * static_cast<double>(m_sampleRate)) {
+            m_st->clear();
+            m_initialized = false;
+        }
+    }
+
+    // --- Initialize on first call (or after reset / resync) ---
     if (!m_initialized) {
         // Don't initialize if the clip isn't in range yet.
         // Initializing with a negative m_readPos would permanently stick
@@ -137,6 +159,8 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
         if (srcStart < 0 || srcStart >= srcFrames)
             return 0;
         m_readPos = static_cast<double>(srcStart);
+        m_anchorPos = static_cast<double>(srcStart);
+        m_outSinceAnchor = 0;
         m_initialized = true;
     }
 
@@ -162,6 +186,11 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
             recv, static_cast<unsigned int>(needed));
 
         if (received > 0) {
+            // Buffer position of the first received sample, for the fade
+            // envelope.  (This used the FEED head m_readPos, which runs a
+            // block or more ahead of what is being heard.)
+            const double fadePos0 = outputSourcePosition();
+            const double fadeStep = isReverse ? -absSpeed : absSpeed;
             // Mix received samples into output with vol/pan
             for (unsigned int i = 0; i < received; ++i) {
                 const size_t rIdx = static_cast<size_t>(i * srcChannels);
@@ -170,9 +199,11 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
                 // Approximate fade envelope position
                 float vol = volume;
                 if (fadeEnvelope && totalSrcFrames > 0) {
-                    const auto p = static_cast<int64_t>(std::abs(m_readPos));
+                    const double p = std::clamp(
+                        fadePos0 + fadeStep * static_cast<double>(i),
+                        0.0, static_cast<double>(totalSrcFrames));
                     const float normPos = static_cast<float>(
-                        std::min(p, totalSrcFrames)) / static_cast<float>(totalSrcFrames);
+                        p / static_cast<double>(totalSrcFrames));
                     vol *= fadeEnvelope(normPos);
                 }
 
@@ -191,6 +222,7 @@ int64_t TimeStretch::process(const float* src, int64_t srcFrames,
                 }
             }
             outWritten += received;
+            m_outSinceAnchor += static_cast<int64_t>(received);
             continue;
         }
 

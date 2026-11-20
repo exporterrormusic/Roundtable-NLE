@@ -437,6 +437,35 @@ bool VideoDecoder::open(const std::filesystem::path& path, bool forceSoftware,
         m_info.frameCount = static_cast<int64_t>(m_info.duration * m_info.fps);
     m_info.containerFormat = m_fmtCtx->iformat->name;
 
+    // Keyframe positions from the container index (MP4 stss, MKV cues),
+    // already in memory after open.  MP4 index timestamps are decode times;
+    // a B-frame stream shows a keyframe up to video_delay frames later, so
+    // aim there (a seek then lands on the keyframe and decodes at most
+    // video_delay pictures).  Skipped where it can't help: VFR (frame
+    // numbers aren't times), intra-only (every frame is a keyframe).
+    m_info.keyframes.reset();
+    if (!m_info.isVFR && m_info.fps > 0.0) {
+        const int entries = avformat_index_get_entries_count(vs);
+        std::vector<int64_t> keyFrames;
+        keyFrames.reserve(static_cast<size_t>(std::max(0, entries / 8)));
+        const double tb = av_q2d(vs->time_base);
+        const int64_t delay = std::max(0, codecpar->video_delay);
+        for (int i = 0; i < entries; ++i) {
+            const AVIndexEntry* e = avformat_index_get_entry(vs, i);
+            if (!e || !(e->flags & AVINDEX_KEYFRAME) ||
+                e->timestamp == AV_NOPTS_VALUE)
+                continue;
+            const int64_t frame = std::llround(
+                static_cast<double>(e->timestamp) * tb * m_info.fps) + delay;
+            if (frame >= 0) keyFrames.push_back(frame);
+        }
+        if (keyFrames.size() >= 2 &&
+            keyFrames.size() * 2 < static_cast<size_t>(std::max(1, entries))) {
+            m_info.keyframes = std::make_shared<const KeyframeIndex>(
+                KeyframeIndex::fromFrames(std::move(keyFrames)));
+        }
+    }
+
     const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
     m_info.codecName = codec ? codec->name : "unknown";
 

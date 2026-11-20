@@ -48,6 +48,9 @@ struct MappedSourceFrame {
     int64_t lowerFrame{0};  ///< Earlier endpoint for temporal interpolation
     int64_t upperFrame{0};  ///< Later endpoint for temporal interpolation
     double  blendPhase{0.0};///< Fractional position from lowerFrame to upperFrame
+    /// Exact fractional source position before frame clamping/wrapping (the
+    /// phase decode-ahead steps from; see DecodeAheadPlan.h).
+    double  position{0.0};
 };
 
 /// Source tick the clip shows at timeline `tick`, before the clamp at 0
@@ -100,7 +103,8 @@ inline MappedSourceFrame mapTickToSourceFrame(const VideoClip& clip,
     if (lowerFrame == upperFrame)
         blendPhase = 0.0;
 
-    return {frame, fps, lowerFrame, upperFrame, blendPhase};
+    return {frame, fps, lowerFrame, upperFrame, blendPhase,
+            sourceFramePosition};
 }
 
 } // namespace rt

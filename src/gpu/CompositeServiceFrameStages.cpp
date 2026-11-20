@@ -728,12 +728,21 @@ void CompositeService::resolveLayers(FrameState& r)
                     // wasted prefetch + a cache miss on the real frame.
                     const auto mapped =
                         mapTickToSourceFrame(*vc, atTick, info);
-                    const bool temporal =
+                    bool temporal =
                         vc->timeInterpolation() != TimeInterpolation::FrameSampling &&
                         mapped.blendPhase > 0.000001 &&
                         mapped.lowerFrame != mapped.upperFrame;
-                    const int64_t primary = temporal
+                    int64_t primary = temporal
                         ? mapped.lowerFrame : mapped.frame;
+                    // Live playback of a very fast clip shows its keyframe
+                    // (same rule as the render path).
+                    if (!r.stillMode) {
+                        if (const auto k =
+                                m_mediaPool->playbackKeyframeFor(handle, primary)) {
+                            primary = *k;
+                            temporal = false;
+                        }
+                    }
                     if (!m_mediaPool->isFrameCached(handle, primary, wantTier))
                         pending.push_back({handle, primary, wantTier});
                     if (temporal &&

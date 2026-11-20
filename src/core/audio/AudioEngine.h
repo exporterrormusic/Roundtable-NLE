@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -102,6 +103,22 @@ struct AudioTrackSource
     /// Fade envelope (optional). Called with normalized position [0, 1].
     std::function<float(float)> fadeEnvelope;
 };
+
+/// Buffer position (in source frames) that a clip's sample window plays at
+/// timeline frame `timelineFrame`.  The window holds SOURCE samples starting
+/// at timeline frame `windowStartFrame` (see computeTimelineAudioRegion), so
+/// a 2x clip reads two source frames per timeline frame.  Every mix path
+/// (1x copy, pitch-preserved stretch, plain resample) must map through
+/// here — the stretch path used the unscaled timeline offset, so a sped-up
+/// clip whose playback started mid-window played the wrong part of the
+/// source (out of sync by (speed-1) x offset).
+[[nodiscard]] inline double audioSourcePosition(int64_t timelineFrame,
+                                                int64_t windowStartFrame,
+                                                double clipSpeed) noexcept
+{
+    return static_cast<double>(timelineFrame - windowStartFrame)
+         * std::abs(clipSpeed);
+}
 
 /// Peak meter data
 struct AudioMeter

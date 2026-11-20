@@ -22,8 +22,10 @@
 #include "FrameScheduler.h"
 #include "decode/VideoDecoder.h"
 #include "PerformanceProfile.h"
+#include "playback/DecodeAheadPlan.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -31,6 +33,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <set>
 #include <string>
@@ -447,6 +450,36 @@ public:
     /// (no decode) plays fine.
     void setPlaybackSpeed(double s);
 
+    /// Per-clip rate hint for decode-ahead.  The compositor calls this for
+    /// every video clip it maps (render and lookahead prewarm): `frame` is
+    /// the frame it is requesting, `exactPos` the fractional source position
+    /// that frame came from, `sourceFramesPerSecond` how fast the clip
+    /// consumes source (clip speed x source fps), `bothNeighbours` whether a
+    /// temporal mode needs floor+ceil.  Decode-ahead then fetches exactly
+    /// the frames a sped-up clip will show instead of every frame.  Hints
+    /// expire after kRateHintTtl, so a file later played elsewhere (Source
+    /// Monitor) falls back to plain decode-ahead.  One hint per FILE: two
+    /// clips of the same file at different speeds on screen at once share
+    /// it (last writer wins — the other clip falls back to nearby frames).
+    /// `info` (the file's stream info) supplies its fps and keyframe index.
+    void noteClipFrameRate(MediaHandle handle, int64_t frame, double exactPos,
+                           double sourceFramesPerSecond, bool bothNeighbours,
+                           const VideoStreamInfo* info);
+
+    /// Live playback of a very fast clip (>= kKeyframeOnlyPlaybackSpeed,
+    /// clip speed x shuttle) shows keyframes only: the keyframe to show for
+    /// `frame`, or nullopt when this file isn't in that mode (no fresh rate
+    /// hint, slower, intra-only or unindexed file).  Callers use it ONLY for
+    /// live playback renders, never paused/scrub/export.
+    [[nodiscard]] std::optional<int64_t> playbackKeyframeFor(
+        MediaHandle handle, int64_t frame) const;
+
+    /// How far (source frames) a stand-in may be from the requested frame
+    /// during playback: kMaxPlaybackFallbackDistanceFrames displayed frames'
+    /// worth, so a 24x clip isn't blanked by one late decode (and in
+    /// keyframe-only mode at least one keyframe gap).
+    [[nodiscard]] int64_t playbackFallbackDistance(MediaHandle handle) const;
+
     // ── Queries ─────────────────────────────────────────────────────────
 
     /// Get stream info for an opened media.
@@ -745,6 +778,24 @@ private:
     std::atomic<bool>                                  m_anyWorkerMayUseNvdec{false};
     std::atomic<double>                                m_playbackSpeed{1.0}; // for high-speed decode striding
 
+    struct ClipRateHint
+    {
+        int64_t frame{0};
+        double  exactPos{0.0};
+        double  sourceFramesPerSecond{0.0};
+        bool    bothNeighbours{false};
+        double  sourceFps{0.0};                          ///< the file's fps
+        std::shared_ptr<const KeyframeIndex> keyframes;  ///< may be null
+        std::chrono::steady_clock::time_point at{};
+    };
+    /// Fresh hint for `handle` (copy), or nullopt.  Takes m_rateHintMutex.
+    [[nodiscard]] std::optional<ClipRateHint> freshRateHint(MediaHandle handle) const;
+    /// Keyframe-only playback applies to this hint (speed x shuttle).
+    [[nodiscard]] bool keyframeOnly(const ClipRateHint& hint) const;
+    static constexpr auto kRateHintTtl = std::chrono::milliseconds(500);
+    mutable std::mutex                                 m_rateHintMutex;
+    std::unordered_map<MediaHandle, ClipRateHint>      m_rateHints;  ///< by m_rateHintMutex
+
     // Per-handle cooldown to avoid rebuilding the queue every frame tick.
     // Protected by m_prefetchMutex.
     std::unordered_map<MediaHandle, std::chrono::steady_clock::time_point> m_lastScheduleTime;
@@ -854,9 +905,11 @@ private:
     std::vector<MediaHandle> m_exportDecoderRecency;   ///< oldest first
     std::shared_ptr<ScrubDecoderSlot> getExportDecoder(MediaHandle handle);
 
-    /// Source frames advanced per displayed frame: >1 when the source runs
-    /// faster than the sequence or playback is shuttled.
-    [[nodiscard]] int decodeAheadStride(double sourceFps) const;
+    /// How playback walks this file: source frames per displayed frame
+    /// (source/sequence fps x clip speed x shuttle speed) plus the phase
+    /// anchor from the compositor's latest rate hint.  See DecodeAheadPlan.h.
+    [[nodiscard]] DecodeAheadRate decodeAheadRate(MediaHandle handle,
+                                                  double sourceFps) const;
     /// On an exact playback hit, queue decode-ahead once the window ahead of
     /// `frameNumber` is less than half full (see tryGetFrame).
     void topUpDecodeAhead(MediaHandle handle, int64_t frameNumber,

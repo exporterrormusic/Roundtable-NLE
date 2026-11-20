@@ -14,6 +14,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <vector>
@@ -571,6 +572,139 @@ TEST(AudioEngineTest, SourceSnapshotsRemainValidDuringLivePublication)
 
     EXPECT_TRUE(engine.hasTrackSources());
     EXPECT_EQ(engine.callbackStats().callbackCount, 200u);
+}
+
+// ── Sped-up clips: the buffer holds SOURCE samples ─────────────────────────
+
+namespace {
+
+/// Stereo buffer whose every sample equals its own time in seconds, so an
+/// output sample's value says which source moment it came from.
+std::shared_ptr<std::vector<float>> makeSecondsRamp(int64_t frames)
+{
+    auto buf = std::make_shared<std::vector<float>>(static_cast<size_t>(frames) * 2);
+    for (int64_t i = 0; i < frames; ++i) {
+        const float s = static_cast<float>(i) / 48000.0f;
+        (*buf)[static_cast<size_t>(i) * 2] = s;
+        (*buf)[static_cast<size_t>(i) * 2 + 1] = s;
+    }
+    return buf;
+}
+
+/// Median of the left channel over [from, to) output frames.
+float medianLeft(const std::vector<float>& out, size_t from, size_t to)
+{
+    std::vector<float> v;
+    for (size_t f = from; f < to; ++f) v.push_back(out[f * 2]);
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    return v[v.size() / 2];
+}
+
+AudioTrackSource rampSource(const std::shared_ptr<std::vector<float>>& buf,
+                            double clipSpeed, bool maintainPitch)
+{
+    AudioTrackSource src;
+    src.trackId = 9;
+    src.sampleBuffer = buf;
+    src.samples = buf->data();
+    src.totalFrames = static_cast<int64_t>(buf->size() / 2);
+    src.startFrame = 0;
+    src.channels = 2;
+    src.maintainPitch = maintainPitch;
+    src.clipSpeed = clipSpeed;
+    return src;
+}
+
+} // namespace
+
+TEST(AudioSpeedSync, SourcePositionScalesTimelineOffsetByClipSpeed)
+{
+    EXPECT_DOUBLE_EQ(audioSourcePosition(1000, 0, 1.0), 1000.0);
+    EXPECT_DOUBLE_EQ(audioSourcePosition(1000, 0, 2.0), 2000.0);
+    EXPECT_DOUBLE_EQ(audioSourcePosition(1500, 500, 0.5), 500.0);
+}
+
+// The bug: with Preserve Pitch on, playback started 2 s into a 2x clip
+// played source from 2 s instead of 4 s (unscaled timeline offset).
+TEST(AudioSpeedSync, PitchPreservedSpedUpClipStartsAtScaledSourcePosition)
+{
+    for (const bool maintainPitch : {true, false}) {
+        SCOPED_TRACE(maintainPitch ? "maintain pitch" : "plain resample");
+        AudioEngine engine;
+        engine.setTrackSources({rampSource(makeSecondsRamp(48000 * 10), 2.0,
+                                           maintainPitch)});
+        engine.seekToFrame(48000 * 2);   // 2 s into the clip on the timeline
+        AudioEngineTestAccess::setPlaying(engine);
+
+        std::vector<float> out(2048 * 2, 0.0f);
+        AudioEngineTestAccess::process(engine, out.data(), 2048);
+        // 2048 output frames at 2x span ~0.085 s of source after 4.0 s.
+        // (Skip the first block: SoundTouch's first overlap fades in.)
+        const float heard = medianLeft(out, 1024, 2048);
+        EXPECT_GT(heard, 3.97f);
+        EXPECT_LT(heard, 4.12f);
+    }
+}
+
+TEST(AudioSpeedSync, StretcherReanchorsWhenThePlayheadMovesAway)
+{
+    const auto buf = makeSecondsRamp(48000 * 10);
+    const int64_t frames = static_cast<int64_t>(buf->size() / 2);
+    TimeStretch ts(2, 48000);
+    ts.setSpeed(2.0);
+    std::vector<float> out(512 * 2, 0.0f);
+
+    ts.process(buf->data(), frames, 48000, out.data(), 512,
+               1.0f, 0.0f, 2, 2, nullptr, frames);
+    EXPECT_DOUBLE_EQ(ts.outputSourcePosition(), 48000.0 + 1024.0);
+
+    // Playhead where the stretcher expects it: no restart.
+    ts.process(buf->data(), frames, 48000 + 1024, out.data(), 512,
+               1.0f, 0.0f, 2, 2, nullptr, frames);
+    EXPECT_DOUBLE_EQ(ts.outputSourcePosition(), 48000.0 + 2048.0);
+
+    // Playhead jumped 5 s without a reset: restart there.
+    std::fill(out.begin(), out.end(), 0.0f);
+    ts.process(buf->data(), frames, 300000, out.data(), 512,
+               1.0f, 0.0f, 2, 2, nullptr, frames);
+    EXPECT_DOUBLE_EQ(ts.outputSourcePosition(), 300000.0 + 1024.0);
+    const float heard = medianLeft(out, 256, 512);
+    EXPECT_GT(heard, 300000.0f / 48000.0f - 0.03f);
+    EXPECT_LT(heard, 301024.0f / 48000.0f + 0.03f);
+}
+
+// Long continuous playback of a sped-up, pitch-preserved clip (the Marian
+// 2.5x "scarlet" section): what is heard must track the playhead for the
+// whole run, not just at the start.
+TEST(AudioSpeedSync, PitchPreservedClipStaysInSyncOverLongPlayback)
+{
+    for (const double clipSpeed : {2.5, 8.0, 20.0}) {
+        SCOPED_TRACE(clipSpeed);
+        const int64_t timelineSeconds = 30;
+        const auto buf = makeSecondsRamp(static_cast<int64_t>(
+            48000.0 * timelineSeconds * clipSpeed) + 48000);
+        AudioEngine engine;
+        engine.setTrackSources({rampSource(buf, clipSpeed, true)});
+        engine.seekToFrame(0);
+        AudioEngineTestAccess::setPlaying(engine);
+
+        std::vector<float> out(512 * 2);
+        double worst = 0.0;
+        int64_t worstAt = 0;
+        for (int64_t cb = 0; cb < timelineSeconds * 48000 / 512; ++cb) {
+            const int64_t playPos = engine.currentFrame();
+            std::fill(out.begin(), out.end(), 0.0f);
+            AudioEngineTestAccess::process(engine, out.data(), 512);
+            if (cb < 8 || cb % 50 != 0) continue;
+            const double expected =
+                static_cast<double>(playPos + 256) * clipSpeed / 48000.0;
+            const double heard = medianLeft(out, 0, 512);
+            const double err = std::abs(heard - expected) / clipSpeed; // timeline s
+            if (err > worst) { worst = err; worstAt = playPos; }
+        }
+        EXPECT_LT(worst, 0.040) << "worst offset at timeline "
+                                << worstAt / 48000.0 << " s";
+    }
 }
 
 TEST(AudioEngineTest, SyncClockAttach)
@@ -1271,4 +1405,120 @@ testing::Environment* const cleanup_env =
     testing::AddGlobalTestEnvironment(new AudioTestCleanup);
 
 } // namespace
+} // namespace rt
+
+#include "project/Project.h"
+#include "project/ProjectSerializer.h"
+// Marian replay harness (manual): ROUNDTABLE_TEST_RTP=<.rtp> ROUNDTABLE_TEST_AUDIO=<scarlet.mp4>
+// [REPLAY_APPLIKE=1 REPLAY_START=<sec>]. Prints Audio 1 lag vs the source every 2 s.
+namespace rt {
+TEST(TempMarianReplay, Audio1Lag)
+{
+    const char* rtp = std::getenv("ROUNDTABLE_TEST_RTP");
+    const char* media = std::getenv("ROUNDTABLE_TEST_AUDIO");
+    if (!rtp || !media) GTEST_SKIP();
+    ProjectSerializer ser;
+    auto project = ser.load(std::filesystem::path(rtp));
+    ASSERT_TRUE(project);
+    Timeline* tl = project->sequence(project->activeSequenceIndex());
+    for (size_t t = 0; t < tl->trackCount(); ++t) {
+        auto* tr = tl->track(t);
+        if (tr->type() == TrackType::Audio && tr->name() != "Audio 1") tr->setMuted(true);
+    }
+    AudioEngine engine;
+    PlaybackController pc;
+    pc.setTimeline(tl);
+    AudioPlaybackService svc;
+    svc.setProject(project.get());
+    svc.setTimeline(tl);
+    svc.setAudioEngine(&engine);
+    svc.setPlaybackController(&pc);
+
+    const int64_t sr = 48000;
+    const double startSec = std::getenv("REPLAY_START") ? std::atof(std::getenv("REPLAY_START")) : 350.0;
+    const int64_t t0 = int64_t(startSec * sr), t1 = int64_t(410.0 * sr);
+    tl->setPlayheadPosition(t0);
+    svc.loadSources(true);
+    engine.seekToFrame(t0);
+    pc.play();
+    AudioEngineTestAccess::setPlaying(engine);
+    const bool appLike = std::getenv("REPLAY_APPLIKE") != nullptr;
+    const auto wall0 = std::chrono::steady_clock::now();
+
+    std::vector<float> out;               // mono, timeline-rate
+    out.reserve(size_t(t1 - t0));
+    std::vector<float> buf(512 * 2);
+    int64_t lastLoad = t0;
+    int republishes = 0;
+    while (engine.currentFrame() < t1) {
+        const int64_t pos = engine.currentFrame();
+        tl->setPlayheadPosition(pos);
+        if (appLike) {
+            // Real-time pacing + the app's refresh sequence.
+            std::this_thread::sleep_until(wall0 + std::chrono::microseconds(
+                (pos - t0) * 1000000 / sr));
+            if (svc.needsPlaybackWindowRefresh()) {
+                svc.warmCacheAsync();
+                svc.loadSources(false);
+                ++republishes;
+                std::printf("refresh at %.2f s\n", double(pos) / sr);
+            }
+        } else if (pos - lastLoad >= 14 * sr) { svc.loadSources(true); lastLoad = pos; ++republishes; }
+        std::fill(buf.begin(), buf.end(), 0.0f);
+        AudioEngineTestAccess::process(engine, buf.data(), 512);
+        for (int i = 0; i < 512; ++i) out.push_back(0.5f * (buf[i * 2] + buf[i * 2 + 1]));
+    }
+    std::printf("republishes=%d\n", republishes);
+    if (t0 < int64_t(350.0 * sr))
+        out.erase(out.begin(), out.begin() + (int64_t(350.0 * sr) - t0));
+
+    // Reference source audio.
+    AudioFile f;
+    ASSERT_TRUE(f.open(std::filesystem::path(media)));
+    const double tlIn = 349.766666667, srcIn = 20.8666666667, speed = 2.5;
+    const int64_t srcA = int64_t((srcIn + (350.0 - tlIn) * speed - 3.0) * sr);
+    const int64_t srcN = int64_t((410.0 - 350.0) * speed * sr + 6 * sr);
+    std::vector<float> ref;
+    const int64_t got = f.readRegionResampled(srcA, srcN, 48000, ref);
+    ASSERT_GT(got, 0);
+    auto refEnv = [&](double srcSec) {   // RMS over 25 ms of source
+        const int64_t a = int64_t(srcSec * sr) - srcA, n = sr / 40;
+        double e = 0;
+        for (int64_t i = a; i < a + n; ++i) {
+            if (i < 0 || i >= got) continue;
+            const double m = 0.5 * (ref[size_t(i * 2)] + ref[size_t(i * 2 + 1)]);
+            e += m * m;
+        }
+        return std::sqrt(e / n);
+    };
+    auto outEnv = [&](double tlSec) {    // RMS over 10 ms of timeline
+        const int64_t a = int64_t((tlSec - 350.0) * sr), n = sr / 100;
+        double e = 0;
+        for (int64_t i = a; i < a + n; ++i) {
+            if (i < 0 || i >= int64_t(out.size())) continue;
+            e += double(out[size_t(i)]) * out[size_t(i)];
+        }
+        return std::sqrt(e / n);
+    };
+    for (double w = 351.0; w < 408.0; w += 2.0) {
+        // 2 s window of output envelope; find timeline lag maximizing correlation.
+        std::vector<double> o;
+        for (double t = w; t < w + 2.0; t += 0.01) o.push_back(outEnv(t));
+        double best = -2, bestLag = 0;
+        for (double lag = -0.6; lag <= 0.6; lag += 0.005) {
+            std::vector<double> r;
+            for (double t = w; t < w + 2.0; t += 0.01)
+                r.push_back(refEnv(srcIn + (t - lag - tlIn) * speed));
+            double mo = 0, mr = 0; for (size_t i = 0; i < o.size(); ++i) { mo += o[i]; mr += r[i]; }
+            mo /= o.size(); mr /= r.size();
+            double so = 0, srr = 0, c = 0;
+            for (size_t i = 0; i < o.size(); ++i) { c += (o[i]-mo)*(r[i]-mr); so += (o[i]-mo)*(o[i]-mo); srr += (r[i]-mr)*(r[i]-mr); }
+            const double corr = c / std::sqrt(so * srr + 1e-30);
+            if (corr > best) { best = corr; bestLag = lag; }
+        }
+        double energy = 0; for (double v : o) energy += v;
+        std::printf("t=%.0f lag=%+.3f s (audio %s) corr=%.2f level=%.4f\n", w, bestLag,
+                    bestLag > 0 ? "late" : "early", best, energy / o.size());
+    }
+}
 } // namespace rt

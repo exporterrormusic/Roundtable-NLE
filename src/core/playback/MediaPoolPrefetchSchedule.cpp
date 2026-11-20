@@ -30,6 +30,7 @@ extern "C" {
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 
 namespace rt {
@@ -91,25 +92,6 @@ void MediaPool::scheduleExactPrefetch(MediaHandle handle,
     m_prefetchCv.notify_all();
 }
 
-int MediaPool::decodeAheadStride(double sourceFps) const
-{
-    const double projFps = m_projectFps.load(std::memory_order_relaxed);
-    // Source-fps stride: a 60 fps clip in a 30 fps project only needs every
-    // 2nd source frame.
-    const int srcStride = (sourceFps > projFps * 1.4)
-        ? std::max(1, static_cast<int>(std::round(sourceFps / projFps)))
-        : 1;
-    // Playback-speed stride: at N× the playhead advances ~N source frames
-    // per displayed frame, so decode ONLY those — never the intermediate
-    // frames the player skips over.  This is what lets heavy videos keep
-    // up at 4× (decode load stays ~1× instead of 4×).  No effect at 1×.
-    const double absSpeed = std::abs(m_playbackSpeed.load(std::memory_order_relaxed));
-    const int speedStride = (absSpeed > 1.4)
-        ? std::max(1, static_cast<int>(std::lround(absSpeed)))
-        : 1;
-    return std::max(1, srcStride * speedStride);
-}
-
 void MediaPool::topUpDecodeAhead(MediaHandle handle, int64_t frameNumber,
                                  ResolutionTier tier, double sourceFps,
                                  int64_t frameCount)
@@ -118,14 +100,20 @@ void MediaPool::topUpDecodeAhead(MediaHandle handle, int64_t frameNumber,
     // decode-ahead window and only refilled it after a frame had already
     // missed: bursts of decoding, an idle worker, then a stutter. Keep the
     // window at least half full instead.
-    const int stride = decodeAheadStride(sourceFps);
+    // Probe the frame playback will need half a window ahead — for a
+    // sped-up clip that is a SHOWN frame, not frameNumber + window/2.
+    const DecodeAheadRate rate = decodeAheadRate(handle, sourceFps);
     const int window = m_scheduler.maxLookahead();
-    const int64_t probe = frameNumber + static_cast<int64_t>(std::max(2, window / 2)) * stride;
+    const auto ahead = plannedDecodeAheadFrames(rate, frameNumber + 1,
+                                                std::max(2, window / 2));
+    if (ahead.empty())
+        return;
+    const int64_t probe = ahead.back();
     if (frameCount > 1 && probe >= frameCount)
         return;   // the file ends inside the window; nothing left to fetch
     if (m_cache->contains(handle, probe, tier))
         return;
-    schedulePrefetch(handle, frameNumber + stride, window, /*urgent=*/false, tier);
+    schedulePrefetch(handle, frameNumber + 1, window, /*urgent=*/false, tier);
 }
 
 void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int count, bool urgent, ResolutionTier tier)
@@ -218,17 +206,27 @@ void MediaPool::schedulePrefetch(MediaHandle handle, int64_t afterFrame, int cou
             m_prefetchQueue.erase(std::next(replaceable).base());
         }
 
-        const int stride = decodeAheadStride(info.fps);
+        // Exactly the frames playback will show next (every frame at 1x;
+        // only the shown ones for a sped-up clip, a high-fps source or a
+        // shuttle) — see DecodeAheadPlan.h.
+        const DecodeAheadRate rate = decodeAheadRate(handle, info.fps);
         // Bound the lookahead window in DISPLAYED frames, not source frames, so
         // a strided prefetch still buffers ~maxLookahead frames ahead (without
         // this, stride N would shrink the buffer to maxLookahead/N → stutter).
-        const int64_t lookaheadWindow =
-            static_cast<int64_t>(m_scheduler.maxLookahead()) * stride;
+        const int64_t lookaheadWindow = static_cast<int64_t>(std::ceil(
+            static_cast<double>(m_scheduler.maxLookahead()) *
+            std::max(1.0, rate.step)));
         const int effectiveCount = interactivePlayback ? std::min(count, 16) : count;
+        std::vector<int64_t> plan =
+            plannedDecodeAheadFrames(rate, afterFrame, effectiveCount);
+        // An urgent request names the frame being shown NOW: it leads the
+        // plan even if the rate hint's phase predicted a neighbour.
+        if (urgent && (plan.empty() || plan.front() != afterFrame))
+            plan.insert(plan.begin(), afterFrame);
         // Update scheduler playhead for lookahead bounding.
         m_scheduler.setPlayhead(afterFrame);
-        for (int i = 0; i < effectiveCount; ++i) {
-            int64_t fn = afterFrame + i * stride;
+        for (int i = 0; i < static_cast<int>(plan.size()); ++i) {
+            int64_t fn = plan[static_cast<size_t>(i)];
 
             if (fn > maxFrame) {
                 if (isLooping && fc > 1) {
@@ -656,25 +654,24 @@ void MediaPool::prefetchWorker(int workerId)
                 }
             }
 
-            // Stride the follow-up batch by playback speed.  At Nx only every
+            // Stride the follow-up batch by playback rate.  At Nx only every
             // Nth source frame is displayed; decodePrefetchFrame decode-skips
             // the gap WITHOUT converting (its delta<=150 fast path), so the
             // decoder still advances frame-by-frame (cheap NVDEC) but the
             // expensive GPU convert+copy runs only on the frames that will be
             // shown.  This cuts convert load ~Nx at high speed — the fix for
             // 4x stutter (the convert+copy, not the decode, saturates the
-            // compute queue).  followStride == 1 at normal speed (unchanged).
-            const double projFpsFu = m_projectFps.load(std::memory_order_relaxed);
-            const int srcStrideFu = (task.info.fps > projFpsFu * 1.4)
-                ? std::max(1, static_cast<int>(std::round(task.info.fps / projFpsFu))) : 1;
-            const double absSpeedFu = std::abs(m_playbackSpeed.load(std::memory_order_relaxed));
-            const int speedStrideFu = (absSpeedFu > 1.4)
-                ? std::max(1, static_cast<int>(std::lround(absSpeedFu))) : 1;
-            const int followStride = std::max(1, srcStrideFu * speedStrideFu);
+            // compute queue).  Every frame at normal speed (unchanged).
+            // The same plan as schedulePrefetch, so a sped-up clip's
+            // follow-up converts only frames it will show.
+            const std::vector<int64_t> followPlan = kMaxFollowUp > 0
+                ? plannedDecodeAheadFrames(
+                      decodeAheadRate(task.handle, task.info.fps),
+                      task.frameNumber + 1, kMaxFollowUp)
+                : std::vector<int64_t>{};
 
-            for (int f = 1; f <= kMaxFollowUp; ++f) {
-                const int64_t nextFn = task.frameNumber +
-                                       static_cast<int64_t>(f) * followStride;
+            for (int f = 1; f <= static_cast<int>(followPlan.size()); ++f) {
+                const int64_t nextFn = followPlan[static_cast<size_t>(f - 1)];
                 if (nextFn > maxFollow) break;
                 if (m_cache->contains(task.handle, nextFn, followTier)) continue;
                 if (!m_prefetchRunning) break;

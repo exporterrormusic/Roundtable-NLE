@@ -1,6 +1,7 @@
 #include "project/Project.h"
 #include "project/ProjectSerializer.h"
-#include "project/ClipSerialization.h"
+#include "project/BinaryIO.h"
+#include "project/schema/ClipSchemas.h"
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/VideoClip.h"
@@ -127,9 +128,7 @@ static int restartShotBackgrounds(rt::Project& project, rt::ProjectSerializer& s
         copy->setTimelineIn(0);
         copy->setDuration(1);
         copy->setSourceIn(0);
-        rt::BinaryWriter writer;
-        rt::writeClip(writer, *copy);
-        return writer.data();
+        return rt::record::clipBytes(*copy);
     };
     std::vector<std::unique_ptr<rt::Clip>> replacements;
     int64_t totalCoverage = 0;
@@ -336,9 +335,12 @@ int main(int argc, char** argv)
                 std::cout << "DETAIL " << clip->id() << " ticks=" << clip->timelineIn() << ',' << clip->duration()
                           << ',' << clip->sourceIn();
                 dumpTrack("opacity", clip->opacity());
+                std::cout << " speed=" << clip->speed();
+                dumpTrack("speedRamp", clip->speedRamp());
                 if (auto* a = dynamic_cast<rt::AudioClip*>(clip)) {
                     std::cout << " audio=" << std::quoted(a->mediaPath()) << " sourceDuration=" << a->sourceDuration()
-                              << " fades=" << a->fadeInDuration() << ',' << a->fadeOutDuration();
+                              << " fades=" << a->fadeInDuration() << ',' << a->fadeOutDuration()
+                              << " maintainPitch=" << a->maintainPitch();
                     dumpTrack("volume", a->volume());
                 }
                 if (auto* v = dynamic_cast<rt::VideoClip*>(clip)) std::cout << " sourceDuration=" << v->sourceDuration();

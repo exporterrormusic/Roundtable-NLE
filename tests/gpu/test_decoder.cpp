@@ -19,6 +19,7 @@
 #include <decode/VideoFrameMapping.h>
 #include <playback/MediaPool.h>
 #include <playback/FrameFallbackPolicy.h>
+#include <decode/KeyframeIndex.h>
 #include <playback/MediaPoolPrefetchInternal.h>
 
 #ifdef ROUNDTABLE_HAS_FFMPEG
@@ -675,6 +676,165 @@ TEST(MediaPoolPrefetch, QueueOrderMeasuresEachFileFromItsOwnPlayhead)
               INT64_MAX);
 }
 
+// ── Decode-ahead plan for sped-up clips (DecodeAheadPlan.h) ────────────────
+
+TEST(DecodeAheadPlan, NormalSpeedIsEveryFrame)
+{
+    DecodeAheadRate rate;   // step 1, no anchor
+    EXPECT_EQ(plannedDecodeAheadFrames(rate, 10, 4),
+              (std::vector<int64_t>{10, 11, 12, 13}));
+    rate.step = 1.05;       // below the strided threshold: still dense
+    EXPECT_EQ(plannedDecodeAheadFrames(rate, 10, 2),
+              (std::vector<int64_t>{10, 11}));
+}
+
+TEST(DecodeAheadPlan, FourTimesSpeedFetchesOnlyShownFrames)
+{
+    DecodeAheadRate rate;
+    rate.step = 4.0;
+    rate.anchorFrame = 100;
+    rate.anchorPos = 100.0;
+    EXPECT_EQ(plannedDecodeAheadFrames(rate, 100, 3),
+              (std::vector<int64_t>{100, 104, 108}));
+    // Top-up asks from the frame after the one on screen.
+    EXPECT_EQ(plannedDecodeAheadFrames(rate, 101, 2),
+              (std::vector<int64_t>{104, 108}));
+    // A request behind the anchor (seek back) starts at itself.
+    EXPECT_EQ(plannedDecodeAheadFrames(rate, 20, 2),
+              (std::vector<int64_t>{20, 24}));
+}
+
+// The plan must name EXACTLY the frames the renderer will request at each
+// upcoming sequence frame — otherwise decode-ahead caches frames nobody asks
+// for and the shown ones miss.  Checked against the real mapper.
+TEST(DecodeAheadPlan, MatchesTheRenderMappingAtFractionalSpeeds)
+{
+    constexpr double kFps = 30.0;   // source == sequence fps
+    constexpr int64_t kTicksPerFrame = kTicksPerSecond / 30;
+    for (const double speed : {4.0, 2.5, 1.5}) {
+        for (const bool temporal : {false, true}) {
+            SCOPED_TRACE(::testing::Message() << speed << "x temporal=" << temporal);
+            VideoClip clip;
+            clip.setTimelineIn(0);
+            clip.setSourceIn(0);
+            clip.setSpeed(speed);
+            clip.setSourceFps(kFps);
+            clip.setDuration(kTicksPerSecond * 60);
+
+            const int64_t t0 = 7 * kTicksPerFrame;
+            const auto m0 = mapTickToSourceFrame(clip, t0, nullptr);
+            const auto wantsBoth = [&](const MappedSourceFrame& m) {
+                return temporal && m.blendPhase > 0.000001 &&
+                       m.lowerFrame != m.upperFrame;
+            };
+            const int64_t requested = wantsBoth(m0) ? m0.lowerFrame : m0.frame;
+
+            constexpr int kShown = 20;
+            std::vector<int64_t> expected;
+            for (int k = 0; k < kShown; ++k) {
+                const auto m = mapTickToSourceFrame(
+                    clip, t0 + k * kTicksPerFrame, nullptr);
+                const std::vector<int64_t> need = temporal
+                    ? (wantsBoth(m) ? std::vector<int64_t>{m.lowerFrame, m.upperFrame}
+                                    : std::vector<int64_t>{m.lowerFrame})
+                    : std::vector<int64_t>{m.frame};
+                for (const int64_t f : need)
+                    if (expected.empty() || f > expected.back())
+                        expected.push_back(f);
+            }
+
+            DecodeAheadRate rate;
+            rate.step = speed;              // (speed x 30 fps) / 30 fps
+            rate.anchorFrame = requested;
+            rate.anchorPos = m0.position;
+            rate.bothNeighbours = temporal;
+            auto plan = plannedDecodeAheadFrames(rate, requested, kShown);
+            EXPECT_EQ(plan, expected);
+        }
+    }
+}
+
+// ── Keyframe-only fast playback (KeyframeIndex.h) ──────────────────────────
+
+TEST(KeyframeIndex, FindsTheKeyframeAtOrBefore)
+{
+    const auto index = KeyframeIndex::fromFrames({60, 0, 30, 30, 90});
+    EXPECT_EQ(index.frames, (std::vector<int64_t>{0, 30, 60, 90}));
+    EXPECT_EQ(index.maxGap, 30);
+    EXPECT_EQ(index.atOrBefore(0), 0);
+    EXPECT_EQ(index.atOrBefore(29), 0);
+    EXPECT_EQ(index.atOrBefore(30), 30);
+    EXPECT_EQ(index.atOrBefore(500), 90);
+    EXPECT_EQ(index.after(30), 60);
+    EXPECT_EQ(index.after(90), -1);
+    // Nothing at or before: the frame itself.
+    EXPECT_EQ(KeyframeIndex::fromFrames({10, 40}).atOrBefore(5), 5);
+}
+
+TEST(KeyframeIndex, SeeksAcrossAKeyframeOnlyWhenCheaper)
+{
+    const auto index = KeyframeIndex::fromFrames({0, 30, 60, 90});
+    // 24x keyframe-only playback: frame 30 -> 60 is one decode after a seek,
+    // not 30 decodes on.
+    EXPECT_TRUE(index.seekBeatsDecodingOn(30, 60));
+    // No keyframe in between: decode on.
+    EXPECT_FALSE(index.seekBeatsDecodingOn(31, 45));
+    // A keyframe just behind the target, far from where we are: seek.
+    EXPECT_TRUE(index.seekBeatsDecodingOn(10, 33));
+    // Crossing a keyframe right after where we are: decoding on is cheaper.
+    EXPECT_FALSE(index.seekBeatsDecodingOn(28, 31));
+    // Not a forward jump.
+    EXPECT_FALSE(index.seekBeatsDecodingOn(40, 41));
+    EXPECT_FALSE(index.seekBeatsDecodingOn(40, 20));
+    EXPECT_FALSE(index.seekBeatsDecodingOn(-1, 60));
+}
+
+// Marian: scarlet.mp4 (30 fps, keyframe every 30) at 24x in a 60 fps
+// sequence = 12 source frames per displayed frame.  Keyframe-only playback
+// shows every keyframe once and fetches nothing else.
+TEST(KeyframeIndex, KeyframeOnlyPlanNamesTheKeyframesPlaybackShows)
+{
+    std::vector<int64_t> frames;
+    for (int64_t k = 0; k <= 3000; k += 30) frames.push_back(k);
+    const auto index =
+        std::make_shared<const KeyframeIndex>(KeyframeIndex::fromFrames(frames));
+
+    for (const double step : {12.0, 10.0, 4.0, 45.0, 97.5}) {
+        SCOPED_TRACE(step);
+        const double anchorPos = 293.0;     // displayed frame on screen now
+        // What playback shows: the keyframe of each displayed position.
+        std::vector<int64_t> expected;
+        constexpr int kShown = 40;
+        const int64_t onScreen = index->atOrBefore(std::llround(anchorPos));
+        for (int j = 1; j <= kShown; ++j) {
+            const int64_t k = index->atOrBefore(
+                std::llround(anchorPos + j * step));
+            if (k > onScreen && (expected.empty() || k > expected.back()))
+                expected.push_back(k);
+        }
+
+        DecodeAheadRate rate;
+        rate.step = step;
+        rate.anchorFrame = std::llround(anchorPos);
+        rate.anchorPos = anchorPos;
+        rate.keyframesOnly = index;
+        // Top-up asks from the frame after the keyframe on screen.
+        auto plan = plannedDecodeAheadFrames(rate, onScreen + 1, kShown);
+        // The plan may look a little further than kShown positions from
+        // fromFrame; compare the overlap.
+        plan.resize(std::min(plan.size(), expected.size()));
+        expected.resize(plan.size());
+        EXPECT_FALSE(plan.empty());
+        EXPECT_EQ(plan, expected);
+        if (step > 60.0) {   // over two GOPs per frame: keyframes skipped
+            bool skipped = false;
+            for (size_t i = 1; i < plan.size(); ++i)
+                skipped |= plan[i] - plan[i - 1] > 30;
+            EXPECT_TRUE(skipped);
+        }
+    }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  VideoDecoder tests (require FFmpeg + actual file)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -768,6 +928,80 @@ protected:
     }
     std::string videoPath;
 };
+
+// The index read at open must name real keyframes: seeking to one and
+// decoding gives a keyframe picture at that frame.
+TEST_F(VideoDecoderFileTest, KeyframeIndexNamesRealKeyframes)
+{
+    VideoDecoder decoder;
+    ASSERT_TRUE(decoder.open(videoPath));
+    const auto info = decoder.info();
+    if (!info.keyframes)
+        GTEST_SKIP() << "no keyframe index (intra-only, VFR or unindexed)";
+    ASSERT_TRUE(info.keyframes->usable());
+    const auto& kf = info.keyframes->frames;
+    for (const size_t i : {size_t{1}, kf.size() / 2, kf.size() - 1}) {
+        const int64_t k = kf[i];
+        SCOPED_TRACE(k);
+        ASSERT_TRUE(decoder.seek(static_cast<double>(k) / info.fps,
+                                 SeekMode::Precise));
+        DecodedFrame frame;
+        ASSERT_TRUE(decoder.decodeNext(frame));
+        EXPECT_TRUE(frame.isKeyframe);
+        EXPECT_EQ(std::llround(frame.timestamp * info.fps), k);
+    }
+}
+
+// A forward jump past a keyframe without a decoder flush must give the same
+// picture as a fresh precise seek (the luma plane, byte for byte), on the
+// GPU decoder and in software.
+TEST_F(VideoDecoderFileTest, ForwardToKeyframeSeekMatchesAFreshSeek)
+{
+    const auto lumaOf = [](VideoDecoder& d, const DecodedFrame& f) {
+        DecodedFrame cpu;
+        const DecodedFrame* src = &f;
+        if (f.isHardware) {
+            EXPECT_TRUE(d.transferHardwareFrame(f, cpu));
+            src = &cpu;
+        }
+        std::vector<uint8_t> y;
+        for (uint32_t row = 0; row < src->height; ++row)
+            y.insert(y.end(), src->data[0] + row * src->linesize[0],
+                     src->data[0] + row * src->linesize[0] + src->width);
+        return y;
+    };
+    for (const bool sw : {false, true}) {
+        SCOPED_TRACE(sw ? "software" : "hardware");
+        VideoDecoder walker, fresh;
+        ASSERT_TRUE(walker.open(videoPath, sw));
+        ASSERT_TRUE(fresh.open(videoPath, sw));
+        const auto info = walker.info();
+        if (!info.keyframes || info.keyframes->frames.size() < 4)
+            GTEST_SKIP() << "needs a long-GOP file with a keyframe index";
+        const auto& kf = info.keyframes->frames;
+        // Decode a few pictures mid-GOP, then jump to later keyframes and
+        // to a frame just past one.
+        ASSERT_TRUE(walker.seek((kf[1] + 3) / info.fps, SeekMode::Precise));
+        DecodedFrame f;
+        for (int i = 0; i < 4; ++i) ASSERT_TRUE(walker.decodeNext(f));
+        for (const int64_t target : {kf[2], kf[3] + 2}) {
+            SCOPED_TRACE(target);
+            ASSERT_TRUE(walker.seek(target / info.fps,
+                                    SeekMode::ForwardToKeyframe));
+            DecodedFrame a;
+            ASSERT_TRUE(walker.decodeNext(a));
+            EXPECT_EQ(std::llround(a.timestamp * info.fps), target);
+            ASSERT_TRUE(fresh.seek(target / info.fps, SeekMode::Precise));
+            DecodedFrame b;
+            ASSERT_TRUE(fresh.decodeNext(b));
+            EXPECT_EQ(lumaOf(walker, a), lumaOf(fresh, b));
+            // Decoding on from there stays correct too.
+            ASSERT_TRUE(walker.decodeNext(a));
+            ASSERT_TRUE(fresh.decodeNext(b));
+            EXPECT_EQ(lumaOf(walker, a), lumaOf(fresh, b));
+        }
+    }
+}
 
 TEST_F(VideoDecoderFileTest, OpenAndQueryInfo)
 {

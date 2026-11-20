@@ -193,12 +193,16 @@ std::shared_ptr<CachedFrame> MediaPool::getFrame(
     // frame from the old position lets the compositor cache old pixels under
     // the new timeline tick.
     {
+        // Scaled by playback speed: at 24x one displayed frame is 12+
+        // source frames, so a fixed distance blanked fast clips.
+        const int64_t maxDistance = playbackFallbackDistance(handle);
         std::lock_guard lg(m_lastGoodMtx);
         auto it = m_lastGoodFrame.find(handle);
         if (it != m_lastGoodFrame.end() && it->second) {
             int64_t delta = frameNumber - it->second->frameNumber;
             if (delta < -1 ||
-                !isNearbyPlaybackFrame(frameNumber, it->second->frameNumber)) {
+                !isNearbyPlaybackFrame(frameNumber, it->second->frameNumber,
+                                       maxDistance)) {
                 m_lastGoodFrame.erase(it);
             }
         }
@@ -622,12 +626,16 @@ std::shared_ptr<CachedFrame> MediaPool::tryGetFrame(
     // Without the forward bound, a cache miss at a new position can return
     // an arbitrarily old frame from this same MP4 handle.
     {
+        // Scaled by playback speed: at 24x one displayed frame is 12+
+        // source frames, so a fixed distance blanked fast clips.
+        const int64_t maxDistance = playbackFallbackDistance(handle);
         std::lock_guard lg(m_lastGoodMtx);
         auto it = m_lastGoodFrame.find(handle);
         if (it != m_lastGoodFrame.end() && it->second) {
             int64_t delta = frameNumber - it->second->frameNumber;
             if (delta < -1 ||
-                !isNearbyPlaybackFrame(frameNumber, it->second->frameNumber)) {
+                !isNearbyPlaybackFrame(frameNumber, it->second->frameNumber,
+                                       maxDistance)) {
                 m_lastGoodFrame.erase(it);
             }
         }

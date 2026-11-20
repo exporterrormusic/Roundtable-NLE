@@ -63,7 +63,7 @@ bool VideoDecoder::seek(double timeSeconds, SeekMode mode)
 
     AVStream* vs = m_fmtCtx->streams[m_info.videoStreamIndex];
 
-    const auto seekDemuxer = [&](double seconds) {
+    const auto seekDemuxer = [&](double seconds, bool flushDecoder = true) {
         const int64_t targetTs = static_cast<int64_t>(seconds / av_q2d(vs->time_base));
         const int flags = AVSEEK_FLAG_BACKWARD;
         int ret = av_seek_frame(m_fmtCtx, m_info.videoStreamIndex, targetTs, flags);
@@ -75,8 +75,10 @@ bool VideoDecoder::seek(double timeSeconds, SeekMode mode)
                 return false;
             }
         }
-        avcodec_flush_buffers(m_codecCtx);
-        m_draining = false;
+        if (flushDecoder) {
+            avcodec_flush_buffers(m_codecCtx);
+            m_draining = false;
+        }
         av_frame_unref(m_pendingFrame);
         m_hasPendingFrame = false;
         av_packet_unref(m_heldPacket);
@@ -84,8 +86,10 @@ bool VideoDecoder::seek(double timeSeconds, SeekMode mode)
         return true;
     };
 
-    if (!seekDemuxer(timeSeconds)) return false;
-    if (mode == SeekMode::Precise) {
+    const bool keepDecoder =
+        mode == SeekMode::ForwardToKeyframe && !m_draining;
+    if (!seekDemuxer(timeSeconds, /*flushDecoder=*/!keepDecoder)) return false;
+    if (mode == SeekMode::Precise || mode == SeekMode::ForwardToKeyframe) {
         // Open GOP: B-frames shown just before a keyframe are coded after
         // it, so the keyframe's DECODE time precedes them and a backward
         // seek can pick a keyframe that is SHOWN after the target (target

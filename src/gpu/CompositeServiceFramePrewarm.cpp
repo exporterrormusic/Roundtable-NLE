@@ -9,6 +9,7 @@
  *   - prewarmUpcomingShots()       — timeline lookahead scan (~2s window)
  */
 
+#include "playback/ClipRateHint.h"
 #include "CompositeService.h"
 #include "PathUtils.h"
 #include "ClipRenderers.h"
@@ -220,13 +221,22 @@ void CompositeService::doPrewarmPlaybackResources(int64_t tick, uint32_t outW, u
                 // render path so the warmed frame is the rendered frame.
                 const auto mapped =
                     mapTickToSourceFrame(*videoClip, tick, mediaInfo);
-                const bool temporal =
+                bool temporal =
                     videoClip->timeInterpolation() !=
                         TimeInterpolation::FrameSampling &&
                     mapped.blendPhase > 0.000001 &&
                     mapped.lowerFrame != mapped.upperFrame;
-                const int64_t frameNum = temporal
+                int64_t frameNum = temporal
                     ? mapped.lowerFrame : mapped.frame;
+                // Play-start: tell decode-ahead how this clip walks the file
+                // and warm what playback will show (a keyframe when very
+                // fast — no render has noted this clip yet).
+                if (const auto k = noteVideoClipRate(
+                        *m_mediaPool, handle, *videoClip, tick, mapped,
+                        frameNum, temporal, mediaInfo)) {
+                    frameNum = *k;
+                    temporal = false;
+                }
 
                 // Match the live composite path (CompositeServiceLayerBuild.cpp
                 // charVideoTier / spineVideoTier): forceFullResolution wins,
@@ -614,6 +624,17 @@ void CompositeService::prewarmUpcomingShots(
                 ? ResolutionTier::Full
                 : playbackTier();
 
+            // Same rate hint the render path gives (CompositeServiceLayerBuild),
+            // so the head of a sped-up clip prefetches only frames it shows
+            // (and, very fast, is shown as a keyframe).
+            if (auto* vc = dynamic_cast<VideoClip*>(clip);
+                vc && !isCharacter && info->frameCount > 1) {
+                const auto m = mapTickToSourceFrame(*vc, clipIn, info);
+                if (const auto k = noteVideoClipRate(
+                        *m_mediaPool, handle, *vc, clipIn, m, srcFrame,
+                        /*temporal=*/false, info))
+                    srcFrame = *k;
+            }
             m_mediaPool->schedulePrefetch(handle, srcFrame,
                                           /*count=*/30, /*urgent=*/true, warmTier);
             ++prewarmedThisScan;

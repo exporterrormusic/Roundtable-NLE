@@ -137,7 +137,8 @@ bool SpinBoxScrubber::eventFilter(QObject* obj, QEvent* event)
         if (!m_gesture.isArmed() && !m_gesture.isActive()) return false;
         auto* me = static_cast<QMouseEvent*>(event);
         const bool wasActive = m_gesture.isActive();
-        const int dx = m_gesture.move(me->globalPosition().toPoint());
+        const double dx = m_gesture.move(me->globalPosition().toPoint(),
+                                         me->timestamp());
         if (!m_gesture.isActive()) return false;
         if (!wasActive) {
             m_edit->deselect();

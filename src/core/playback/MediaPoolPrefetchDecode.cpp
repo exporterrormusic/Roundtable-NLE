@@ -82,10 +82,20 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
         if (delta == 1) {
             needSeek = false;
             singleFrameStep = true;
-        } else if (delta > 1 && delta <= 150) {
+        } else if (delta > 1 && delta <= 150 &&
+                   !(task.info.keyframes &&
+                     // (a frame-threaded software decoder reopens to seek)
+                     (!state.frameThreaded ||
+                      state.decoder->isHardwareAccelerated()) &&
+                     task.info.keyframes->seekBeatsDecodingOn(
+                         state.lastDecodedFrame, task.frameNumber))) {
             // Short forward jump (scrub step, prefetch catching up): decode
             // on from here, skipping pictures nothing references, instead of
-            // fully decoding every frame in between.
+            // fully decoding every frame in between.  Not across a keyframe
+            // that is closer to the target: P-frame-only footage references
+            // EVERY picture, so decoding on costs the whole gap while a seek
+            // costs only keyframe..target (keyframe-only fast playback asks
+            // for keyframes one GOP apart: one decode each).
             needSeek = !state.decoder->advanceTo(targetTime);
         }
     }
@@ -122,7 +132,19 @@ std::shared_ptr<CachedFrame> MediaPool::decodePrefetchFrame(
         // an open-GOP keyframe lands AFTER the target. (This used to seek to
         // the keyframe and decode forward here by hand, which on open-GOP
         // footage stopped at the keyframe and cached it as the target.)
-        if (!decoder.seek(targetTime, SeekMode::Precise)) {
+        // A forward jump past a keyframe (keyframe-only fast playback, or
+        // prefetch skipping ahead) keeps the decoder: no flush, so FFmpeg
+        // doesn't rebuild the H.264 context (~40 ms at 3.4K, vs ~4 ms for
+        // the keyframe).  Not after a label mismatch: that wants a clean
+        // seek.
+        const bool forwardPastKeyframe =
+            !forceReseek && state.lastDecodedFrame >= 0 &&
+            task.frameNumber > state.lastDecodedFrame && task.info.keyframes &&
+            task.info.keyframes->atOrBefore(task.frameNumber) >
+                state.lastDecodedFrame;
+        if (!decoder.seek(targetTime, forwardPastKeyframe
+                                          ? SeekMode::ForwardToKeyframe
+                                          : SeekMode::Precise)) {
             spdlog::debug("MediaPool prefetch: seek failed handle={} frame={}",
                           task.handle, task.frameNumber);
             state.lastDecodedFrame = -1;

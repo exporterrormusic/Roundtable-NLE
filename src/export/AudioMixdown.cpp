@@ -18,6 +18,10 @@
 
 #include <spdlog/spdlog.h>
 
+#ifdef ROUNDTABLE_HAS_SOUNDTOUCH
+#include <SoundTouch.h>
+#endif
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -86,8 +90,38 @@ struct AudioMixStream::ClipSource
     bool     started{false};
     bool     done{false};
     uint16_t sourceChannels{0};
+    uint32_t outputRate{48000};
     std::unique_ptr<AudioFile>         file;
     std::unique_ptr<AudioRegionReader> reader;
+
+    // -- Clip speed (Speed/Duration) --------------------------------------
+    // The region holds SOURCE samples; output runs `speed` source frames per
+    // output frame, as in playback (AudioEngine::mixSource).  Preserve Pitch
+    // time-stretches with SoundTouch using playback's settings
+    // (TimeStretch.cpp); otherwise the source is resampled (pitch shifts).
+    // This was missing: export played every sped-up clip at 1x, so its
+    // audio drifted further behind its video every second.
+    double speed{1.0};          ///< |clip speed|
+    bool   maintainPitch{false};
+    bool   sourceEnded{false};
+    std::vector<float> chunk;   ///< scratch for source reads
+    // Resample path: source frames read but not yet passed, and the exact
+    // position of the next output frame within them.
+    std::vector<float> pending;
+    double pendingPos{0.0};
+#ifdef ROUNDTABLE_HAS_SOUNDTOUCH
+    std::unique_ptr<soundtouch::SoundTouch> stretch;
+    bool flushed{false};
+#endif
+
+    [[nodiscard]] bool atSpeed() const noexcept
+    {
+        return std::abs(speed - 1.0) >= 0.001;
+    }
+
+    /// Up to `wanted` output frames (interleaved, sourceChannels) into
+    /// `out`; fewer only when the source has run out.
+    int64_t readOutput(int64_t wanted, std::vector<float>& out);
 
     void release()
     {
@@ -95,8 +129,92 @@ struct AudioMixStream::ClipSource
         reader.reset();   // reads from `file`: goes first
         file.reset();
         fx = {};
+        pending = {};
+        chunk = {};
+#ifdef ROUNDTABLE_HAS_SOUNDTOUCH
+        stretch.reset();
+#endif
     }
 };
+
+int64_t AudioMixStream::ClipSource::readOutput(int64_t wanted, std::vector<float>& out)
+{
+    if (!atSpeed()) return reader->read(wanted, out);
+
+    const size_t ch = sourceChannels;
+    out.resize(static_cast<size_t>(wanted) * ch);
+    constexpr int64_t kChunkFrames = 8192;
+
+#ifdef ROUNDTABLE_HAS_SOUNDTOUCH
+    if (maintainPitch) {
+        if (!stretch) {
+            // Same settings as playback's TimeStretch.
+            stretch = std::make_unique<soundtouch::SoundTouch>();
+            stretch->setSampleRate(outputRate);
+            stretch->setChannels(sourceChannels);
+            stretch->setTempo(speed);
+            stretch->setPitch(1.0);
+            stretch->setRate(1.0);
+            stretch->setSetting(SETTING_USE_QUICKSEEK, 0);
+            stretch->setSetting(SETTING_USE_AA_FILTER, 1);
+            stretch->setSetting(SETTING_SEQUENCE_MS, 40);
+            stretch->setSetting(SETTING_SEEKWINDOW_MS, 15);
+            stretch->setSetting(SETTING_OVERLAP_MS, 8);
+        }
+        int64_t got = 0;
+        while (got < wanted) {
+            const unsigned received = stretch->receiveSamples(
+                out.data() + static_cast<size_t>(got) * ch,
+                static_cast<unsigned>(wanted - got));
+            got += received;
+            if (received > 0) continue;
+            if (sourceEnded) {
+                if (flushed) break;
+                stretch->flush();   // the tail still inside SoundTouch
+                flushed = true;
+                continue;
+            }
+            const int64_t n = reader->read(kChunkFrames, chunk);
+            if (n <= 0) { sourceEnded = true; continue; }
+            stretch->putSamples(chunk.data(), static_cast<unsigned>(n));
+        }
+        return got;
+    }
+#endif
+
+    // Resample by `speed` (linear interpolation; pitch follows speed).
+    const auto pendingFrames = [&] {
+        return static_cast<int64_t>(pending.size() / ch);
+    };
+    int64_t got = 0;
+    for (; got < wanted; ++got) {
+        const auto i0 = static_cast<int64_t>(std::floor(pendingPos));
+        while (i0 + 1 >= pendingFrames() && !sourceEnded) {
+            const int64_t n = reader->read(kChunkFrames, chunk);
+            if (n <= 0) { sourceEnded = true; break; }
+            pending.insert(pending.end(), chunk.begin(),
+                           chunk.begin() + static_cast<ptrdiff_t>(n * ch));
+        }
+        if (i0 >= pendingFrames()) break;
+        const float t = static_cast<float>(pendingPos - static_cast<double>(i0));
+        const bool hasNext = i0 + 1 < pendingFrames();
+        for (size_t c = 0; c < ch; ++c) {
+            const float a = pending[static_cast<size_t>(i0) * ch + c];
+            const float b = hasNext ? pending[static_cast<size_t>(i0 + 1) * ch + c] : a;
+            out[static_cast<size_t>(got) * ch + c] = a + (b - a) * t;
+        }
+        pendingPos += speed;
+    }
+    // Drop source frames every later output frame is past.
+    const auto consumed = std::min<int64_t>(
+        static_cast<int64_t>(std::floor(pendingPos)), pendingFrames());
+    if (consumed > 0) {
+        pending.erase(pending.begin(),
+                      pending.begin() + static_cast<ptrdiff_t>(consumed * ch));
+        pendingPos -= static_cast<double>(consumed);
+    }
+    return got;
+}
 
 AudioMixStream::AudioMixStream(const Timeline& timeline, const AudioMixdownConfig& config)
     : m_sampleRate(config.sampleRate)
@@ -199,9 +317,13 @@ AudioMixStream::AudioMixStream(const Timeline& timeline, const AudioMixdownConfi
             source->mixFrames = static_cast<int64_t>((readEndSec - readStartSec) * config.sampleRate);
             if (source->mixFrames <= 0) continue;
 
-            // Compute source read offset, backing up by the extension
+            // Compute source read offset, backing up by the extension.
+            // The region is SOURCE time: timeline seconds x clip speed.
+            const double clipSpeed = std::max(1e-6, std::abs(aclip->speed()));
+            source->speed         = clipSpeed;
+            source->maintainPitch = aclip->maintainPitch();
             double sourceStartSec = ticksToSeconds(clip->sourceIn());
-            sourceStartSec += (readStartSec - clipStartSec);
+            sourceStartSec += (readStartSec - clipStartSec) * clipSpeed;
             if (sourceStartSec < 0.0) {
                 // Not enough source before sourceIn; shift the timeline
                 // region forward to stay aligned with available source.
@@ -284,11 +406,19 @@ void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
             return;
         }
         auto reader = std::make_unique<AudioRegionReader>();
-        if (!reader->begin(*file, clip.sourceStart, clip.mixFrames, m_sampleRate)) {
+        // A sped-up clip reads `speed` source frames per output frame, plus
+        // a little more so time-stretching ends on real audio, not padding.
+        const int64_t sourceFrames = clip.atSpeed()
+            ? static_cast<int64_t>(std::ceil(
+                  static_cast<double>(clip.mixFrames) * clip.speed)) +
+                  static_cast<int64_t>(m_sampleRate) / 10
+            : clip.mixFrames;
+        if (!reader->begin(*file, clip.sourceStart, sourceFrames, m_sampleRate)) {
             clip.release();
             return;
         }
         clip.sourceChannels = reader->channels();
+        clip.outputRate     = static_cast<uint32_t>(m_sampleRate);
         if (clip.hasFx) clip.fx.prepare(m_sampleRate, clip.sourceChannels);
         clip.file   = std::move(file);
         clip.reader = std::move(reader);
@@ -305,7 +435,7 @@ void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
     }
 
     const int64_t wanted = last - first;
-    const int64_t framesRead = clip.reader->read(wanted, m_source);
+    const int64_t framesRead = clip.readOutput(wanted, m_source);
     if (framesRead <= 0) {
         clip.release();
         return;

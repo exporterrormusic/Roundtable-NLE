@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "widgets/ScrubbySpinBox.h"
+#include "widgets/ScrubGesture.h"
 #include "widgets/FontFamilyCombo.h"
 #include "widgets/KeyboardFocusUtils.h"
 #include "panels/properties/PropertiesPanel.h"
@@ -937,6 +938,55 @@ TEST(ScrubbySpinBox, ShiftScrubsInBigStepsAndCtrlInFineOnes)
     ASSERT_GT(plain, 0.0);
     EXPECT_NEAR(scrub(Qt::ShiftModifier), plain * 10.0, 1e-6);
     EXPECT_NEAR(scrub(Qt::ControlModifier), plain * 0.1, 1e-6);
+}
+
+// Weight: slow, careful drags move the value a quarter as far as the same
+// distance flicked quickly (Premiere's hot text barely moves on slow nudges).
+TEST(ScrubGesture, SpeedGainRampsFromSlowToFull)
+{
+    using G = rt::ScrubGesture;
+    EXPECT_DOUBLE_EQ(G::speedGain(0.0), G::kSlowGain);
+    EXPECT_DOUBLE_EQ(G::speedGain(G::kSlowSpeed), G::kSlowGain);
+    EXPECT_DOUBLE_EQ(G::speedGain(G::kFastSpeed), 1.0);
+    EXPECT_DOUBLE_EQ(G::speedGain(5000.0), 1.0);
+    double last = G::speedGain(G::kSlowSpeed);
+    for (double v = G::kSlowSpeed + 50.0; v <= G::kFastSpeed; v += 50.0) {
+        EXPECT_GT(G::speedGain(v), last);
+        last = G::speedGain(v);
+    }
+}
+
+TEST(ScrubbySpinBox, SlowDragsMoveLessThanFastOnesOverTheSameDistance)
+{
+    // 200 px in 10 px moves, `msPerMove` apart.
+    auto scrub = [](quint64 msPerMove) {
+        rt::ScrubbySpinBox spin;
+        spin.setRange(-100000.0, 100000.0);
+        spin.setDecimals(3);
+        spin.setScrubStep(1.0);
+        spin.setValue(0.0);
+        quint64 t = 1000;
+        auto send = [&](QEvent::Type type, int x, Qt::MouseButtons buttons) {
+            const QPointF global(400 + x, 400);
+            QMouseEvent event(type, QPointF(10 + x, 10), global, Qt::LeftButton,
+                              buttons, Qt::NoModifier);
+            event.setTimestamp(t);
+            QApplication::sendEvent(&spin, &event);
+        };
+        send(QEvent::MouseButtonPress, 0, Qt::LeftButton);
+        send(QEvent::MouseMove, 5, Qt::LeftButton);   // engages
+        for (int x = 15; x <= 205; x += 10) {
+            t += msPerMove;
+            send(QEvent::MouseMove, x, Qt::LeftButton);
+        }
+        send(QEvent::MouseButtonRelease, 205, Qt::NoButton);
+        return spin.value();
+    };
+    const double slow = scrub(200);   // 50 px/s: careful nudging
+    const double fast = scrub(8);     // 1250 px/s: a flick
+    EXPECT_NEAR(slow, 200.0 * rt::ScrubGesture::kSlowGain, 1.0);
+    EXPECT_GT(fast, 150.0);           // full rate once up to speed
+    EXPECT_LE(fast, 200.0);
 }
 
 TEST(ScrubbySpinBox, IntegerMode)

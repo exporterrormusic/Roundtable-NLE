@@ -9,6 +9,7 @@
  * Each of those steps lives in a helper below.
  */
 
+#include "playback/ClipRateHint.h"
 #include "CompositeService.h"
 #include "CompositeServiceLayerBuild.h"
 #include "ClipRenderers.h"
@@ -777,6 +778,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             bool contentStableForStateCache = false;
             int64_t temporalPrimaryFrameNum = -1;
             int64_t temporalSecondFrameNum = -1;
+            // How far a sticky stand-in may be from the wanted source frame
+            // (speed-scaled for video clips in playback).
+            int64_t stickyMaxDistance = kMaxPlaybackFallbackDistanceFrames;
             bool gpuSpineZeroCopy = false;
             bool isPreRenderedSpine = false;  // set when using cached spine video
             bool cpuSpineRendered  = false;   // set when CPU Spine fallback succeeds
@@ -811,14 +815,38 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     mapTickToSourceFrame(*videoClip, tick, mediaInfo);
                 const TimeInterpolation interpolation =
                     videoClip->timeInterpolation();
-                const bool wantsTemporal =
+                bool wantsTemporal =
                     interpolation != TimeInterpolation::FrameSampling &&
                     mapped.blendPhase > 0.000001 &&
                     mapped.lowerFrame != mapped.upperFrame;
                 // Sampling uses Premiere's nearest-frame behavior.  Both
                 // temporal modes synthesize between floor/ceil endpoints.
-                const int64_t frameNum = wantsTemporal
+                int64_t frameNum = wantsTemporal
                     ? mapped.lowerFrame : mapped.frame;
+
+                // Tell decode-ahead how this clip walks the file, so a
+                // sped-up clip prefetches only the frames it will show
+                // (DecodeAheadPlan.h).  Must precede resolveMediaFrame: its
+                // miss path schedules from this hint.  Live playback of a
+                // very fast clip (20x on long-GOP H.264) shows keyframes
+                // only — exact frames there cost a decode of every frame
+                // since the keyframe, which can't keep up (KeyframeIndex.h).
+                // The keyframe is a stand-in: provisional, never cached as
+                // this tick's picture, and paused/scrub/export stay exact.
+                bool keyframeStandIn = false;
+                if (!scrubMode) {
+                    if (handle != 0)
+                        stickyMaxDistance =
+                            m_mediaPool->playbackFallbackDistance(handle);
+                    const auto keyframe = noteVideoClipRate(
+                        *m_mediaPool, handle, *videoClip, tick, mapped,
+                        frameNum, wantsTemporal, mediaInfo);
+                    if (keyframe && !stillMode) {
+                        keyframeStandIn = *keyframe != mapped.frame;
+                        frameNum = *keyframe;
+                        wantsTemporal = false;
+                    }
+                }
                 temporalPrimaryFrameNum = frameNum;
                 bool primaryExact = false;
                 temporalSecondFrameNum = wantsTemporal
@@ -842,6 +870,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                             *texCache, videoClip, req, mediaInfo,
                             contentStableForStateCache, xf, transition,
                             localTick, layer, gpuHit)) {
+                        if (keyframeStandIn)
+                            layer.sourceFallbackPending = true;
                         if (perfLog) {
                             spdlog::info("  [PERF] clip '{}' type=Video (GPU CACHE HIT) -> {:.1f}ms ({}x{}) frame={}",
                                          clip->label(), msSince(perfClipT0),
@@ -873,7 +903,8 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     // not the render for this timeline tick.  In particular,
                     // adjustment effects must not turn it into a persistent
                     // composite-cache entry under the requested tick.
-                    sourceFallbackPending = frame && !primary.exact;
+                    sourceFallbackPending =
+                        frame && (!primary.exact || keyframeStandIn);
                     const double rmfMs = msSince(rmfT0);
                     if (rmfMs > 30.0) {
                         spdlog::warn("[RESOLVE-SLOW] handle={} frame={} tier={} "
@@ -1030,6 +1061,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 if (stillMode && policy.forceFullResolution)
                     continue;
                 if (!applyStickyFrameFallback(clip, tick, temporalPrimaryFrameNum,
+                                              stickyMaxDistance,
                                               frame, sourceFallbackPending))
                     continue;
             } else if (!gpuSpineZeroCopy && frame &&
@@ -1335,6 +1367,7 @@ void CompositeService::reportPngPuppetFailure(PngPuppetClip* puppetClip,
 // skeleton is still loading, or a scrub outpaces prefetch.
 bool CompositeService::applyStickyFrameFallback(
     Clip* clip, int64_t tick, int64_t temporalPrimaryFrameNum,
+    int64_t maxSourceDistance,
     std::shared_ptr<CachedFrame>& frame, bool& sourceFallbackPending)
 {
     const uint64_t clipId = clip->id();
@@ -1361,7 +1394,8 @@ bool CompositeService::applyStickyFrameFallback(
         if (videoClip && !videoClip->isVideoCharacter() &&
             temporalPrimaryFrameNum >= 0 &&
             !isNearbyPlaybackFrame(temporalPrimaryFrameNum,
-                                   stickyFrame->frameNumber)) {
+                                   stickyFrame->frameNumber,
+                                   maxSourceDistance)) {
             stickyFrame.reset();
         }
     }

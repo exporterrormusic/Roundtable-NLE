@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "decode/KeyframeIndex.h"
+
 struct AVFormatContext;
 struct AVCodecContext;
 struct AVIOContext;
@@ -103,6 +105,10 @@ struct VideoStreamInfo
     // would ship it sideways; falls back to the compositor path instead).
     int           rotation{0};
 
+    /// Keyframe positions of a long-GOP file (KeyframeIndex.h); null for
+    /// intra-only codecs, VFR files and containers without an index.
+    std::shared_ptr<const KeyframeIndex> keyframes;
+
     // ── Colour management (Phase 4.1) ───────────────────────────────────
     // Read from the source's codec/container tags at open.  Drive the
     // per-source YUV→RGB conversion (see resolveColorConversion); untagged
@@ -186,6 +192,15 @@ enum class SeekMode : uint8_t
 {
     Keyframe,   // Seek to nearest keyframe (fast, imprecise)
     Precise,    // Seek to keyframe then decode forward to exact frame (slow, precise)
+    /// Precise, for a FORWARD jump past a keyframe (the keyframe at or
+    /// before the target is after the last decoded picture): repositions
+    /// the demuxer but keeps the decoder (no flush).  A flush makes FFmpeg's
+    /// H.264 decoder free and rebuild its context, which cost ~40 ms per
+    /// jump on 3.4K footage, far more than the keyframe itself.  Pictures
+    /// still inside the decoder are older than the target and get skipped;
+    /// the keyframe needs no references.  Falls back to Precise (with a
+    /// flush) when the decoder has drained or the first picture overshoots.
+    ForwardToKeyframe,
 };
 
 /// High-bit-depth planar layout of a decoded frame (Phase 4.2 export

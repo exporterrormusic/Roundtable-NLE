@@ -24,11 +24,12 @@ inline constexpr int64_t kMaxPlaybackFallbackDistanceFrames = 12;
 inline constexpr int64_t kMaxPlaybackCompositeHoldTicks = kTicksPerSecond;
 
 [[nodiscard]] inline constexpr bool isNearbyPlaybackFrame(
-    int64_t requestedFrame, int64_t candidateFrame) noexcept
+    int64_t requestedFrame, int64_t candidateFrame,
+    int64_t maxDistance = kMaxPlaybackFallbackDistanceFrames) noexcept
 {
     return candidateFrame >= requestedFrame
-        ? candidateFrame - requestedFrame <= kMaxPlaybackFallbackDistanceFrames
-        : requestedFrame - candidateFrame <= kMaxPlaybackFallbackDistanceFrames;
+        ? candidateFrame - requestedFrame <= maxDistance
+        : requestedFrame - candidateFrame <= maxDistance;
 }
 
 [[nodiscard]] inline constexpr bool isNearbyPlaybackCompositeTick(

@@ -435,6 +435,104 @@ TEST(AudioMixStream, BlockSizeDoesNotChangeTheMix)
     }
 }
 
+// ── Clip speed (Speed/Duration) ─────────────────────────────────────────────
+
+namespace {
+
+/// Stereo float WAV whose every sample equals its own time in seconds, so a
+/// mixed sample's value says which source moment it came from.
+fs::path writeSecondsRampWav(const fs::path& path, double seconds)
+{
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return {};
+    const uint32_t rate = 48000;
+    const auto frames = static_cast<uint32_t>(seconds * rate);
+    const uint32_t dataSize = frames * 2 * 4;
+    auto w32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto w16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    f.write("RIFF", 4); w32(36 + dataSize); f.write("WAVE", 4);
+    f.write("fmt ", 4); w32(16); w16(3); w16(2);
+    w32(rate); w32(rate * 2 * 4); w16(8); w16(32);
+    f.write("data", 4); w32(dataSize);
+    for (uint32_t i = 0; i < frames; ++i) {
+        const float v = static_cast<float>(i) / static_cast<float>(rate);
+        f.write(reinterpret_cast<const char*>(&v), 4);
+        f.write(reinterpret_cast<const char*>(&v), 4);
+    }
+    return f ? path : fs::path{};
+}
+
+/// Median of the left channel over output frames [from, to).
+float medianLeftOf(const std::vector<float>& mix, int64_t from, int64_t to)
+{
+    std::vector<float> v;
+    for (int64_t i = from; i < to; ++i) v.push_back(mix[static_cast<size_t>(i) * 2]);
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    return v[v.size() / 2];
+}
+
+} // namespace
+
+// The bug: export read every clip at 1x, so a 2.5x clip's audio fell
+// further behind its video every second (Marian, scarlet at 2.5x).
+TEST(AudioMixStream, SpedUpClipPlaysItsSourceAtClipSpeed)
+{
+    TempDir dir;
+    const auto wav = writeSecondsRampWav(dir.path() / "ramp.wav", 20.0);
+    ASSERT_FALSE(wav.empty());
+    for (const bool maintainPitch : {false, true}) {
+        SCOPED_TRACE(maintainPitch ? "preserve pitch" : "resample");
+        Timeline timeline;
+        Track* a1 = timeline.addAudioTrack("A1");
+        // Timeline 1..5 s shows source 2 s onward at 2.5x (2..12 s).
+        AudioClip* clip = addAudioClip(a1, wav, 48000, 2, 1.0, 4.0, 2.0, 20.0);
+        clip->setSpeed(2.5);
+        clip->setMaintainPitch(maintainPitch);
+
+        AudioMixdownConfig cfg;
+        cfg.sampleRate = 48000;
+        cfg.channels = 2;
+        AudioMixdown mixdown;
+        const MixdownResult mix = mixdown.mix(timeline, cfg);
+        ASSERT_TRUE(mix.isValid());
+        if (rms(mix.samples) < 1e-3f) GTEST_SKIP() << "No audio backend available to read WAV";
+
+        for (const double t : {1.5, 3.0, 4.5}) {
+            SCOPED_TRACE(t);
+            const auto at = static_cast<int64_t>(t * 48000);
+            const float heard = medianLeftOf(mix.samples, at, at + 1024);
+            const double expected = 2.0 + (t - 1.0) * 2.5 + 512.0 / 48000.0 * 2.5;
+            EXPECT_NEAR(heard, expected, 0.06);   // 60 ms of source
+        }
+    }
+}
+
+TEST(AudioMixStream, SpedUpClipMixIsTheSameForAnyBlockSize)
+{
+    TempDir dir;
+    const auto wav = writeTestWav(dir.path() / "tone.wav", 48000, 2, 12.0, 7);
+    ASSERT_FALSE(wav.empty());
+    for (const bool maintainPitch : {false, true}) {
+        SCOPED_TRACE(maintainPitch ? "preserve pitch" : "resample");
+        Timeline timeline;
+        Track* a1 = timeline.addAudioTrack("A1");
+        AudioClip* clip = addAudioClip(a1, wav, 48000, 2, 0.5, 3.0, 1.0, 12.0);
+        clip->setSpeed(2.5);
+        clip->setMaintainPitch(maintainPitch);
+        AudioMixdownConfig cfg;
+        cfg.sampleRate = 48000;
+        cfg.channels = 2;
+        AudioMixdown mixdown;
+        const MixdownResult whole = mixdown.mix(timeline, cfg);
+        ASSERT_TRUE(whole.isValid());
+        if (rms(whole.samples) < 1e-3f) GTEST_SKIP() << "No audio backend available to read WAV";
+        for (int64_t block : {1, 997, 4096, 1 << 20}) {
+            AudioMixStream stream(timeline, cfg);
+            EXPECT_EQ(streamAll(stream, block), whole.samples) << "block " << block;
+        }
+    }
+}
+
 TEST(AudioMixStream, MutedTrackAndChannelCountsHonored)
 {
     TempDir dir;

@@ -767,6 +767,7 @@ private:
     // last good frame. Returns false when the layer must be skipped.
     bool applyStickyFrameFallback(Clip* clip, int64_t tick,
                                   int64_t temporalPrimaryFrameNum,
+                                  int64_t maxSourceDistance,
                                   std::shared_ptr<CachedFrame>& frame,
                                   bool& sourceFallbackPending);
     void recordStickyFrame(Clip* clip, const std::shared_ptr<CachedFrame>& frame);

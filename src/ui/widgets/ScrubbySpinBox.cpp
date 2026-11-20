@@ -269,7 +269,8 @@ void ScrubbySpinBox::mouseMoveEvent(QMouseEvent* event)
         return;
     }
 
-    const int dx = m_gesture.move(event->globalPosition().toPoint());
+    const double dx = m_gesture.move(event->globalPosition().toPoint(),
+                                     event->timestamp());
     if (!m_gesture.isActive())
         return; // Haven't moved far enough yet
 
