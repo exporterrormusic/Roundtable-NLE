@@ -12,7 +12,9 @@
 #include <gtest/gtest.h>
 
 #include "spine/ShotPreset.h"
+#include "ai/ScriptMatcher.h"
 #include "panels/characters/ShotComposer.h"
+#include "panels/characters/PuppetLibrary.h"
 #include "../gpu/IndexedVideoFixture.h"
 #include "../support/StallGuard.h"
 
@@ -24,6 +26,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QTest>
 
 #include <chrono>
@@ -828,6 +831,32 @@ TEST_F(ShotPresetManagerTest, AliasUsesRealNameForShowDefault)
     EXPECT_TRUE(reloaded.resolveDefaultShot("Only One", "Roundtable Talk").has_value());
 }
 
+TEST_F(ShotPresetManagerTest, ImportedSpeakerNamesResolveToTheirCharactersShots)
+{
+    ShotPresetManager mgr;
+    mgr.scan(m_tmpDir.path());
+    const std::string show = "Roundtable Talk";
+    for (const char* name : {"Doctor Maria", "K2F", "Modernia"}) {
+        ShotPreset shot(std::string(name) + " close-up");
+        shot.setShow(show);
+        CharacterState character;
+        character.characterName = name;
+        shot.addCharacter(character);
+        ASSERT_TRUE(mgr.save(shot));
+        mgr.setShowDefaultShot(show, name, shot.name());
+    }
+    mgr.setAlias("Modernia", "Marian");
+    const auto script = Script::fromText("MARIA: First line.\nK2F: Second line.\nMARIAN: Third line.");
+    ASSERT_EQ(script.lines.size(), 3u);
+    const char* expected[] = {"Doctor Maria", "K2F", "Modernia"};
+    for (size_t i = 0; i < script.lines.size(); ++i) {
+        const auto shot = mgr.resolveDefaultShot(script.lines[i].character, show);
+        ASSERT_TRUE(shot.has_value()) << script.lines[i].character;
+        ASSERT_EQ(shot->characterCount(), 1);
+        EXPECT_EQ(shot->character(0)->characterName, expected[i]);
+    }
+}
+
 TEST_F(ShotPresetManagerTest, MirrorLinesUseRedShoesWhoKeepsHerName)
 {
     // Mirror is another name for Red Shoes (same spine model): her lines
@@ -1204,6 +1233,60 @@ TEST_F(ShotComposerUITest, ShotNameProperty)
     m_panel->newShot("Test Shot");
     m_panel->shotNameEdit()->setText("My Custom Shot");
     EXPECT_EQ(m_panel->currentShot().name(), "My Custom Shot");
+}
+
+TEST_F(ShotComposerUITest, CharacterFilterUsesCustomPuppetsRestingFace)
+{
+    const QString originalDir = QDir::currentPath();
+    const auto restoreDir = qScopeGuard([&] { QDir::setCurrent(originalDir); });
+    ASSERT_TRUE(QDir::setCurrent(m_presetsDir.path()));
+    PuppetManifest puppet;
+    puppet.folderName = "portrait_fixture";
+    puppet.displayName = "Custom Actor";
+    puppet.variantOrder << "Default/Idle";
+    puppet.variants["Default/Idle"].faces[0] = "rest.png";
+    ASSERT_TRUE(puppetlib::save(puppet));
+    QImage rest(64, 64, QImage::Format_ARGB32);
+    rest.fill(Qt::cyan);
+    ASSERT_TRUE(rest.save("rest.png"));
+
+    m_panel->newShot("Portrait test");
+    m_panel->addPuppet("portrait_fixture", "Default/Idle");
+    ASSERT_TRUE(m_panel->saveCurrentShot());
+    auto* filter = m_panel->charFilterColumn()->findChild<QListWidget*>("CharFilterList");
+    ASSERT_NE(filter, nullptr);
+    const auto items = filter->findItems("Custom Actor", Qt::MatchExactly);
+    ASSERT_EQ(items.size(), 1);
+    const QImage portrait = items.first()->icon().pixmap(96, 96).toImage();
+    ASSERT_FALSE(portrait.isNull());
+    EXPECT_EQ(portrait.pixelColor(48, 48), QColor(Qt::cyan));
+}
+
+TEST_F(ShotComposerUITest, NoMoveIsSavedPerPuppet)
+{
+    m_panel->newShot("Puppet Shot");
+    m_panel->addPuppet("Test Puppet");
+    QCheckBox* noMove = nullptr;
+    for (auto* check : m_panel->findChildren<QCheckBox*>()) {
+        if (check->text() == "No Move") noMove = check;
+    }
+    ASSERT_NE(noMove, nullptr);
+    ASSERT_TRUE(noMove->isVisible());
+    EXPECT_FALSE(noMove->isChecked());
+    noMove->click();
+
+    m_panel->addPuppet("Test Puppet");
+    EXPECT_FALSE(noMove->isChecked());
+    m_panel->selectLayer(0);
+    EXPECT_TRUE(noMove->isChecked());
+    auto saved = ShotPreset::fromJson(m_panel->currentShot().toJson());
+    ASSERT_TRUE(saved.has_value());
+    ASSERT_EQ(saved->characterCount(), 2);
+    EXPECT_TRUE(saved->character(0)->puppetNoMove);
+    EXPECT_FALSE(saved->character(1)->puppetNoMove);
+
+    m_panel->addCharacter("Rapi");
+    EXPECT_FALSE(noMove->isVisible());
 }
 
 TEST_F(ShotComposerUITest, SwitchLayerSelection)

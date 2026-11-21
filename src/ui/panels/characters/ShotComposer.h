@@ -531,6 +531,7 @@ private:
     QComboBox*      m_stanceCombo     = nullptr;
     QComboBox*      m_animCombo       = nullptr;
     QCheckBox*      m_talkingCheck    = nullptr;
+    QCheckBox*      m_noMoveCheck     = nullptr;
     QCheckBox*      m_flipXCheck      = nullptr;
     QCheckBox*      m_flipYCheck      = nullptr;
     QCheckBox*      m_visibleCheck    = nullptr;

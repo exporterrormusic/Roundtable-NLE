@@ -84,6 +84,22 @@ void PropertiesPanel::setupPuppetSection(QWidget* container)
             this, [this](bool) { if (!m_updating) applyPuppetTalking(); });
     form->addRow(m_puppetTalkingCheck);
 
+    m_puppetNoMoveCheck = new QCheckBox(tr("No Move"), m_puppetSection);
+    m_puppetNoMoveCheck->setToolTip(tr("Turn off automatic breathing and sway."));
+    connect(m_puppetNoMoveCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        if (m_updating || !canMutateBoundClip() || !m_puppetClip) return;
+        const bool previous = m_puppetClip->noMove();
+        if (previous == checked) return;
+        const auto id = m_puppetClip->id();
+        executeCharacterEdits("Toggle No Move", {{id, m_puppetClip,
+            [checked](Clip* clip) { static_cast<PngPuppetClip*>(clip)->setNoMove(checked); },
+            [previous](Clip* clip) { static_cast<PngPuppetClip*>(clip)->setNoMove(previous); }}},
+            [this, id, checked, previous](bool redo) {
+                if (m_clipId == id) m_puppetNoMoveCheck->setChecked(redo ? checked : previous);
+            });
+    });
+    form->addRow(m_puppetNoMoveCheck);
+
     // Motion timing sliders.  Each commits one undoable change via the generic
     // applyPuppetFloat helper, reading the previous value off the clip.
     // Helper that wires a spin box to applyPuppetFloat with the right setter.
@@ -135,6 +151,8 @@ void PropertiesPanel::setupPuppetSection(QWidget* container)
               "Change sway amount",
               [](PngPuppetClip* p, float v) { p->setSwayAmplitude(v); },
               [](PngPuppetClip* p) { return p->swayAmplitude(); });
+    for (auto* spin : {m_puppetBreathAmpSpin, m_puppetBreathSpeedSpin, m_puppetSwaySpin})
+        connect(m_puppetNoMoveCheck, &QCheckBox::toggled, spin, &QWidget::setDisabled);
 
     m_puppetSection->setVisible(false);
     container->layout()->addWidget(m_puppetSection);
@@ -181,6 +199,7 @@ void PropertiesPanel::populateFromPuppet()
     m_puppetActionCombo->blockSignals(false);
 
     m_puppetTalkingCheck->setChecked(m_puppetClip->isTalking());
+    m_puppetNoMoveCheck->setChecked(m_puppetClip->noMove());
     m_puppetTalkSwapSpin->setValue(m_puppetClip->talkSwapSeconds());
     m_puppetBlinkIntervalSpin->setValue(m_puppetClip->blinkIntervalSeconds());
     m_puppetBlinkDurSpin->setValue(m_puppetClip->blinkDurationSeconds());

@@ -226,6 +226,27 @@ TEST(PngPuppetClipTest, DefaultConstruction)
     EXPECT_GT(clip.talkSwapSeconds(), 0.0f);
 }
 
+TEST(PngPuppetClipTest, NoMoveSuppressesBreathingAndRestoresItWhenCleared)
+{
+    PngPuppetClip clip;
+    clip.setBreathAmplitude(12.0f);
+    clip.setTalking(true);
+    const auto moving = clip.breathing(1.0);
+    ASSERT_NE(moving.dy, 0.0f);
+    const int face = clip.selectFace(1.0);
+
+    clip.setNoMove(true);
+    const auto still = clip.breathing(1.0);
+    EXPECT_FLOAT_EQ(still.dx, 0.0f);
+    EXPECT_FLOAT_EQ(still.dy, 0.0f);
+    EXPECT_FLOAT_EQ(still.scale, 1.0f);
+    EXPECT_FLOAT_EQ(still.rot, 0.0f);
+    EXPECT_EQ(clip.selectFace(1.0), face);
+
+    clip.setNoMove(false);
+    EXPECT_FLOAT_EQ(clip.breathing(1.0).dy, moving.dy);
+}
+
 TEST(PngPuppetClipTest, IdleNeverOpensMouth)
 {
     PngPuppetClip clip;            // talking == false by default
@@ -296,6 +317,7 @@ TEST(PngPuppetClipTest, CloneCopiesState)
 {
     PngPuppetClip clip("Alice", "angry");
     clip.setTalking(true);
+    clip.setNoMove(true);
     clip.setFacePath(PngPuppetClip::MouthOpenEyesOpen, "assets/png_characters/Alice/angry/open_open.png");
     clip.setSeed(42);
     clip.setBreathAmplitude(12.0f);
@@ -305,6 +327,7 @@ TEST(PngPuppetClipTest, CloneCopiesState)
     ASSERT_NE(pc, nullptr);
     EXPECT_EQ(pc->characterName(), "Alice");
     EXPECT_EQ(pc->variant(), "angry");
+    EXPECT_TRUE(pc->noMove());
     EXPECT_TRUE(pc->isTalking());
     EXPECT_EQ(pc->facePath(PngPuppetClip::MouthOpenEyesOpen),
               "assets/png_characters/Alice/angry/open_open.png");

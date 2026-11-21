@@ -132,6 +132,7 @@ inline const std::unordered_map<std::string, VCInfo>& videoCharacterFiles()
 
 // ── Filter icon generators (implemented in ShotComposerThumbnailGen.cpp) ──
 QPixmap makeAllFilterIcon(int sz);
+QPixmap makePuppetPortrait(const std::string& folder, int sz);
 QPixmap makeUnassignedFilterIcon(int sz);
 QPixmap makeFilterDividerIcon(int width);
 

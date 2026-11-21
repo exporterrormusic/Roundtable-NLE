@@ -57,13 +57,15 @@ std::string normalizeArkRangerName(const std::string& name)
     return name;
 }
 
-// Other names scripts use for a spine character who keeps their own name on
+// Other names scripts use for a character who keeps their own name on
 // screen. An alias (_aliases.json) would rename the character everywhere;
 // these only let a line under the extra name find the character's shots.
 // Case-insensitive; other names pass through unchanged.
 std::string normalizeExtraName(const std::string& name)
 {
     static const std::pair<const char*, const char*> kExtraNames[] = {
+        {"maria", "Doctor Maria"},
+        {"k2f", "K2F"},            // imported speaker labels are title-cased ("K2f")
         {"mirror", "Red Shoes"},   // same character, same spine model
     };
     std::string low = name;
@@ -505,6 +507,8 @@ std::string ShotPreset::toJson() const
         if (!ch.puppetFolder.empty()) {
             o << "      \"puppetFolder\": \"" << jsonEscape(ch.puppetFolder) << "\",\n";
             o << "      \"puppetVariant\": \"" << jsonEscape(ch.puppetVariant) << "\",\n";
+            if (ch.puppetNoMove)
+                o << "      \"puppetNoMove\": true,\n";
         }
         o << "      \"posX\": " << ch.posX << ",\n";
         o << "      \"posY\": " << ch.posY << ",\n";
@@ -655,6 +659,7 @@ std::optional<ShotPreset> ShotPreset::fromJson(const std::string& json)
                     else if (fkey == "videoTalkPath") { lex.next(); ch.videoTalkPath = lex.sval; }
                     else if (fkey == "puppetFolder")  { lex.next(); ch.puppetFolder = lex.sval; }
                     else if (fkey == "puppetVariant") { lex.next(); ch.puppetVariant = lex.sval; }
+                    else if (fkey == "puppetNoMove")  { ch.puppetNoMove = (lex.next() == JTok::True); }
                     else if (fkey == "posX")          { lex.next(); ch.posX = static_cast<float>(lex.nval); }
                     else if (fkey == "posY")          { lex.next(); ch.posY = static_cast<float>(lex.nval); }
                     else if (fkey == "scale")         { lex.next(); ch.scale = static_cast<float>(lex.nval); }

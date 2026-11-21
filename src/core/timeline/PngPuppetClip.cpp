@@ -36,6 +36,7 @@ void PngPuppetClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
     m_variant              = o.m_variant;
     m_facePaths            = o.m_facePaths;
     m_talking              = o.m_talking;
+    m_noMove               = o.m_noMove;
     m_talkSwapSeconds      = o.m_talkSwapSeconds;
     m_blinkIntervalSeconds = o.m_blinkIntervalSeconds;
     m_blinkDurationSeconds = o.m_blinkDurationSeconds;

@@ -231,15 +231,17 @@ void ShotComposer::updatePreview()
             };
             // Breathing/sway — same deterministic motion as the timeline clip,
             // read from the clock the frame provider advances each tick.
-            layer.breathProvider =
-                [state](float& dxRef, float& dyRef, float& scaleMul, float& rotDeg) {
-                PngPuppetClip eval;
-                auto b = eval.breathing(state->clock);
-                dxRef = b.dx;
-                dyRef = b.dy;
-                scaleMul = b.scale;
-                rotDeg = b.rot;
-            };
+            if (!ch->puppetNoMove) {
+                layer.breathProvider =
+                    [state](float& dxRef, float& dyRef, float& scaleMul, float& rotDeg) {
+                        PngPuppetClip eval;
+                        auto b = eval.breathing(state->clock);
+                        dxRef = b.dx;
+                        dyRef = b.dy;
+                        scaleMul = b.scale;
+                        rotDeg = b.rot;
+                    };
+            }
 
             previewLayers.push_back(std::move(layer));
             continue;

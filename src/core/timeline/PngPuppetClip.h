@@ -84,6 +84,9 @@ public:
     [[nodiscard]] bool isTalking() const noexcept { return m_talking; }
     void setTalking(bool v) noexcept { m_talking = v; }
 
+    [[nodiscard]] bool noMove() const noexcept { return m_noMove; }
+    void setNoMove(bool v) noexcept { m_noMove = v; }
+
     // ── Motion / timing parameters (seconds) ────────────────────────────
     [[nodiscard]] float talkSwapSeconds()    const noexcept { return m_talkSwapSeconds; }
     void  setTalkSwapSeconds(float s)        noexcept { m_talkSwapSeconds = s; }
@@ -147,6 +150,7 @@ public:
     /// Gentle "breathing" transform offset at clip-local time `t` (seconds).
     [[nodiscard]] BreathOffset breathing(double t) const noexcept
     {
+        if (m_noMove) return {};
         if (t < 0.0) t = 0.0;
         constexpr double kTwoPi = 6.283185307179586;
         const double phase = t * static_cast<double>(m_breathSpeed) * kTwoPi;
@@ -186,6 +190,7 @@ private:
     std::array<std::string, FaceCount> m_facePaths{};
 
     bool     m_talking{false};
+    bool     m_noMove{false};
 
     // Veadotube-like defaults.
     float    m_talkSwapSeconds{0.08f};       ///< mouth open/closed cadence

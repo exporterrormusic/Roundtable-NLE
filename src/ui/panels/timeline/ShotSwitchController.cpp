@@ -465,6 +465,7 @@ std::unique_ptr<Clip> makePuppetClip(const CharacterState& ch, int index,
         pc->setFacePath(f, vit->faces[static_cast<size_t>(f)].toStdString());
     place(*pc, at, ch.characterName, "char_" + std::to_string(index));
     pc->setTalking(ch.isTalking);
+    pc->setNoMove(ch.puppetNoMove);
     // Seed from the puppet folder (not the clip id) so repeated clips of
     // the same character stay in motion phase across cuts.
     pc->setSeed(static_cast<uint32_t>(

@@ -1556,6 +1556,7 @@ TEST_F(SerializerTest, PngPuppetClipRoundTrip)
     pup->setBreathAmplitude(6.5f);
     pup->setBreathSpeed(0.3f);
     pup->setSwayAmplitude(2.75f);
+    pup->setNoMove(true);
     pup->setTimelineIn(0);
     pup->setDuration(48000);
     p->timeline()->track(0)->addClip(std::move(pup));
@@ -1583,6 +1584,7 @@ TEST_F(SerializerTest, PngPuppetClipRoundTrip)
     EXPECT_FLOAT_EQ(pc->breathAmplitude(), 6.5f);
     EXPECT_FLOAT_EQ(pc->breathSpeed(), 0.3f);
     EXPECT_FLOAT_EQ(pc->swayAmplitude(), 2.75f);
+    EXPECT_TRUE(pc->noMove());
 }
 
 TEST_F(SerializerTest, GraphicClipRoundTrip)

@@ -282,6 +282,7 @@ const Schema<PngPuppetClip>& puppetSchema()
         RT_PROP(C, 9, breathAmplitude, setBreathAmplitude),
         RT_PROP(C, 10, breathSpeed, setBreathSpeed),
         RT_PROP(C, 11, swayAmplitude, setSwayAmplitude),
+        RT_PROP(C, 12, noMove, setNoMove),
     });
     return s;
 }

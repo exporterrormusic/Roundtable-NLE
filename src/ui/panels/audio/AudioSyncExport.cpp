@@ -263,6 +263,7 @@ int AudioSync::exportToTimeline(Timeline* timeline)
                     pc->setTimelineIn(group.timelineStart);
                     pc->setDuration(group.totalDuration);
                     pc->setTalking(ch->isTalking);
+                    pc->setNoMove(ch->puppetNoMove);
                     pc->setLabel(ch->characterName);
                     pc->setShotName(shotName);
                     pc->setGroupId(groupId);

@@ -81,6 +81,7 @@ void ShotComposer::refreshShotList()
         int layerCount = 0;
     };
     std::vector<ShotInfo> allShotInfos;
+    std::map<std::string, std::string> puppetFolders;
     std::map<std::string, int> charShotCount; // character real name -> shot count (within active show)
 
     // Per-show counts span ALL shots (the SHOWS column is the top-level filter
@@ -119,6 +120,8 @@ void ShotComposer::refreshShotList()
                 ? m_modelManager->getDisplayName(ch.characterName)
                 : ch.characterName;
             std::string disp = m_presetManager.displayNameFor(real);
+            if (ch.isPuppet())
+                puppetFolders.try_emplace(real, ch.puppetFolder);
             si.charTags        << QString::fromStdString(real);
             si.charTagsDisplay << QString::fromStdString(disp);
             seenReal.insert(QString::fromStdString(real));
@@ -359,11 +362,12 @@ void ShotComposer::refreshShotList()
             if (it != charShotCount.end())
                 count = it->second;
 
-            // Get thumbnail for this character (real folder name)
-            std::string folderName = m_modelManager
-                ? m_modelManager->getFolderName(cn.toStdString())
-                : cn.toStdString();
-            QPixmap thumb = makeCharacterThumbnail(folderName, 96);
+            const std::string name = cn.toStdString();
+            QPixmap thumb;
+            if (auto puppet = puppetFolders.find(name); puppet != puppetFolders.end())
+                thumb = makePuppetPortrait(puppet->second, 96);
+            if (thumb.isNull())
+                thumb = makeCharacterThumbnail(m_modelManager ? m_modelManager->getFolderName(name) : name, 96);
             if (entry.group == ShotPresetManager::CharacterGroup::Hidden && !thumb.isNull()) {
                 QImage mono = thumb.toImage().convertToFormat(QImage::Format_Grayscale8);
                 thumb = QPixmap::fromImage(mono);

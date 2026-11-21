@@ -559,6 +559,8 @@ void ShotComposer::showCharacterProperties(const CharacterState& ch)
     if (!isPuppetChar)
         m_animCombo->setCurrentText(QString::fromStdString(ch.animation));
     m_talkingCheck->setChecked(ch.isTalking);
+    m_noMoveCheck->setChecked(ch.puppetNoMove);
+    m_charForm->setRowVisible(m_noMoveCheck, isPuppetChar);
     m_flipXCheck->setChecked(ch.flipX);
     m_flipYCheck->setChecked(ch.flipY);
     m_visibleCheck->setChecked(ch.visible);
@@ -688,7 +690,7 @@ void ShotComposer::onCharacterPropertyChanged()
 
     // Push undo before the first change in a burst of edits.
     // Flip toggles always force a new undo state.
-    if (!m_undoPropertyPushed || isFlipToggle) {
+    if (!m_undoPropertyPushed || isFlipToggle || sender() == m_noMoveCheck) {
         pushUndoState();
         m_undoPropertyPushed = true;
     }
@@ -740,6 +742,7 @@ void ShotComposer::onCharacterPropertyChanged()
     // actions; store the resolved raw variant key so the preview/export load
     // the right face set.
     if (ch->isPuppet()) {
+        ch->puppetNoMove = m_noMoveCheck->isChecked();
         PuppetManifest man;
         if (puppetlib::load(QString::fromStdString(ch->puppetFolder), man)) {
             const QString outfit = m_outfitCombo->currentText();

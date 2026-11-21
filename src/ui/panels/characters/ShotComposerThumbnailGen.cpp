@@ -7,6 +7,7 @@
 #include "PathUtils.h"
 #include "panels/characters/ShotComposerInternal.h"
 #include "panels/characters/CharacterThumbnailCache.h"
+#include "panels/characters/PuppetLibrary.h"
 
 #include "Theme.h"
 
@@ -18,6 +19,7 @@
 #endif
 
 #include <QDir>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -26,6 +28,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPixmapCache>
 #include <QPushButton>
 
 #include <spdlog/spdlog.h>
@@ -123,6 +126,47 @@ QPixmap makeFilterDividerIcon(int width)
 }
 
 
+static QPixmap portraitFromFrame(const QImage& frame, int sz, const ThumbCropAdj& adj)
+{
+    const QImage argb = frame.convertToFormat(QImage::Format_ARGB32);
+    const QRect crop = computeThumbCropRect(thumbContentBoundingBox(argb),
+                                            argb.width(), argb.height(), adj);
+    const QImage scaled = argb.copy(crop).scaled(sz, sz, Qt::KeepAspectRatioByExpanding,
+                                                 Qt::SmoothTransformation);
+    QPixmap portrait(sz, sz);
+    portrait.fill(Qt::transparent);
+    QPainter painter(&portrait);
+    painter.setRenderHint(QPainter::Antialiasing);
+    QPainterPath mask;
+    mask.addRoundedRect(0, 0, sz, sz, 6, 6);
+    painter.setClipPath(mask);
+    painter.fillRect(0, 0, sz, sz, extractDominantThumbColor(argb));
+    painter.drawImage(0, 0, scaled, (scaled.width() - sz) / 2, (scaled.height() - sz) / 2, sz, sz);
+    painter.end();
+    return portrait;
+}
+
+QPixmap makePuppetPortrait(const std::string& folder, int sz)
+{
+    PuppetManifest puppet;
+    if (!puppetlib::load(QString::fromStdString(folder), puppet)) return {};
+    const QString variant = puppet.variants.contains(QStringLiteral("default"))
+        ? QStringLiteral("default") : puppet.variantOrder.first();
+    const QFileInfo face(puppet.variants.value(variant).faces[0]);
+    if (!face.isFile()) return {};
+
+    const QString key = QStringLiteral("puppetPortrait:%1:%2:%3:%4")
+        .arg(face.absoluteFilePath()).arg(face.lastModified().toMSecsSinceEpoch())
+        .arg(face.size()).arg(sz);
+    QPixmap portrait;
+    if (QPixmapCache::find(key, &portrait)) return portrait;
+    const QImage frame(face.filePath());
+    if (frame.isNull()) return {};
+    portrait = portraitFromFrame(frame, sz, {});
+    QPixmapCache::insert(key, portrait);
+    return portrait;
+}
+
 QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz)
 {
     // ── Check in-memory thumbnail cache first ────────────────────────────
@@ -200,34 +244,7 @@ QPixmap ShotComposer::makeCharacterThumbnail(const std::string& charName, int sz
                         static_cast<uint32_t>(frame.height()));
                 }
 
-                // Bounding box of visible content + head-and-shoulders
-                // crop, via the shared helpers (CharacterThumbnailCache).
-                QImage argbFrame = frame.convertToFormat(QImage::Format_ARGB32);
-                const QRect vContent = thumbContentBoundingBox(argbFrame);
-                const QRect vCrop = computeThumbCropRect(
-                    vContent, argbFrame.width(), argbFrame.height(), cropAdj);
-
-                QImage cropped = argbFrame.copy(vCrop);
-                QColor bgColor = extractDominantThumbColor(argbFrame);
-
-                QImage scaled = cropped.scaled(sz, sz, Qt::KeepAspectRatioByExpanding,
-                                             Qt::SmoothTransformation);
-                int ox = (scaled.width() - sz) / 2;
-                int oy = (scaled.height() - sz) / 2;
-                if (ox < 0) ox = 0;
-                if (oy < 0) oy = 0;
-                QImage thumb = scaled.copy(ox, oy, sz, sz);
-
-                QPixmap pix(sz, sz);
-                pix.fill(Qt::transparent);
-                QPainter p(&pix);
-                p.setRenderHint(QPainter::Antialiasing);
-                QPainterPath clipPath;
-                clipPath.addRoundedRect(0, 0, sz, sz, 6, 6);
-                p.setClipPath(clipPath);
-                p.fillRect(0, 0, sz, sz, bgColor);
-                p.drawImage(0, 0, thumb);
-                p.end();
+                QPixmap pix = portraitFromFrame(frame, sz, cropAdj);
                 m_charThumbCache[cacheKey] = pix;
                 return pix;
             }

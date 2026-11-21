@@ -667,6 +667,10 @@ QWidget* ShotComposer::createPropertiesPanel()
     m_talkingCheck = new QCheckBox("Talking Loop");
     charForm->addRow("", m_talkingCheck);
 
+    m_noMoveCheck = new QCheckBox(tr("No Move"));
+    m_noMoveCheck->setToolTip(tr("Turn off automatic breathing and sway."));
+    charForm->addRow("", m_noMoveCheck);
+
     charSettingsLayout->addLayout(charForm);
     charSettingsLayout->addStretch();
 
@@ -687,6 +691,7 @@ QWidget* ShotComposer::createPropertiesPanel()
     connect(m_stanceCombo,   QOverload<int>::of(&QComboBox::currentIndexChanged), this, charChanged);
     connect(m_animCombo,     QOverload<int>::of(&QComboBox::currentIndexChanged), this, charChanged);
     connect(m_talkingCheck,  &QCheckBox::toggled, this, charChanged);
+    connect(m_noMoveCheck,   &QCheckBox::toggled, this, charChanged);
     connect(m_flipXCheck,    &QCheckBox::toggled, this, charChanged);
     connect(m_flipYCheck,    &QCheckBox::toggled, this, charChanged);
     connect(m_visibleCheck,  &QCheckBox::toggled, this, charChanged);

@@ -1,0 +1,14 @@
+{
+    "name": "K2F",
+    "variantOrder": [
+        "Default/Idle"
+    ],
+    "variants": {
+        "Default/Idle": {
+            "closed_closed": "assets/png_characters/K2F/Default/Idle/closed_closed.png",
+            "closed_open": "assets/png_characters/K2F/Default/Idle/closed_open.png",
+            "open_closed": "assets/png_characters/K2F/Default/Idle/open_closed.png",
+            "open_open": "assets/png_characters/K2F/Default/Idle/open_open.png"
+        }
+    }
+}

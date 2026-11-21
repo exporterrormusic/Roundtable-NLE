@@ -569,6 +569,7 @@ private:
     QComboBox*      m_puppetOutfitCombo{nullptr};
     QComboBox*      m_puppetActionCombo{nullptr};
     QCheckBox*      m_puppetTalkingCheck{nullptr};
+    QCheckBox*      m_puppetNoMoveCheck{nullptr};
     ScrubbySpinBox* m_puppetTalkSwapSpin{nullptr};
     ScrubbySpinBox* m_puppetBlinkIntervalSpin{nullptr};
     ScrubbySpinBox* m_puppetBlinkDurSpin{nullptr};

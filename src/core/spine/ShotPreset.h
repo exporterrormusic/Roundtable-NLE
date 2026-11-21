@@ -100,6 +100,7 @@ struct CharacterState
     // (assets/png_characters/<folder>) and puppetVariant selects the variant.
     std::string     puppetFolder;
     std::string     puppetVariant = "default";
+    bool            puppetNoMove = false;
 
     // Transform (all in normalized [0–1] or scale-factor space)
     float           posX        = 0.5f;     ///< Horizontal position (0–1)
