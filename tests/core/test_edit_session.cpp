@@ -451,6 +451,74 @@ TEST(EditSession, ExecuteTimelineEditFallsBackToActiveSequence)
     EXPECT_EQ(f.clip(f.graphicId), graphic);
 }
 
+// Paste applies its add + overwrite trims while BUILDING. Undo must still put
+// the partly overwritten clip back to full length (owner report 2026-11-23:
+// Ctrl+V over a PNG, Ctrl+Z removed the paste but the PNG stayed cut).
+TEST(EditSession, PasteOverwriteUndoRestoresTrimmedClip)
+{
+    for (const bool paste_insert : {false, true}) {
+        SCOPED_TRACE(paste_insert ? "paste insert" : "paste");
+        Fixture f;
+        ClipboardContents clipboard;
+        EditOperations::copySelection(f.tl, selectionOf(f.v1, f.graphicId), clipboard);
+        ASSERT_TRUE(clipboard.hasClips());
+
+        const uint64_t before = f.hash();
+        const int64_t imageOut = f.clip(f.imageId)->timelineOut();
+        // Lands over the image clip's tail (image = [kSec, 2kSec)).
+        const int64_t at = kSec + kSec / 2;
+        ASSERT_TRUE(executeTimelineEditBuiltLive(&f.stack, &f.tl, "Paste", [&] {
+            return paste_insert ? EditOperations::pasteInsert(f.tl, clipboard, at)
+                                : EditOperations::paste(f.tl, clipboard, at);
+        }));
+        const uint64_t after = f.hash();
+        ASSERT_NE(after, before);
+        if (!paste_insert) EXPECT_LT(f.clip(f.imageId)->timelineOut(), imageOut);
+        ASSERT_EQ(f.stack.undoCount(), 1u);
+
+        ASSERT_TRUE(f.stack.undo());
+        EXPECT_EQ(f.hash(), before);
+        EXPECT_EQ(f.clip(f.imageId)->timelineOut(), imageOut);
+        ASSERT_TRUE(f.stack.redo());
+        EXPECT_EQ(f.hash(), after);
+    }
+}
+
+// Timeline drops (bin / source monitor / sequence) are LambdaCommands whose
+// body opens a gap (Ctrl insert), mints a NEW clip and overwrites. Recorded
+// through executeTimelineEdit, undo must also close the gap, and redo must
+// restore the same clip (same id) rather than re-run the body.
+TEST(EditSession, DropStyleLambdaUndoesRippleAndRedoesSameClip)
+{
+    Fixture f;
+    const uint64_t before = f.hash();
+    const int64_t graphicIn = f.clip(f.graphicId)->timelineIn();
+    int runs = 0;
+    auto body = [&f, &runs]() {
+        ++runs;
+        Track* t = f.tl.track(f.v1);
+        if (auto gap = EditOperations::openGap(f.tl, f.v1, kSec, kSec / 2)) gap->execute();
+        auto img = std::make_unique<ImageClip>();
+        img->setTimelineIn(kSec);
+        img->setDuration(kSec / 2);
+        const uint64_t id = t->addClip(std::move(img))->id();
+        if (auto ov = EditOperations::resolveOverlaps(f.tl, f.v1, id)) ov->execute();
+    };
+    executeTimelineEdit(&f.stack, &f.tl,
+        std::make_unique<LambdaCommand>("Add Media to Timeline", body, [] {}));
+    const uint64_t after = f.hash();
+    ASSERT_NE(after, before);
+    ASSERT_EQ(f.stack.undoCount(), 1u);
+    EXPECT_GT(f.clip(f.graphicId)->timelineIn(), graphicIn);   // rippled right
+
+    ASSERT_TRUE(f.stack.undo());
+    EXPECT_EQ(f.hash(), before);
+    EXPECT_EQ(f.clip(f.graphicId)->timelineIn(), graphicIn);   // gap closed
+    ASSERT_TRUE(f.stack.redo());
+    EXPECT_EQ(f.hash(), after);   // same ids: the body did not run again
+    EXPECT_EQ(runs, 1);
+}
+
 // AudioSync export / ComfyUI assemble build their result on a staged copy and
 // apply it in place: kept clips keep objects and ids, and it undoes exactly.
 TEST(EditSession, AssignSequenceAppliesStagedCopyInPlace)

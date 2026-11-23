@@ -32,6 +32,10 @@
 #include "effects/ColorCorrect.h"
 #include "effects/ChromaKey.h"
 #include "effects/ColorGrading.h"
+#include "effects/Effect.h"
+#include "effects/EffectStack.h"
+#include "effects/EffectRegistry.h"
+#include "Constants.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -2431,4 +2435,186 @@ TEST_F(CompositorTest, GPU_AllTransitionTypes)
     texA.destroy();
     texB.destroy();
     transition.shutdown();
+}
+
+// ── Premiere-parity effect batch (2026-11): shader behaviour on the GPU ─────
+
+namespace {
+
+struct ParityRig
+{
+    static constexpr uint32_t W = 64, H = 64;
+    std::vector<uint8_t> src;
+    rt::Texture tex;
+    rt::EffectProcessor processor;
+    bool ok{false};
+
+    /// RGB gradient with an opaque centre square on a transparent border
+    /// (the border lets Drop Shadow show).
+    ParityRig()
+    {
+        src.resize(static_cast<size_t>(W) * H * 4);
+        for (uint32_t y = 0; y < H; ++y)
+            for (uint32_t x = 0; x < W; ++x) {
+                const size_t i = (static_cast<size_t>(y) * W + x) * 4;
+                src[i]     = static_cast<uint8_t>(x * 4);
+                src[i + 1] = static_cast<uint8_t>(y * 4);
+                src[i + 2] = static_cast<uint8_t>(255 - x * 2);
+                const bool inside = x >= 16 && x < 48 && y >= 16 && y < 48;
+                src[i + 3] = inside ? 255 : 0;
+            }
+        tex = createRgbaTexture(W, H, src);
+        rt::EffectProcessorConfig cfg;
+        cfg.width = W;
+        cfg.height = H;
+        ok = processor.init(g_vk->device, g_vk->allocator, g_vk->cmdPool,
+                            g_vk->device.graphicsQueue(), cfg);
+    }
+    ~ParityRig()
+    {
+        tex.destroy();
+        processor.shutdown();
+    }
+
+    /// Run one effect (params overridden by index) at clip-local `tick`.
+    bool run(rt::EffectType type, std::initializer_list<std::pair<size_t, float>> overrides,
+             std::vector<uint8_t>& out, int64_t tick = 0)
+    {
+        rt::EffectStack stack;
+        auto fx = rt::createEffect(type);
+        for (const auto& [index, value] : overrides)
+            fx->param(index).track.setDefaultValue(value);
+        stack.addEffect(std::move(fx));
+        return processor.processSync(tex.descriptorInfo(), stack.evaluate(tick))
+            && processor.readbackOutput(out) && out.size() == src.size();
+    }
+
+    static size_t at(uint32_t x, uint32_t y) { return (static_cast<size_t>(y) * W + x) * 4; }
+};
+
+} // namespace
+
+TEST_F(CompositorTest, GPU_ParityEffectsAllRunAtDefaults)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    ParityRig rig;
+    ASSERT_TRUE(rig.ok);
+    for (int t = static_cast<int>(rt::EffectType::LensChromaticAberration);
+         t < static_cast<int>(rt::EffectType::Count); ++t) {
+        const auto type = static_cast<rt::EffectType>(t);
+        if (rt::effectDef(type).has(rt::EffectFlag::TimeOnly)) continue;   // no GPU pass
+        SCOPED_TRACE(rt::effectTypeName(type));
+        std::vector<uint8_t> out;
+        EXPECT_TRUE(rig.run(type, {}, out));
+    }
+}
+
+TEST_F(CompositorTest, GPU_ParityColorEffectsMatchTheirFormulas)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    ParityRig rig;
+    ASSERT_TRUE(rig.ok);
+    std::vector<uint8_t> out;
+
+    // Invert RGB: 255 - x, alpha untouched.
+    ASSERT_TRUE(rig.run(rt::EffectType::Invert, {}, out));
+    for (uint32_t x = 16; x < 48; x += 5) {
+        const size_t i = ParityRig::at(x, 30);
+        for (int c = 0; c < 3; ++c) EXPECT_NEAR(out[i + c], 255 - rig.src[i + c], 1);
+        EXPECT_EQ(out[i + 3], rig.src[i + 3]);
+    }
+
+    // Black & White: neutral grey.
+    ASSERT_TRUE(rig.run(rt::EffectType::BlackAndWhite, {}, out));
+    for (uint32_t x = 16; x < 48; x += 5) {
+        const size_t i = ParityRig::at(x, 30);
+        EXPECT_NEAR(out[i], out[i + 1], 1);
+        EXPECT_NEAR(out[i + 1], out[i + 2], 1);
+    }
+
+    // Threshold: only black or white.
+    ASSERT_TRUE(rig.run(rt::EffectType::Threshold, {}, out));
+    for (size_t i = 0; i < out.size(); i += 4)
+        for (int c = 0; c < 3; ++c) EXPECT_TRUE(out[i + c] == 0 || out[i + c] == 255);
+
+    // Leave Color (red, by hue): a strongly blue pixel is decoloured.
+    ASSERT_TRUE(rig.run(rt::EffectType::LeaveColor, {}, out));
+    {
+        const size_t i = ParityRig::at(16, 16);   // r=64 g=64 b=223: blue
+        EXPECT_NEAR(out[i], out[i + 2], 2);
+    }
+}
+
+TEST_F(CompositorTest, GPU_ParityGeometryEffectsMoveThePixelsTheyShould)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    ParityRig rig;
+    ASSERT_TRUE(rig.ok);
+    std::vector<uint8_t> out;
+    constexpr uint32_t W = ParityRig::W;
+
+    // Offset by +50 % X: output(x) = input(x - W/2), wrapping.
+    ASSERT_TRUE(rig.run(rt::EffectType::Offset, {{1, 50.0f}}, out));
+    for (uint32_t x = 0; x < W; x += 7) {
+        const size_t o = ParityRig::at(x, 30);
+        const size_t s = ParityRig::at((x + W / 2) % W, 30);
+        for (int c = 0; c < 4; ++c) EXPECT_NEAR(out[o + c], rig.src[s + c], 1) << x;
+    }
+
+    // Mosaic 8x8: every pixel in a block has the same colour.
+    ASSERT_TRUE(rig.run(rt::EffectType::Mosaic, {{0, 8.0f}, {1, 8.0f}, {2, 1.0f}}, out));
+    for (uint32_t y = 0; y < 8; ++y)
+        for (uint32_t x = 0; x < 8; ++x)
+            for (int c = 0; c < 4; ++c)
+                EXPECT_EQ(out[ParityRig::at(16 + x, 16 + y) + c], out[ParityRig::at(16, 16) + c]);
+
+    // Mirror at the centre, angle 0: the right half reflects the left.
+    ASSERT_TRUE(rig.run(rt::EffectType::Mirror, {}, out));
+    for (uint32_t x = W / 2 + 2; x < W; x += 5) {
+        const size_t o = ParityRig::at(x, 30);
+        const size_t s = ParityRig::at(W - 1 - x, 30);
+        for (int c = 0; c < 4; ++c) EXPECT_NEAR(out[o + c], rig.src[s + c], 2) << x;
+    }
+
+    // Lens Distortion at curvature 0 is the identity.
+    ASSERT_TRUE(rig.run(rt::EffectType::LensDistortion, {}, out));
+    for (size_t i = 0; i < out.size(); ++i) ASSERT_NEAR(out[i], rig.src[i], 1) << i;
+
+    // Chromatic Aberration leaves the centre alone and splits the edges.
+    ASSERT_TRUE(rig.run(rt::EffectType::LensChromaticAberration, {{0, 20.0f}}, out));
+    {
+        const size_t c = ParityRig::at(32, 32);
+        for (int k = 0; k < 3; ++k) EXPECT_NEAR(out[c + k], rig.src[c + k], 2);
+        const size_t e = ParityRig::at(46, 32);   // near the square's right edge
+        EXPECT_NE(out[e], rig.src[e]);
+    }
+}
+
+TEST_F(CompositorTest, GPU_ParityDropShadowAndStrobe)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    ParityRig rig;
+    ASSERT_TRUE(rig.ok);
+    std::vector<uint8_t> out;
+
+    // Drop Shadow 135° (down-right), 6 px, hard: just outside the square's
+    // bottom-right edge gets dark shadow; top-left outside stays clear.
+    ASSERT_TRUE(rig.run(rt::EffectType::DropShadow,
+                        {{3, 100.0f}, {5, 6.0f}, {6, 0.0f}}, out));
+    {
+        const size_t sh = ParityRig::at(50, 50);
+        EXPECT_GT(out[sh + 3], 200);
+        EXPECT_LT(out[sh], 10);
+        EXPECT_EQ(out[ParityRig::at(12, 12) + 3], 0);
+        const size_t in = ParityRig::at(30, 30);   // the clip itself is unchanged
+        for (int c = 0; c < 4; ++c) EXPECT_NEAR(out[in + c], rig.src[in + c], 1);
+    }
+
+    // Strobe (white, 0.1 s every 1 s): on at t=0, off at t=0.5 s.
+    ASSERT_TRUE(rig.run(rt::EffectType::StrobeLight, {}, out, 0));
+    EXPECT_EQ(out[ParityRig::at(30, 30)], 255);
+    EXPECT_EQ(out[ParityRig::at(30, 30) + 1], 255);
+    ASSERT_TRUE(rig.run(rt::EffectType::StrobeLight, {}, out, rt::kTicksPerSecond / 2));
+    for (int c = 0; c < 4; ++c)
+        EXPECT_NEAR(out[ParityRig::at(30, 30) + c], rig.src[ParityRig::at(30, 30) + c], 1);
 }

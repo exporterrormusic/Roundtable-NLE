@@ -36,6 +36,7 @@
 
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "edit/EditSession.h"
 #include "command/commands/ClipCommands.h"
 #include "command/commands/MarkerCommands.h"
 #include "command/commands/TransitionCmds.h"
@@ -426,7 +427,11 @@ void DropController::wireNestSignals()
                 m_ws->invalidateAudioSources();
             };
 
-            m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
+            // Recorded from before/after copies (timeline-only edit). The
+            // lambda undo below is only the no-session fallback; it removed
+            // the video track before the audio one by a stale index.
+            executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(),
+                std::make_unique<LambdaCommand>(
                 "Add Sequence to Timeline",
                 /* execute / redo */
                 [this, sequenceIndex, atTick, sourceIn, sourceOut, dur,

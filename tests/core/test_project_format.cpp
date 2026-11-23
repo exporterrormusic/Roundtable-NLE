@@ -44,6 +44,9 @@
 #include "audiofx/FxChain.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/Dynamics.h"
+#include "audiofx/Delay.h"
+#include "audiofx/EssentialSound.h"
+#include "audiofx/Reverb.h"
 #include "PathUtils.h"
 #include "project/BinaryIO.h"
 #include "support/LegacyProjectWriterV47.h"
@@ -530,6 +533,24 @@ std::unique_ptr<Project> makeEverythingProject()
         audio->audioFx().add(audiofx::ProcessorKind::Dynamics));
     dyn->loadVoicePreset();
     dyn->setEnabled(false);
+    // Table-described processors save their parameter list (field 5).
+    auto* reverb = static_cast<audiofx::ParamProcessor*>(
+        audio->audioFx().add(audiofx::ProcessorKind::Reverb));
+    reverb->setParam(audiofx::Reverb::Decay, 2.5f);
+    reverb->setParam(audiofx::Reverb::Wet, 40.0f);
+    // Essential Sound settings and track (bus) effects.
+    audiofx::EssentialSoundSettings es;
+    es.type = audiofx::SoundType::Dialogue;
+    es.deEss = true;
+    es.reverb = true;
+    es.reverbPreset = 2;
+    audio->setEssentialSound(es);
+    {
+        audiofx::FxChain trackFx;
+        static_cast<audiofx::ParamProcessor*>(trackFx.add(audiofx::ProcessorKind::Delay))
+            ->setParam(audiofx::Delay::Time, 250.0f);
+        a1->setAudioFx(std::move(trackFx));
+    }
     a1->addClip(std::move(audio));
 
     tl->addMarker(0, "Start", 0xFF00FF00u);
@@ -933,7 +954,11 @@ TEST(LeafSchemas, TheAudioFxChainKeepsEveryProcessor)
     audiofx::FxChain back;
     back.add(audiofx::ProcessorKind::Dynamics);   // replaced, not appended to
     ASSERT_TRUE(record::readFxChain(r, back));
-    ASSERT_EQ(back.size(), 2u);
+    ASSERT_EQ(back.size(), 3u);
+    const auto* rev = dynamic_cast<const audiofx::Reverb*>(&back.at(2));
+    ASSERT_NE(rev, nullptr);
+    EXPECT_FLOAT_EQ(rev->param(audiofx::Reverb::Decay), 2.5f);
+    EXPECT_FLOAT_EQ(rev->param(audiofx::Reverb::Wet), 40.0f);
     const auto* eq = dynamic_cast<const audiofx::ParametricEQ*>(&back.at(0));
     ASSERT_NE(eq, nullptr);
     EXPECT_TRUE(eq->lowPassOn());

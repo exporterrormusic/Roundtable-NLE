@@ -132,6 +132,15 @@ private:
 void executeTimelineEdit(CommandStack* stack, Timeline* timeline,
                          std::unique_ptr<Command> cmd);
 
+/// For builders that APPLY their edit while building (EditOperations::paste,
+/// pasteInsert): opens the gesture BEFORE `build` runs, so the step's "before"
+/// copy predates the edit. Calling the builder first and then
+/// executeTimelineEdit records a step whose before == after (undo then left
+/// overwritten clips trimmed). Returns true when `build` produced a command.
+bool executeTimelineEditBuiltLive(CommandStack* stack, Timeline* timeline,
+                                  std::string description,
+                                  const std::function<std::unique_ptr<Command>()>& build);
+
 /// RAII gesture: commits on commit(), cancels on cancel(), and cancels when
 /// destroyed while still open (an exception or early return mid-edit).
 class EditGesture

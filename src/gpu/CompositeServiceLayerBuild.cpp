@@ -9,6 +9,7 @@
  * Each of those steps lives in a helper below.
  */
 
+#include "effects/Echo.h"
 #include "playback/ClipRateHint.h"
 #include "CompositeService.h"
 #include "CompositeServiceLayerBuild.h"
@@ -675,11 +676,51 @@ double msSince(std::chrono::high_resolution_clock::time_point t0)
         std::chrono::high_resolution_clock::now() - t0).count();
 }
 
+
+// ── Echo render items ────────────────────────────────────────────────────────
+
+/// One clip to render at one time. Without Echo a clip is a single item at
+/// the frame tick; with Echo, one item per copy from planEcho().
+struct ClipRenderItem
+{
+    Clip*   clip{nullptr};
+    int64_t tick{0};
+    bool    echoed{false};      ///< the clip has an active Echo (all its copies)
+    bool    echoCopy{false};    ///< a copy at another time (not the current frame)
+    float   echoOpacity{1.0f};
+    int32_t echoBlend{0};
+};
+
+void appendClipRenderItems(std::vector<ClipRenderItem>& out, Clip* clip, int64_t frameTick)
+{
+    if (clip && clip->isEnabled() && !dynamic_cast<AdjustmentClip*>(clip)
+        && clip->effects().effectCount() > 0) {
+        const int64_t localTick = frameTick - clip->timelineIn();
+        const auto copies = planEcho(clip->effects(), localTick, clip->duration(),
+                                     clip->blendMode());
+        if (!copies.empty()) {
+            for (const EchoCopy& c : copies)
+                out.push_back({clip, frameTick + c.tickOffset, true, c.index != 0,
+                               c.opacity, c.blendMode});
+            return;
+        }
+    }
+    out.push_back({clip, frameTick});
+}
+
+/// Apply an echo copy's opacity / blend to its finished layer.
+void applyEchoCopy(LayerInfo& layer, const ClipRenderItem& item)
+{
+    if (!item.echoed) return;
+    layer.opacity *= item.echoOpacity;
+    layer.blendMode = item.echoBlend;
+}
+
 } // namespace
 
 // ---- buildLayersForFrame ----
 std::vector<LayerInfo> CompositeService::buildLayersForFrame(
-    int64_t tick, uint32_t outW, uint32_t outH,
+    int64_t frameTick, uint32_t outW, uint32_t outH,
     bool scrubMode, bool playbackNonBlocking,
     ResolutionTier requestTier, bool stillMode,
     const RenderExecutionContext& context,
@@ -726,7 +767,17 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
         if (!track || track->type() != TrackType::Video || track->isMuted())
             continue;
 
-        for (auto* clip : activeClipsWithTransitionPeers(track, tick)) {
+        // Each active clip is one render item at the frame tick, or - with
+        // an Echo effect - one item per echo copy at its own tick (bottom
+        // copy first). Every item runs the normal per-clip path below with
+        // `tick` = its own time; only the echo bookkeeping differs.
+        std::vector<ClipRenderItem> renderItems;
+        for (auto* activeClip : activeClipsWithTransitionPeers(track, frameTick))
+            appendClipRenderItems(renderItems, activeClip, frameTick);
+
+        for (const ClipRenderItem& item : renderItems) {
+            Clip* const clip = item.clip;
+            const int64_t tick = item.tick;
             auto perfClipT0 = std::chrono::high_resolution_clock::now();
             if (!clip->isEnabled()) continue;
             // Adjustment layers are explicit render-stream boundaries.  The
@@ -741,7 +792,7 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                     layers, *adjustment, localTick, effectStrength);
                 continue;
             }
-            ++clipsAtTick;
+            if (!item.echoCopy) ++clipsAtTick;
 
             // Record this clip/character as active this frame so its sticky
             // last-frame entry survives the end-of-frame prune.
@@ -834,7 +885,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // The keyframe is a stand-in: provisional, never cached as
                 // this tick's picture, and paused/scrub/export stay exact.
                 bool keyframeStandIn = false;
-                if (!scrubMode) {
+                // Echo copies sample other times; feeding those to the
+                // decode-ahead rate hint would misread the clip's walk.
+                if (!scrubMode && !item.echoCopy) {
                     if (handle != 0)
                         stickyMaxDistance =
                             m_mediaPool->playbackFallbackDistance(handle);
@@ -877,8 +930,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                                          clip->label(), msSince(perfClipT0),
                                          gpuHit.width, gpuHit.height, frameNum);
                         }
+                        applyEchoCopy(layer, item);
                         layers.push_back(std::move(layer));
-                        ++resolvedClipsAtTick;
+                        if (!item.echoCopy) ++resolvedClipsAtTick;
                         continue;
                     }
                 }
@@ -1060,11 +1114,15 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
                 // and settle retries replace it when the exact frame arrives.
                 if (stillMode && policy.forceFullResolution)
                     continue;
+                // An echo copy never borrows the clip's last-good picture
+                // (that is the CURRENT frame - it would double it).
+                if (item.echoCopy)
+                    continue;
                 if (!applyStickyFrameFallback(clip, tick, temporalPrimaryFrameNum,
                                               stickyMaxDistance,
                                               frame, sourceFallbackPending))
                     continue;
-            } else if (!gpuSpineZeroCopy && frame &&
+            } else if (!item.echoCopy && !gpuSpineZeroCopy && frame &&
                        (!frame->pixels.empty() || frame->gpuReady)) {
                 recordStickyFrame(clip, frame);
             }
@@ -1260,8 +1318,9 @@ std::vector<LayerInfo> CompositeService::buildLayersForFrame(
             if (videoClipForFit)
                 layer.isLoopContent = videoClipForFit->isVideoCharacter();
 
+            applyEchoCopy(layer, item);
             layers.push_back(std::move(layer));
-            ++resolvedClipsAtTick;
+            if (!item.echoCopy) ++resolvedClipsAtTick;
         }
     }
 

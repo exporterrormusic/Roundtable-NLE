@@ -6,6 +6,7 @@
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
 #include "widgets/AudioFxSection.h"
+#include "widgets/EssentialSoundSection.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
@@ -175,6 +176,7 @@ void PropertiesPanel::setMultiSelection(const std::vector<Clip*>& clips,
     m_videoSection->setVisible(false);
     m_audioSection->setVisible(false);
     if (m_audioFxSection) m_audioFxSection->setVisible(false);
+    if (m_essentialSoundSection) m_essentialSoundSection->setVisible(false);
     m_titleSection->setVisible(false);
     m_graphicSection->setVisible(false);
     if (m_captionSection) m_captionSection->setVisible(false);
@@ -420,6 +422,9 @@ void PropertiesPanel::showSectionsForType()
     m_audioSection->setVisible(hasClip && m_clip->isAudio());
     if (m_audioFxSection)
         m_audioFxSection->setVisible(hasClip && m_clip->isAudio());
+    // Shown by its own setClip() once it has an audio clip; hide otherwise.
+    if (m_essentialSoundSection && !(hasClip && m_clip->isAudio()))
+        m_essentialSoundSection->setVisible(false);
     m_titleSection->setVisible(hasClip && m_clip->clipType() == ClipType::Title);
     m_graphicSection->setVisible(hasClip && m_clip->clipType() == ClipType::Graphic);
     if (m_puppetSection)
@@ -450,6 +455,7 @@ void PropertiesPanel::setTransition(Track* track, size_t transitionIndex)
     m_videoSection->setVisible(false);
     m_audioSection->setVisible(false);
     if (m_audioFxSection) m_audioFxSection->setVisible(false);
+    if (m_essentialSoundSection) m_essentialSoundSection->setVisible(false);
     m_titleSection->setVisible(false);
     m_graphicSection->setVisible(false);
     if (m_captionSection) m_captionSection->setVisible(false);

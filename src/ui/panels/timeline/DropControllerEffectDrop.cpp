@@ -59,6 +59,7 @@
 #include "timeline/VideoClip.h"
 
 #include "effects/ChromaKey.h"
+#include "audiofx/AudioPresets.h"
 #include "audiofx/FxChain.h"
 #include "audiofx/Dynamics.h"
 #include "cache/FrameCache.h"
@@ -268,7 +269,7 @@ void DropController::wireEffectDropSignals()
                 this, [this](size_t trackIdx, uint64_t clipId, int kindInt) {
             if (m_ws->isDestroying()) return;
             if (!m_ws->timeline()) return;
-            const auto kind = static_cast<audiofx::ProcessorKind>(kindInt);
+            const char* fxName = audiofx::audioFxCodeName(kindInt);
             auto targets = resolveEffectDropTargets(
                 m_ws->timeline(), m_ws->timelinePanel(),
                 trackIdx, clipId, /*audioOnly=*/true);
@@ -285,9 +286,7 @@ void DropController::wireEffectDropSignals()
                 auto* audioClip = static_cast<AudioClip*>(target.clip);
                 AudioFxChange change{
                     audioClip, audioClip->audioFx().clone(), audioClip->audioFx().clone()};
-                auto* proc = change.after.add(kind);
-                if (kind == audiofx::ProcessorKind::Dynamics)
-                    static_cast<audiofx::Dynamics*>(proc)->loadVoicePreset();
+                if (!audiofx::applyAudioFxCode(change.after, kindInt)) return;
                 changes->push_back(std::move(change));
             }
 
@@ -325,12 +324,12 @@ void DropController::wireEffectDropSignals()
 
             if (m_ws->commandStack())
                 m_ws->commandStack()->execute(std::make_unique<LambdaCommand>(
-                    std::string("Add ") + audiofx::processorKindName(kind), redo, undo));
+                    std::string("Add ") + fxName, redo, undo));
             else
                 redo();
 
             spdlog::info("Audio FX '{}' added to {} selected-compatible clip(s) via drag-drop",
-                         audiofx::processorKindName(kind), targets.size());
+                         fxName, targets.size());
         });
     }
 

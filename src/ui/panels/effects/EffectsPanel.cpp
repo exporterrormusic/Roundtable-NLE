@@ -14,6 +14,7 @@
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
 #include "effects/EffectRegistry.h"
+#include "audiofx/AudioPresets.h"
 #include "audiofx/FxChain.h"
 #include "command/CommandStack.h"
 #include "edit/EditSession.h"
@@ -30,12 +31,15 @@
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
 #include <QMenu>
+#include <map>
+#include <string>
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QCoreApplication>
 
 #include <cstring>
 #include <fstream>
+#include <algorithm>
 #include <functional>
 #include <sstream>
 
@@ -391,11 +395,24 @@ void EffectsPanel::populateBrowser()
         { "Video Transitions",  {} },   // populated separately below
         { "Legacy",             {} },
     };
+    // A table category "Parent/Child" is a sub-folder of Parent (Premiere's
+    // Video Effects > Stylize etc.). Sub-folders are listed alphabetically
+    // after the parent's own effects, and their effects alphabetically.
+    std::map<std::string, std::map<std::string, std::vector<EffectType>>> subFolders;
     for (const auto& def : allEffectDefs()) {
         if (!def.category || def.has(EffectFlag::Hidden)) continue;
-        for (auto& cat : categories)
-            if (std::strcmp(cat.name, def.category) == 0)
+        // Exact folder names win ("Beat / Music" has a slash of its own);
+        // otherwise "Top/Sub" with Top an existing folder is a sub-folder.
+        const std::string path = def.category;
+        for (auto& cat : categories) {
+            const std::string top = cat.name;
+            if (path == top) {
                 cat.types.push_back(def.type);
+            } else if (path.size() > top.size() + 1 && path.compare(0, top.size(), top) == 0
+                       && path[top.size()] == '/') {
+                subFolders[top][path.substr(top.size() + 1)].push_back(def.type);
+            }
+        }
     }
 
     for (auto& cat : categories) {
@@ -413,17 +430,56 @@ void EffectsPanel::populateBrowser()
             child->setData(0, Qt::UserRole, static_cast<int>(type));
             child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
         }
+        if (auto sf = subFolders.find(cat.name); sf != subFolders.end()) {
+            for (auto& [subName, types] : sf->second) {
+                auto* folder = new QTreeWidgetItem(catItem);
+                folder->setText(0, QString::fromStdString(subName));
+                folder->setIcon(0, folderIcon);
+                folder->setFlags(folder->flags() & ~Qt::ItemIsDragEnabled);
+                std::sort(types.begin(), types.end(), [](EffectType a, EffectType b) {
+                    return QString::compare(QString::fromUtf8(effectTypeName(a)),
+                                            QString::fromUtf8(effectTypeName(b)),
+                                            Qt::CaseInsensitive) < 0;
+                });
+                for (auto type : types) {
+                    auto* child = new QTreeWidgetItem(folder);
+                    child->setText(0, QString::fromUtf8(effectTypeName(type)));
+                    child->setData(0, Qt::UserRole, static_cast<int>(type));
+                    child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
+                }
+            }
+        }
 
         // Append the audiofx DSP processors (EQ / Dynamics) to Audio Effects.
         // These are NOT EffectType values — they carry kAudioFxRole and drop
         // into the clip's FxChain rather than its EffectStack.
         if (std::string(cat.name) == "Audio Effects") {
-            struct FxEntry { const char* name; audiofx::ProcessorKind kind; };
-            for (const FxEntry& fx : { FxEntry{"Parametric EQ", audiofx::ProcessorKind::ParametricEQ},
-                                       FxEntry{"Dynamics",      audiofx::ProcessorKind::Dynamics} }) {
+            for (int k = 0; k < static_cast<int>(audiofx::ProcessorKind::Count); ++k) {
                 auto* child = new QTreeWidgetItem(catItem);
-                child->setText(0, QString::fromUtf8(fx.name));
-                child->setData(0, kAudioFxRole, static_cast<int>(fx.kind));
+                child->setText(0, QString::fromUtf8(
+                    audiofx::processorDisplayName(static_cast<audiofx::ProcessorKind>(k))));
+                child->setData(0, kAudioFxRole, k);
+                child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
+            }
+
+            // Essential Sound style one-click looks, grouped like the
+            // preset menus (Distance / Spaces / Devices / Echo / Voice).
+            auto* presetsItem = new QTreeWidgetItem(catItem);
+            presetsItem->setText(0, QStringLiteral("Essential Sound Presets"));
+            presetsItem->setFlags(presetsItem->flags() & ~Qt::ItemIsDragEnabled);
+            std::map<std::string, QTreeWidgetItem*> groups;
+            for (int i = 0; i < static_cast<int>(audiofx::AudioPreset::Count); ++i) {
+                const auto preset = static_cast<audiofx::AudioPreset>(i);
+                const std::string group = audiofx::audioPresetCategory(preset);
+                auto& groupItem = groups[group];
+                if (!groupItem) {
+                    groupItem = new QTreeWidgetItem(presetsItem);
+                    groupItem->setText(0, QString::fromStdString(group));
+                    groupItem->setFlags(groupItem->flags() & ~Qt::ItemIsDragEnabled);
+                }
+                auto* child = new QTreeWidgetItem(groupItem);
+                child->setText(0, QString::fromUtf8(audiofx::audioPresetName(preset)));
+                child->setData(0, kAudioFxRole, audiofx::kPresetCodeBase + i);
                 child->setFlags(child->flags() | Qt::ItemIsDragEnabled);
             }
         }
@@ -546,16 +602,32 @@ void EffectsPanel::populateBrowser()
 
 void EffectsPanel::filterBrowser(const QString& text)
 {
+    // Recursive: folders (e.g. Audio Effects > Essential Sound Presets >
+    // Distance) stay visible while anything inside them matches, and a
+    // matching folder name shows everything under it.
+    std::function<bool(QTreeWidgetItem*, bool)> apply =
+        [&](QTreeWidgetItem* item, bool parentMatched) -> bool {
+        const bool selfMatch = parentMatched || text.isEmpty()
+                            || item->text(0).contains(text, Qt::CaseInsensitive);
+        if (item->childCount() == 0) {
+            item->setHidden(!selfMatch);
+            return selfMatch;
+        }
+        int visibleChildren = 0;
+        for (int i = 0; i < item->childCount(); ++i)
+            if (apply(item->child(i), selfMatch && !text.isEmpty())) ++visibleChildren;
+        const bool visible = visibleChildren > 0;
+        item->setHidden(!visible);
+        if (visible && !text.isEmpty()) item->setExpanded(true);
+        return visible;
+    };
     for (int c = 0; c < m_browserTree->topLevelItemCount(); ++c) {
         auto* catItem = m_browserTree->topLevelItem(c);
+        // Top-level category names (e.g. "Video Effects") don't count as a
+        // match, as before: searching "video" shouldn't show every effect.
         int visibleChildren = 0;
-        for (int i = 0; i < catItem->childCount(); ++i) {
-            auto* child = catItem->child(i);
-            bool match = text.isEmpty() ||
-                         child->text(0).contains(text, Qt::CaseInsensitive);
-            child->setHidden(!match);
-            if (match) ++visibleChildren;
-        }
+        for (int i = 0; i < catItem->childCount(); ++i)
+            if (apply(catItem->child(i), false)) ++visibleChildren;
         catItem->setHidden(visibleChildren == 0);
         if (visibleChildren > 0) catItem->setExpanded(true);
     }

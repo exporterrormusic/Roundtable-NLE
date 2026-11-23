@@ -128,6 +128,15 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             }
             if (m_programMonitor) m_programMonitor->requestRefresh();
         });
+        connect(m_timelinePanel, &TimelinePanel::trackAudioFxChanged,
+                this, [this]() {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            // Track buses are built from the track chains at source load.
+            if (m_audioPlayback) {
+                m_audioPlayback->invalidateSources();
+                m_audioPlayback->loadSources(/*allowBlockingMisses=*/false);
+            }
+        });
         connect(m_propertiesPanel, &PropertiesPanel::shotSwitchRequested,
                 this, [this](uint64_t groupId, const std::string& newShotName) {
             if (m_destroying.load(std::memory_order_acquire)) return;

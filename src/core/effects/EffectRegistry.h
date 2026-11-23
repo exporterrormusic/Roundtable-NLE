@@ -55,6 +55,10 @@ inline constexpr uint32_t Audio          = 1u << 0;  ///< audio effect, no shade
 inline constexpr uint32_t ProceduralTime = 1u << 1;  ///< gets clip-local seconds
 inline constexpr uint32_t BeatReact      = 1u << 2;  ///< gets the beat pulse too
 inline constexpr uint32_t Hidden         = 1u << 3;  ///< not offered in the browser
+/// Changes WHEN / HOW OFTEN the clip is sampled rather than its pixels
+/// (Posterize Time: posterizeTimeRate(); Echo: planEcho()). No shader;
+/// EffectStack::evaluate() never sends it to the GPU.
+inline constexpr uint32_t TimeOnly       = 1u << 4;
 }
 
 struct EffectDef

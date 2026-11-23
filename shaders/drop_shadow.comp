@@ -1,0 +1,76 @@
+#version 450
+// Drop Shadow (Premiere Perspective): a soft, offset copy of the clip's
+// alpha drawn behind it. Most useful on keyed or transparent clips.
+//   [0..2] Shadow Color  [3] Opacity (0-100 %)  [4] Direction (deg)
+//   [5] Distance (px)    [6] Softness (px)      [7] Shadow Only (toggle)
+// Note: the shadow can only appear inside the clip's own frame.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1) uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+} pc;
+
+const float GOLDEN = 2.39996323;
+
+float alphaAt(vec2 uv)
+{
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 0.0;
+    return texture(inputImage, uv).a;
+}
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+    vec4 src = texture(inputImage, uv);
+
+    vec3  color    = vec3(pc.params[0], pc.params[1], pc.params[2]);
+    float opacity  = clamp(pc.params[3] / 100.0, 0.0, 1.0);
+    float ang      = radians(pc.params[4]);
+    float dist     = pc.params[5];
+    float softness = max(pc.params[6], 0.0);
+    bool  only     = pc.params[7] > 0.5;
+
+    // Premiere's direction: 135° casts down-right (light from top-left).
+    vec2 off = vec2(sin(ang), -cos(ang)) * dist / res;
+    vec2 suv = uv - off;
+
+    float a;
+    if (softness < 0.5) {
+        a = alphaAt(suv);
+    } else {
+        // Vogel-spiral disc sampling with a Gaussian-ish weight.
+        const int N = 48;
+        float sum = 0.0, wsum = 0.0;
+        for (int i = 0; i < N; ++i) {
+            float r = sqrt((float(i) + 0.5) / float(N));
+            float th = float(i) * GOLDEN;
+            vec2 o = vec2(cos(th), sin(th)) * r * softness / res;
+            float w = exp(-2.0 * r * r);
+            sum += alphaAt(suv + o) * w;
+            wsum += w;
+        }
+        a = sum / wsum;
+    }
+    float sa = a * opacity;
+
+    vec4 outC;
+    if (only) {
+        outC = vec4(color, sa);
+    } else {
+        // Straight alpha "over": clip on top of its shadow.
+        float outA = src.a + sa * (1.0 - src.a);
+        vec3 rgb = outA > 0.0 ? (src.rgb * src.a + color * sa * (1.0 - src.a)) / outA : vec3(0.0);
+        outC = vec4(rgb, outA);
+    }
+    imageStore(outputImage, px, clamp(outC, 0.0, 1.0));
+}

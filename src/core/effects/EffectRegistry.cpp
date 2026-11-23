@@ -20,6 +20,15 @@ constexpr const char* kVideo  = "Video Effects";
 constexpr const char* kAudio  = "Audio Effects";
 constexpr const char* kGlitch = "Glitch";
 constexpr const char* kBeat   = "Beat / Music";
+// Premiere-style sub-folders of Video Effects ("Parent/Child" = nested folder).
+constexpr const char* kBlurSharpen = "Video Effects/Blur & Sharpen";
+constexpr const char* kColorFx     = "Video Effects/Color Correction";
+constexpr const char* kDistort     = "Video Effects/Distort";
+constexpr const char* kKeying      = "Video Effects/Keying";
+constexpr const char* kPerspective = "Video Effects/Perspective";
+constexpr const char* kStylize     = "Video Effects/Stylize";
+constexpr const char* kTransform   = "Video Effects/Transform";
+constexpr const char* kTime        = "Video Effects/Time";
 
 ParamDef color(const char* name, float def, ParamKind kind,
                const char* group = nullptr, const char* widget = nullptr)
@@ -40,6 +49,22 @@ ParamDef choice(const char* name, float def, std::vector<const char*> labels)
 ParamDef hidden(const char* name, float def, float min, float max)
 {
     return ParamDef{name, def, min, max, K::Hidden};
+}
+
+/// A number row with explicit display precision / step / suffix.
+ParamDef num(const char* name, float def, float min, float max,
+             int decimals = 0, double step = 1.0, const char* suffix = nullptr)
+{
+    ParamDef p{name, def, min, max, K::Number};
+    p.decimals = decimals;
+    p.step = step;
+    p.suffix = suffix;
+    return p;
+}
+
+ParamDef toggle(const char* name, float def)
+{
+    return ParamDef{name, def, 0.0f, 1.0f, K::Toggle};
 }
 
 std::vector<ParamDef> otsParams(float side)
@@ -127,7 +152,7 @@ std::vector<EffectDef> buildTable()
                  "Fill Right with Left", kAudio, F::Audio, nullptr, {}});
 
     // ── Video ──────────────────────────────────────────────────────────
-    t.push_back({EffectType::ColorCorrect, "color_correct", "Color Correct", kVideo, 0,
+    t.push_back({EffectType::ColorCorrect, "color_correct", "Color Correct", kColorFx, 0,
                  "color_correct.comp.spv", {
         {"Brightness",  0.0f, -1.0f, 1.0f},
         {"Contrast",    1.0f,  0.0f, 3.0f},
@@ -142,7 +167,7 @@ std::vector<EffectDef> buildTable()
     {
         ParamDef repeat{"Repeat Edge Pixels", 1.0f, 0.0f, 1.0f, K::Toggle};
         repeat.widget = "blurRepeatEdgePixelsCheck";
-        t.push_back({EffectType::Blur, "gaussian_blur", "Gaussian Blur", kVideo, 0,
+        t.push_back({EffectType::Blur, "gaussian_blur", "Gaussian Blur", kBlurSharpen, 0,
                      "blur.comp.spv", {
             {"Radius", 15.0f, 0.0f, 100.0f},
             // Added later: older projects load only Radius and keep this
@@ -150,20 +175,20 @@ std::vector<EffectDef> buildTable()
             repeat,
         }});
     }
-    t.push_back({EffectType::Sharpen, "sharpen", "Sharpen", kVideo, 0,
+    t.push_back({EffectType::Sharpen, "sharpen", "Sharpen", kBlurSharpen, 0,
                  "sharpen.comp.spv", {
         {"Amount",    1.0f, 0.0f, 5.0f},
         {"Radius",    1.0f, 0.1f, 10.0f},
         {"Threshold", 0.0f, 0.0f, 1.0f},
     }});
-    t.push_back({EffectType::Glow, "glow", "Glow", kVideo, 0, "glow.comp.spv", {
+    t.push_back({EffectType::Glow, "glow", "Glow", kStylize, 0, "glow.comp.spv", {
         {"Threshold", 0.8f, 0.0f, 1.0f},
         {"Intensity", 1.0f, 0.0f, 5.0f},
         {"Radius",   10.0f, 1.0f, 50.0f},
     }});
     // Ultra Key: grouped UI of its own; the order matches the shader's
     // push constants.
-    t.push_back({EffectType::ChromaKey, "ultra_key", "Ultra Key", kVideo, 0,
+    t.push_back({EffectType::ChromaKey, "ultra_key", "Ultra Key", kKeying, 0,
                  "chroma_key.comp.spv", {
         color("Key Color R", 0.0f, K::ColorR, "Key Color"),
         color("Key Color G", 1.0f, K::ColorG),
@@ -189,7 +214,7 @@ std::vector<EffectDef> buildTable()
         {"Hue",            0.0f, -180.0f, 180.0f},
         {"Luminance",    100.0f, 0.0f, 200.0f},
     }});
-    t.push_back({EffectType::Transform2D, "transform_2d", "Transform 2D", kVideo, 0,
+    t.push_back({EffectType::Transform2D, "transform_2d", "Transform 2D", kDistort, 0,
                  "transform2d.comp.spv", {
         {"Offset X",  0.0f, -2000.0f, 2000.0f},
         {"Offset Y",  0.0f, -2000.0f, 2000.0f},
@@ -198,7 +223,7 @@ std::vector<EffectDef> buildTable()
         {"Anchor X",  0.5f,     0.0f,    1.0f},
         {"Anchor Y",  0.5f,     0.0f,    1.0f},
     }});
-    t.push_back({EffectType::Vignette, "vignette", "Vignette", kVideo, 0,
+    t.push_back({EffectType::Vignette, "vignette", "Vignette", kStylize, 0,
                  "vignette.comp.spv", {
         {"Intensity",  1.0f, 0.0f, 2.0f},
         {"Roundness",  0.5f, 0.0f, 1.0f},
@@ -207,10 +232,10 @@ std::vector<EffectDef> buildTable()
         {"Center Y",   0.0f, -1.0f, 1.0f},
     }});
     // LUT binds its 3D cube at binding 2 (own pipeline layout).
-    t.push_back({EffectType::LUT, "lut", "LUT", kVideo, 0, "lut.comp.spv", {
+    t.push_back({EffectType::LUT, "lut", "LUT", kColorFx, 0, "lut.comp.spv", {
         {"Intensity", 1.0f, 0.0f, 1.0f},
     }});
-    t.push_back({EffectType::Letterbox, "letterbox", "Letterbox", kVideo, 0,
+    t.push_back({EffectType::Letterbox, "letterbox", "Letterbox", kTransform, 0,
                  "letterbox.comp.spv", {
         {"Aspect Width", 2.39f, 1.0f, 4.0f},
         {"Aspect Height", 1.0f, 1.0f, 4.0f},
@@ -220,7 +245,7 @@ std::vector<EffectDef> buildTable()
         color("Bar B", 0.0f, K::ColorB),
         {"Feather",      0.0f,  0.0f, 0.1f},
     }});
-    t.push_back({EffectType::ColorGrading, "color_grading", "Color Grading", kVideo, 0,
+    t.push_back({EffectType::ColorGrading, "color_grading", "Color Grading", kColorFx, 0,
                  "lumetri_color.comp.spv", colorGradingParams()});
     {
         ParamDef amount{"Amount to Tint", 100.0f, 0.0f, 100.0f};
@@ -228,7 +253,7 @@ std::vector<EffectDef> buildTable()
         amount.step = 1.0;
         amount.suffix = " %";
         amount.widget = "tintAmountSpin";
-        t.push_back({EffectType::Tint, "tint", "Tint", kVideo, 0, "tint.comp.spv", {
+        t.push_back({EffectType::Tint, "tint", "Tint", kColorFx, 0, "tint.comp.spv", {
             color("Map Black To R", 0.0f, K::ColorR, "Map Black To", "tintMapBlackButton"),
             color("Map Black To G", 0.0f, K::ColorG),
             color("Map Black To B", 0.0f, K::ColorB),
@@ -247,9 +272,9 @@ std::vector<EffectDef> buildTable()
                  "ots.comp.spv", otsParams(0.0f)});
     // The axis is fixed by the type; it only rides along to the shader.
     t.push_back({EffectType::FlipHorizontal, "flip_horizontal", "Flip Horizontal",
-                 kVideo, 0, "flip.comp.spv", {hidden("Axis", 0.0f, 0.0f, 1.0f)}});
+                 kTransform, 0, "flip.comp.spv", {hidden("Axis", 0.0f, 0.0f, 1.0f)}});
     t.push_back({EffectType::FlipVertical, "flip_vertical", "Flip Vertical",
-                 kVideo, 0, "flip.comp.spv", {hidden("Axis", 1.0f, 0.0f, 1.0f)}});
+                 kTransform, 0, "flip.comp.spv", {hidden("Axis", 1.0f, 0.0f, 1.0f)}});
 
     // ── Glitch (procedural: driven by clip-local time) ─────────────────
     t.push_back({EffectType::Scanlines, "scanlines", "Scanlines", kGlitch,
@@ -319,6 +344,176 @@ std::vector<EffectDef> buildTable()
                  F::BeatReact, "beat_chroma.comp.spv", beatParams(12.0f, 60.0f)});
     t.push_back({EffectType::BeatDrop, "beat_drop", "Beat Drop", kBeat,
                  F::BeatReact, "beat_drop.comp.spv", beatParams(1.0f, 2.0f)});
+
+    // ── Premiere-parity batch (2026-11) ────────────────────────────────
+    // Stylize
+    t.push_back({EffectType::LensChromaticAberration, "lens_chromatic_aberration",
+                 "Chromatic Aberration", kStylize, 0, "lens_chromatic.comp.spv", {
+        num("Amount", 8.0f, 0.0f, 100.0f, 1, 0.5, " px"),
+        num("Center X", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Center Y", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Falloff", 2.0f, 1.0f, 4.0f, 2, 0.05),
+        num("Smoothness", 0.5f, 0.0f, 1.0f, 2, 0.01),
+    }});
+    t.push_back({EffectType::StrobeLight, "strobe_light", "Strobe Light", kStylize,
+                 F::ProceduralTime, "strobe.comp.spv", {
+        color("Strobe Color R", 1.0f, K::ColorR, "Strobe Color"),
+        color("Strobe Color G", 1.0f, K::ColorG),
+        color("Strobe Color B", 1.0f, K::ColorB),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Strobe Duration", 0.1f, 0.01f, 5.0f, 2, 0.01, " s"),
+        num("Strobe Period", 1.0f, 0.02f, 10.0f, 2, 0.01, " s"),
+        num("Random Strobe Probability", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        choice("Strobe", 0.0f, {"Operates On Color", "Makes Layer Transparent", "Invert"}),
+        num("Random Seed", 0.0f, 0.0f, 100.0f, 0, 1.0),
+    }});
+    t.push_back({EffectType::Mosaic, "mosaic", "Mosaic", kStylize, 0, "mosaic.comp.spv", {
+        num("Horizontal Blocks", 10.0f, 1.0f, 400.0f, 0, 1.0),
+        num("Vertical Blocks", 10.0f, 1.0f, 400.0f, 0, 1.0),
+        toggle("Sharp Colors", 0.0f),
+    }});
+    t.push_back({EffectType::FindEdges, "find_edges", "Find Edges", kStylize, 0,
+                 "find_edges.comp.spv", {
+        toggle("Invert", 0.0f),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+    }});
+    t.push_back({EffectType::Emboss, "emboss", "Emboss", kStylize, 0, "emboss.comp.spv", {
+        num("Direction", 45.0f, -360.0f, 360.0f, 1, 1.0, "°"),
+        num("Relief", 2.0f, 0.0f, 10.0f, 1, 0.1, " px"),
+        num("Contrast", 200.0f, 0.0f, 500.0f, 0, 1.0, " %"),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        toggle("Color Emboss", 0.0f),
+    }});
+    t.push_back({EffectType::Threshold, "threshold", "Threshold", kStylize, 0,
+                 "threshold.comp.spv", {
+        hidden("Mode", 0.0f, 0.0f, 0.0f),
+        num("Level", 128.0f, 0.0f, 255.0f, 0, 1.0),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+    }});
+    t.push_back({EffectType::Solarize, "solarize", "Solarize", kStylize, 0,
+                 "threshold.comp.spv", {
+        hidden("Mode", 1.0f, 1.0f, 1.0f),
+        num("Threshold", 128.0f, 0.0f, 255.0f, 0, 1.0),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+    }});
+    t.push_back({EffectType::Replicate, "replicate", "Replicate", kStylize, 0, "warp.comp.spv", {
+        hidden("Mode", 6.0f, 6.0f, 6.0f),
+        num("Count", 2.0f, 1.0f, 16.0f, 0, 1.0),
+    }});
+
+    // Color Correction
+    t.push_back({EffectType::Invert, "invert", "Invert", kColorFx, 0, "color_simple.comp.spv", {
+        hidden("Mode", 0.0f, 0.0f, 0.0f),
+        choice("Channel", 0.0f, {"RGB", "Red", "Green", "Blue", "Alpha", "Luminance"}),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+    }});
+    t.push_back({EffectType::BlackAndWhite, "black_and_white", "Black & White", kColorFx, 0,
+                 "color_simple.comp.spv", {
+        hidden("Mode", 1.0f, 1.0f, 1.0f),
+        hidden("Unused", 0.0f, 0.0f, 1.0f),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+    }});
+    t.push_back({EffectType::LeaveColor, "leave_color", "Leave Color", kColorFx, 0,
+                 "color_simple.comp.spv", {
+        hidden("Mode", 2.0f, 2.0f, 2.0f),
+        num("Amount to Decolor", 100.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        hidden("Unused", 0.0f, 0.0f, 1.0f),
+        color("Color To Leave R", 1.0f, K::ColorR, "Color To Leave"),
+        color("Color To Leave G", 0.0f, K::ColorG),
+        color("Color To Leave B", 0.0f, K::ColorB),
+        num("Tolerance", 15.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Edge Softness", 10.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        choice("Match Colors", 1.0f, {"Using RGB", "Using Hue"}),
+    }});
+
+    // Distort
+    t.push_back({EffectType::Twirl, "twirl", "Twirl", kDistort, 0, "warp.comp.spv", {
+        hidden("Mode", 0.0f, 0.0f, 0.0f),
+        num("Angle", 90.0f, -1440.0f, 1440.0f, 1, 1.0, "°"),
+        num("Twirl Radius", 50.0f, 0.0f, 100.0f, 1, 0.5, " %"),
+        num("Center X", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Center Y", 0.0f, -1.0f, 1.0f, 2, 0.01),
+    }});
+    t.push_back({EffectType::Spherize, "spherize", "Spherize", kDistort, 0, "warp.comp.spv", {
+        hidden("Mode", 1.0f, 1.0f, 1.0f),
+        num("Amount", 50.0f, -100.0f, 100.0f, 0, 1.0),
+        num("Radius", 50.0f, 0.0f, 100.0f, 1, 0.5, " %"),
+        num("Center X", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Center Y", 0.0f, -1.0f, 1.0f, 2, 0.01),
+    }});
+    t.push_back({EffectType::WaveWarp, "wave_warp", "Wave Warp", kDistort,
+                 F::ProceduralTime, "warp.comp.spv", {
+        hidden("Mode", 2.0f, 2.0f, 2.0f),
+        choice("Wave Type", 0.0f, {"Sine", "Square", "Triangle", "Sawtooth"}),
+        num("Wave Height", 10.0f, 0.0f, 500.0f, 0, 1.0, " px"),
+        num("Wave Width", 40.0f, 1.0f, 2000.0f, 0, 1.0, " px"),
+        num("Direction", 90.0f, -360.0f, 360.0f, 1, 1.0, "°"),
+        num("Wave Speed", 1.0f, -10.0f, 10.0f, 2, 0.05, " /s"),
+        num("Phase", 0.0f, -360.0f, 360.0f, 1, 1.0, "°"),
+    }});
+    t.push_back({EffectType::LensDistortion, "lens_distortion", "Lens Distortion", kDistort, 0,
+                 "warp.comp.spv", {
+        hidden("Mode", 3.0f, 3.0f, 3.0f),
+        num("Curvature", 0.0f, -100.0f, 100.0f, 0, 1.0),
+        num("Vertical Decentering", 0.0f, -100.0f, 100.0f, 0, 1.0),
+        num("Horizontal Decentering", 0.0f, -100.0f, 100.0f, 0, 1.0),
+        toggle("Fill Alpha", 1.0f),
+    }});
+    t.push_back({EffectType::Mirror, "mirror", "Mirror", kDistort, 0, "warp.comp.spv", {
+        hidden("Mode", 4.0f, 4.0f, 4.0f),
+        num("Reflection Center X", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Reflection Center Y", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Reflection Angle", 0.0f, -360.0f, 360.0f, 1, 1.0, "°"),
+    }});
+    t.push_back({EffectType::Offset, "offset", "Offset", kDistort, 0, "warp.comp.spv", {
+        hidden("Mode", 5.0f, 5.0f, 5.0f),
+        num("Shift X", 0.0f, -100.0f, 100.0f, 1, 0.5, " %"),
+        num("Shift Y", 0.0f, -100.0f, 100.0f, 1, 0.5, " %"),
+        num("Blend With Original", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+    }});
+
+    // Blur & Sharpen
+    t.push_back({EffectType::DirectionalBlur, "directional_blur", "Directional Blur",
+                 kBlurSharpen, 0, "motion_blur.comp.spv", {
+        hidden("Mode", 0.0f, 0.0f, 0.0f),
+        num("Direction", 0.0f, -360.0f, 360.0f, 1, 1.0, "°"),
+        num("Blur Length", 10.0f, 0.0f, 500.0f, 1, 0.5, " px"),
+    }});
+    t.push_back({EffectType::RadialBlur, "radial_blur", "Radial Blur", kBlurSharpen, 0,
+                 "motion_blur.comp.spv", {
+        hidden("Mode", 1.0f, 1.0f, 1.0f),
+        num("Amount", 10.0f, 0.0f, 100.0f, 0, 1.0),
+        choice("Blur Method", 1.0f, {"Spin", "Zoom"}),
+        num("Center X", 0.0f, -1.0f, 1.0f, 2, 0.01),
+        num("Center Y", 0.0f, -1.0f, 1.0f, 2, 0.01),
+    }});
+
+    // Time
+    t.push_back({EffectType::PosterizeTime, "posterize_time", "Posterize Time", kTime,
+                 F::TimeOnly, nullptr, {
+        num("Frame Rate", 12.0f, 1.0f, 60.0f, 2, 0.5, " fps"),
+    }});
+    t.push_back({EffectType::Echo, "echo", "Echo", kTime, F::TimeOnly, nullptr, {
+        num("Echo Time", -0.033f, -5.0f, 5.0f, 3, 0.001, " s"),
+        num("Number Of Echoes", 1.0f, 0.0f, 16.0f, 0, 1.0),
+        num("Starting Intensity", 1.0f, 0.0f, 1.0f, 2, 0.01),
+        num("Decay", 1.0f, 0.0f, 1.0f, 2, 0.01),
+        choice("Echo Operator", 0.0f, {"Add", "Maximum", "Minimum", "Screen",
+                                       "Composite In Back", "Composite In Front", "Blend"}),
+    }});
+
+    // Perspective
+    t.push_back({EffectType::DropShadow, "drop_shadow", "Drop Shadow", kPerspective, 0,
+                 "drop_shadow.comp.spv", {
+        color("Shadow Color R", 0.0f, K::ColorR, "Shadow Color"),
+        color("Shadow Color G", 0.0f, K::ColorG),
+        color("Shadow Color B", 0.0f, K::ColorB),
+        num("Opacity", 50.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Direction", 135.0f, -360.0f, 360.0f, 1, 1.0, "°"),
+        num("Distance", 10.0f, 0.0f, 500.0f, 1, 0.5, " px"),
+        num("Softness", 10.0f, 0.0f, 200.0f, 1, 0.5, " px"),
+        toggle("Shadow Only", 0.0f),
+    }});
 
     // ── Legacy ─────────────────────────────────────────────────────────
     // Old projects' Lumetri Color loads as Color Grading.

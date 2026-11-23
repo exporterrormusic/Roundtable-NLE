@@ -271,9 +271,8 @@ void TimelinePanel::wireShortcuts()
     // ── Paste: overwrite at playhead ──────────────────────────────────
     m_shortcuts->setActionCallback(ShortcutManager::kPaste, [this]() {
         if (!m_timeline || !m_commandStack || m_clipboard.empty()) return;
-        auto cmd = makePasteCommand(m_playheadTick);
-        if (cmd) {
-            m_commandStack->execute(std::move(cmd));
+        if (executeTimelineEditBuiltLive(m_commandStack, m_timeline, "Paste",
+                [&] { return makePasteCommand(m_playheadTick); })) {
             refreshTrackContents();
             // Sync playhead from the model (the command moves it to end
             // of pasted content as part of its undoable state).
@@ -285,9 +284,8 @@ void TimelinePanel::wireShortcuts()
     // ── Paste Insert: push clips right, insert at playhead ────────────
     m_shortcuts->setActionCallback(ShortcutManager::kPasteInsert, [this]() {
         if (!m_timeline || !m_commandStack || m_clipboard.empty()) return;
-        auto cmd = EditOperations::pasteInsert(*m_timeline, m_clipboard, m_playheadTick);
-        if (cmd) {
-            m_commandStack->execute(std::move(cmd));
+        if (executeTimelineEditBuiltLive(m_commandStack, m_timeline, "Paste Insert",
+                [&] { return EditOperations::pasteInsert(*m_timeline, m_clipboard, m_playheadTick); })) {
             refreshTrackContents();
             // Sync playhead from the model (the command moves it to end
             // of inserted content as part of its undoable state).

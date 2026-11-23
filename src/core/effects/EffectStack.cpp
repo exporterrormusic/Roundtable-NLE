@@ -176,6 +176,9 @@ std::vector<EffectStack::EffectSnapshot> EffectStack::evaluate(int64_t time) con
     std::vector<EffectSnapshot> result;
     for (auto& e : m_effects) {
         if (!e->isEnabled()) continue;
+        // Time-only effects (Posterize Time) act on the source-frame mapping,
+        // not on pixels: nothing to send to the GPU.
+        if (effectDef(e->effectType()).has(EffectFlag::TimeOnly)) continue;
         if (e->effectType() == EffectType::ColorGrading) {
             auto* grading = static_cast<const ColorGrading*>(e.get());
             const auto masks = e->maskCount() > 0
@@ -247,6 +250,16 @@ std::vector<EffectStack::EffectSnapshot> EffectStack::evaluate(int64_t time) con
             result.back().lut = static_cast<const LUT*>(e.get())->cube();
     }
     return result;
+}
+
+double EffectStack::posterizeTimeRate(int64_t localTick) const
+{
+    for (const auto& e : m_effects) {
+        if (!e->isEnabled() || e->effectType() != EffectType::PosterizeTime) continue;
+        if (e->paramCount() == 0) return 0.0;
+        return std::max(0.0, static_cast<double>(e->evalParam(0, localTick)));
+    }
+    return 0.0;
 }
 
 std::unique_ptr<EffectStack> EffectStack::clone() const

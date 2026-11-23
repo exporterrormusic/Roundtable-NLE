@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "audiofx/FxChain.h"
 #include "timeline/Transition.h"
 
 namespace rt {
@@ -106,6 +107,17 @@ public:
     [[nodiscard]] float pan() const noexcept { return m_pan; }
     void setPan(float p) noexcept { m_pan = p; }
 
+    /// Track (bus) audio effects: every clip on the track is summed, then run
+    /// through this chain in real time, so tails (reverb, echo) ring on past
+    /// the end of a clip - Premiere's Audio Track Mixer effect inserts.
+    [[nodiscard]] const audiofx::FxChain& audioFx() const noexcept { return m_audioFx; }
+    /// Replace the chain. Always edit through here: it bumps audioFxRevision(),
+    /// which tells playback to rebuild this track's bus.
+    void setAudioFx(audiofx::FxChain chain);
+    /// Changes whenever the chain is replaced; equal revisions = same settings
+    /// (snapshot clones keep it, so the playing bus keeps its tail).
+    [[nodiscard]] uint64_t audioFxRevision() const noexcept { return m_audioFxRevision; }
+
     // ── Clip management ─────────────────────────────────────────────────
     Clip*  addClip(std::unique_ptr<Clip>&& clip,
                    TrackMutationPolicy policy = TrackMutationPolicy::RespectLock);
@@ -193,6 +205,8 @@ private:
     uint32_t                               m_color{0};       // custom RGBA (0=none)
     float                                  m_volume{1.0f};   // linear gain
     float                                  m_pan{0.0f};      // -1..+1
+    audiofx::FxChain                       m_audioFx;
+    uint64_t                               m_audioFxRevision{0};
     std::vector<std::unique_ptr<Clip>>  m_clips;
     std::vector<Transition>             m_transitions;
 };

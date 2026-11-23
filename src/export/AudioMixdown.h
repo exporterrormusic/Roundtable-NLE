@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "audiofx/FxChain.h"
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -106,10 +107,19 @@ public:
 
 private:
     struct ClipSource;
+    struct TrackBus
+    {
+        audiofx::FxChain   chain;   ///< the track's effects, state kept across blocks
+        std::vector<float> input;   ///< this block's sum of the track's clips
+    };
 
     void mixClip(ClipSource& clip, float* out, int64_t blockFrames);
+    /// The clip's next `wanted` frames after channel fills and its effects,
+    /// with effect latency compensated (fewer only at the clip's end).
+    int64_t readProcessed(ClipSource& clip, int64_t wanted, std::vector<float>& out);
 
     std::vector<std::unique_ptr<ClipSource>> m_clips;   ///< track order, then clip order
+    std::vector<TrackBus> m_buses;                      ///< tracks with audio effects
     uint32_t    m_sampleRate{0};
     uint16_t    m_channels{0};
     int64_t     m_totalFrames{0};

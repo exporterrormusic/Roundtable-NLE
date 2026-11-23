@@ -41,6 +41,20 @@ void AudioClip::copyOwnStateFrom(const Clip& src, CloneMode /*mode*/)
     m_fadeIn         = o.m_fadeIn;
     m_fadeOut        = o.m_fadeOut;
     m_audioFx        = o.m_audioFx.clone();
+    m_essentialSound = o.m_essentialSound;
+}
+
+audiofx::FxChain AudioClip::buildProcessingChain() const
+{
+    audiofx::FxChain chain = audiofx::compileEssentialSound(m_essentialSound);
+    for (size_t i = 0; i < m_audioFx.size(); ++i)
+        chain.add(m_audioFx.at(i).clone());
+    return chain;
+}
+
+bool AudioClip::hasProcessing() const
+{
+    return m_audioFx.isActive() || compileEssentialSound(m_essentialSound).isActive();
 }
 
 } // namespace rt

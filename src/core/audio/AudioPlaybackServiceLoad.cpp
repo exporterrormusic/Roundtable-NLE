@@ -3,6 +3,7 @@
  * Extracted from AudioPlaybackService.cpp for maintainability.
  */
 
+#include "audiofx/FxChain.h"
 #include "audio/AudioPlaybackService.h"
 
 #include "audio/AudioEngine.h"
@@ -695,13 +696,26 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                     // transition pre-roll handles, so state has the head
                     // of the region to converge over; for typical EQ /
                     // dynamics settings this is inaudible.
-                    if (ch > 0 && audioClip->audioFx().isActive()) {
+                    if (ch > 0 && audioClip->hasProcessing()) {
                         auto processed =
                             std::make_shared<std::vector<float>>(*buffer);
-                        auto chain = audioClip->audioFx().clone();
+                        auto chain = audioClip->buildProcessingChain();
                         chain.prepare(48000.0, static_cast<int>(ch));
+                        // Latency (pitch shifter): run `latency` extra
+                        // frames of silence through and drop that many from
+                        // the front, so the window stays in sync.
+                        const size_t latency = static_cast<size_t>(
+                            std::max(0, chain.latencyFrames()));
+                        const size_t frames = processed->size() / ch;
+                        if (latency > 0)
+                            processed->resize((frames + latency) * ch, 0.0f);
                         chain.process(processed->data(),
                                       static_cast<int>(processed->size() / ch));
+                        if (latency > 0) {
+                            processed->erase(processed->begin(),
+                                processed->begin() + static_cast<ptrdiff_t>(latency * ch));
+                            processed->resize(frames * ch);
+                        }
                         buffer = std::move(processed);
                         newBuffers.push_back(buffer);
                     }
@@ -744,6 +758,8 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                 src.pan             = std::clamp(track->pan() + audioClip->pan().evaluate(0), -1.0f, 1.0f);
                 src.muted           = track->isMuted();
                 src.solo            = track->isSoloed();
+                // Track audio effects: route through the track bus.
+                src.busId           = track->audioFx().isActive() ? track->id() : 0;
                 src.maintainPitch   = audioClip->maintainPitch();
                 src.clipSpeed       = audioClip->speed();
 
@@ -852,6 +868,29 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
                     }
                 }
 
+                // Keyframed clip volume (rubber band / Essential Sound
+                // ducking): follow the curve per sample instead of one
+                // value. Keyframe times are clip-local ticks; the envelope
+                // position is in clip SOURCE frames, so divide by speed.
+                if (audioClip->volume().keyframeCount() > 0) {
+                    src.volume = track->volume();
+                    auto prevEnv = src.fadeEnvelope;
+                    const KeyframeTrack<float> curve = audioClip->volume();
+                    const float absSpeed = std::max(0.000001f,
+                        static_cast<float>(std::abs(audioClip->speed())));
+                    const float kfOffset =
+                        static_cast<float>(provider->fadeMapping().clipSourceOffsetFrames);
+                    const float kfFrames =
+                        static_cast<float>(provider->fadeMapping().windowFrames);
+                    src.fadeEnvelope = [prevEnv, curve, absSpeed,
+                                        kfOffset, kfFrames](float pos) {
+                        const float cf = kfOffset
+                            + std::clamp(pos, 0.0f, 1.0f) * kfFrames;
+                        const auto localTick = static_cast<int64_t>(std::max(0.0f, cf) / absSpeed);
+                        const float v = std::max(0.0f, curve.evaluate(localTick));
+                        return prevEnv ? prevEnv(pos) * v : v;
+                    };
+                }
                 sources.push_back(std::move(src));
             }
 
@@ -870,6 +909,22 @@ void AudioPlaybackService::loadSources(bool allowBlockingMisses)
         spdlog::info("loadAudioSources: rebuilt {} audio track source(s)", sources.size());
     } else {
         spdlog::info("loadAudioSources: refreshed {} audio track source(s)", sources.size());
+    }
+    // Track buses (track audio effects) go in before the sources that feed
+    // them. Unchanged tracks keep their running bus (and its tail).
+    {
+        std::vector<AudioBusSpec> buses;
+        for (size_t ti = 0; ti < m_timeline->trackCount(); ++ti) {
+            const Track* track = m_timeline->track(ti);
+            if (!track || track->type() != TrackType::Audio) continue;
+            if (!track->audioFx().isActive()) continue;
+            AudioBusSpec spec;
+            spec.trackId  = track->id();
+            spec.revision = track->audioFxRevision();
+            spec.chain    = std::make_shared<const audiofx::FxChain>(track->audioFx().clone());
+            buses.push_back(std::move(spec));
+        }
+        m_audioEngine->setTrackBuses(buses);
     }
     m_audioEngine->setTrackSources(std::move(sources));
     m_loadedSourcesRevision = m_audioEngine->trackSourcesRevision();

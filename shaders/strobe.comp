@@ -1,0 +1,50 @@
+#version 450
+// Strobe Light (Premiere Stylize): flashes the clip on a period.
+//   [0..2] Strobe Color   [3] Blend With Original (0-100 %)
+//   [4] Strobe Duration (s)   [5] Strobe Period (s, flash start to start)
+//   [6] Random Strobe Probability (0-100 %; 0 = every period)
+//   [7] Strobe: 0 Operates On Color, 1 Makes Layer Transparent, 2 Invert
+//   [8] Seed
+//   [15] clip-local seconds
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1) uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+} pc;
+
+float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+    vec2 uv  = (vec2(px) + 0.5) / vec2(pc.width, pc.height);
+    vec4 src = texture(inputImage, uv);
+
+    vec3  color    = vec3(pc.params[0], pc.params[1], pc.params[2]);
+    float blend    = clamp(pc.params[3] / 100.0, 0.0, 1.0);
+    float duration = max(pc.params[4], 0.0);
+    float period   = max(pc.params[5], 0.001);
+    float prob     = clamp(pc.params[6] / 100.0, 0.0, 1.0);
+    int   mode     = int(pc.params[7] + 0.5);
+    float seed     = pc.params[8];
+    float t        = max(pc.params[15], 0.0);
+
+    float cycle = floor(t / period);
+    bool on = (t - cycle * period) < duration;
+    if (on && prob > 0.0) on = hash11(cycle * 1.731 + seed * 17.0) < prob;
+    if (!on) { imageStore(outputImage, px, src); return; }
+
+    vec4 flashed = src;
+    if (mode == 1)      flashed.a = 0.0;
+    else if (mode == 2) flashed.rgb = 1.0 - src.rgb;
+    else                flashed.rgb = color;
+    imageStore(outputImage, px, mix(flashed, src, blend));
+}

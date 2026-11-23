@@ -199,20 +199,14 @@ private:
     void queuePrompt(const QJsonObject& prompt, const QJsonObject& sourcePrompt);
     void pollCurrent();
     void downloadOutput(const QJsonObject& outputs);
-    void archiveCurrent(const QString& videoFile, int fileIndex, Done then);
     /// `retry` false: a restart cannot fix it (a local file problem), so the
     /// shot fails at once and ComfyUI keeps running for the next one.
     void failCurrent(const QString& why, bool retry = true);
-    /// `keepArtifacts`: leave every pass file on the server (they are the
-    /// only copy of finished work).
-    void stopBatch(const QString& why, bool keepArtifacts = false);
+    void stopBatch(const QString& why);
     /// Ask the server to delete one shot's pass files.
     void releaseArtifacts(RenderJob& job);
-    /// A batch ended early: drop unfinished shots' pass files and unload
-    /// the models so the VRAM goes back to editing. `keepIndex` (a job index,
-    /// or -1) is the one shot whose files stay: the server marks them so
-    /// later clean-ups leave them alone too.
-    void releaseAfterEarlyEnd(int keepIndex = -1);
+    /// Release remaining pass files and unload the models after an early stop.
+    void releaseAfterEarlyEnd();
     /// Polls /queue until `promptId` is no longer running or pending (or
     /// `triesLeft` runs out), then calls `then`. Keeps an interrupt from
     /// landing on the next shot's prompt.

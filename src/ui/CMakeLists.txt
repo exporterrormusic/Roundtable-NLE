@@ -243,6 +243,7 @@ add_library(roundtable_ui STATIC
     widgets/SpinBoxScrubber.cpp
     widgets/PressFeedback.cpp
     widgets/AudioFxSection.cpp
+    widgets/EssentialSoundSection.cpp
     widgets/ThumbnailGrid.cpp
     widgets/MiniTimeline.cpp
     widgets/SpinePreviewWidget.cpp

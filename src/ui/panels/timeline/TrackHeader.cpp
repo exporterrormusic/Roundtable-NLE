@@ -402,6 +402,11 @@ void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
     QAction* renameAction = menu.addAction("Rename Track...");
     QAction* collapseAction = menu.addAction(
         m_track->isCollapsed() ? "Expand Track" : "Collapse Track");
+    // Track (bus) audio effects: reverb / echo tails that outlast clips.
+    QAction* audioFxAction = m_track->type() == TrackType::Audio
+        ? menu.addAction(m_track->audioFx().empty() ? "Track Audio Effects..."
+                                                    : "Track Audio Effects (on)...")
+        : nullptr;
 
     menu.addSeparator();
 
@@ -453,6 +458,7 @@ void TrackHeader::contextMenuEvent(QContextMenuEvent* event)
     else if (chosen == addDividerTrack) { emit addDividerRequested(true, m_trackIndex); }
     else if (deleteAction && chosen == deleteAction)  { emit deleteTrackRequested(m_trackIndex); }
     else if (chosen == collapseAction) { emit collapseToggled(m_trackIndex, !m_track->isCollapsed()); }
+    else if (audioFxAction && chosen == audioFxAction) { emit trackAudioFxRequested(m_trackIndex); }
     else if (chosen == sizeSmall)  { emit trackSizePresetRequested(m_trackIndex, 30.0f); }
     else if (chosen == sizeMedium) { emit trackSizePresetRequested(m_trackIndex, 60.0f); }
     else if (chosen == sizeLarge)  { emit trackSizePresetRequested(m_trackIndex, 100.0f); }

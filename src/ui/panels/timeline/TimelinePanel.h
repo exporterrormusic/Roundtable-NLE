@@ -82,6 +82,8 @@ signals:
     void addDividerRequested(bool above, size_t nearIndex);
     void deleteTrackRequested(size_t trackIndex);
     void trackSizePresetRequested(size_t trackIndex, float height);
+    /// "Track Audio Effects..." chosen on an audio track header.
+    void trackAudioFxRequested(size_t trackIndex);
     // Drag-to-reorder signals
     void reorderDragStarted(size_t trackIndex);
     void reorderDragMoved(size_t trackIndex, const QPoint& globalPos);
@@ -130,6 +132,10 @@ class TimelinePanel : public QWidget
     Q_OBJECT
 
 public:
+    /// Open the track audio effects editor for an audio track (non-modal;
+    /// edits are undoable and resolve the track by id when they run).
+    void openTrackAudioFxDialog(size_t trackIndex);
+
     /// Source-monitor drag-out mode threaded through the drop signals.
     /// 0 = video+audio (default), 1 = video only, 2 = audio only.
     enum StreamDragMode { DragBoth = 0, DragVideoOnly = 1, DragAudioOnly = 2 };
@@ -430,6 +436,8 @@ signals:
     /// Emitted when an audio DSP processor (EQ/Dynamics) is dropped onto a
     /// timeline clip. `kind` is an audiofx::ProcessorKind value.
     void audioFxDroppedOnClip(size_t trackIndex, uint64_t clipId, int kind);
+    /// A track's audio effects changed (playback must rebuild its buses).
+    void trackAudioFxChanged();
 
     /// Emitted when a transition is dropped at a clip edge.
     void transitionDroppedAtEdge(size_t trackIndex, uint64_t leftClipId,

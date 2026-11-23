@@ -34,6 +34,7 @@
 
 #include "command/CommandStack.h"
 #include "command/LambdaCommand.h"
+#include "edit/EditSession.h"
 #include "command/commands/ClipCommands.h"
 #include "command/commands/MarkerCommands.h"
 #include "command/commands/TransitionCmds.h"
@@ -1026,7 +1027,12 @@ void DropController::wireMediaDropSignals()
                         *dropApplied = false;
                     }
                 );
-                m_ws->commandStack()->execute(std::move(cmd));
+                // Recorded from before/after copies: undo restores exactly
+                // what the drop changed (incl. a Ctrl insert's ripple) and
+                // redo re-applies the SAME clips instead of re-running the
+                // drop (which minted new ids and re-read Ctrl at redo time).
+                // The lambda undo above is only the no-session fallback.
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
             } else {
                 // No command stack — fall back to direct add
                 Track* track = nullptr;
@@ -1656,7 +1662,12 @@ void DropController::wireMediaDropSignals()
                         *dropApplied2 = false;
                     }
                 );
-                m_ws->commandStack()->execute(std::move(cmd));
+                // Recorded from before/after copies: undo restores exactly
+                // what the drop changed (incl. a Ctrl insert's ripple) and
+                // redo re-applies the SAME clips instead of re-running the
+                // drop (which minted new ids and re-read Ctrl at redo time).
+                // The lambda undo above is only the no-session fallback.
+                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
             }
 
             spdlog::info("Source region dropped on timeline: '{}' at tick {}, sourceIn={} dur={}",

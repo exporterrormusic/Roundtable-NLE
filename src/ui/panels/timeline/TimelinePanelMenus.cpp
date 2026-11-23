@@ -290,9 +290,11 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
         copyAttributesFromSelection();
     }
     else if (chosen == pasteAction) {
-        auto cmd = EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick);
-        if (cmd) {
-            executeCommand(std::move(cmd));
+        // paste applies while building: the gesture must open first.
+        if (executeTimelineEditBuiltLive(m_commandStack, m_timeline, "Paste",
+                [&] { return EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick); })) {
+            onScrollChanged();
+            emit contentChanged();
             refreshTrackContents();
             // Sync playhead from the model (the command moves it to end
             // of pasted content as part of its undoable state).
@@ -590,11 +592,8 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
                 progress->setMinimumDuration(0);
                 progress->setValue(0);
 
-                // Keep track/clip info for splitting after detection
-                size_t   capturedTrack  = ref.trackIndex;
+                // Only the id survives the wait; position is re-read after.
                 uint64_t capturedClipId = ref.clipId;
-                int64_t  clipTimelineIn = clip->timelineIn();
-                int64_t  clipSourceIn   = clip->sourceIn();
 
                 auto* detector = new OmniShotDetector();
 
@@ -639,7 +638,7 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
 
                 connect(pollTimer, &QTimer::timeout, this,
                     [this, progress, pollTimer, detector, state,
-                     capturedTrack, capturedClipId, clipTimelineIn, clipSourceIn, fps]()
+                     capturedClipId, fps]()
                 {
                     if (m_destroying.load(std::memory_order_acquire)) { pollTimer->stop(); return; }
                     // Update progress bar
@@ -692,41 +691,57 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
                     // Convert cut frame numbers to timeline ticks
                     // cutSourceTick = sourceIn offset in ticks for this frame
                     // splitTimeline = clipTimelineIn + (cutSourceTick - clipSourceIn) / speed
-                    double clipSpeed = 1.0;
+                    // Detection ran in the background and the user then
+                    // answered a dialog: the clip may have been deleted,
+                    // moved, or its track index shifted since the menu
+                    // opened. Re-find it by id and read its CURRENT position.
+                    size_t videoTrackIdx = SIZE_MAX;
+                    const VideoClip* videoClip = nullptr;
                     if (m_timeline) {
-                        Track* trk = m_timeline->track(capturedTrack);
-                        if (trk) {
-                            size_t ci = trk->findClipIndexById(capturedClipId);
-                            if (ci < trk->clipCount()) {
-                                clipSpeed = std::max(trk->clip(ci)->speed(), 0.01);
+                        for (size_t ti = 0; ti < m_timeline->trackCount() && !videoClip; ++ti) {
+                            Track* t = m_timeline->track(ti);
+                            if (!t) continue;
+                            const size_t ci = t->findClipIndexById(capturedClipId);
+                            if (ci < t->clipCount()) {
+                                videoClip = dynamic_cast<const VideoClip*>(t->clip(ci));
+                                videoTrackIdx = ti;
                             }
                         }
                     }
+                    if (!videoClip) {
+                        QMessageBox::information(this, "Scene Detection",
+                            "The clip was removed before the cuts could be applied.");
+                        return;
+                    }
+                    const double clipSpeed = std::max(videoClip->speed(), 0.01);
+                    const int64_t liveTimelineIn = videoClip->timelineIn();
+                    const int64_t liveSourceIn = videoClip->sourceIn();
 
                     auto compound = std::make_unique<CompoundCommand>("Detect Scene Cuts");
 
-                    // Find linked audio clip on the same track (Premiere-style: audio
-                    // linked to video shares the same media path and timeline span).
+                    // The audio partner is the clip LINKED to this video
+                    // (same linkId). Clips imported before linking existed
+                    // fall back to same media file AND same start; matching
+                    // the path alone split an unrelated copy of the file
+                    // elsewhere in the sequence.
                     size_t audioTrackIdx = SIZE_MAX;
                     uint64_t audioClipId = 0;
-                    {
-                        Track* vt = m_timeline->track(capturedTrack);
-                        if (vt) {
-                            std::string videoPath = static_cast<VideoClip*>(
-                                vt->clip(vt->findClipIndexById(capturedClipId)))->mediaPath();
-                            for (size_t ai = 0; ai < m_timeline->trackCount(); ++ai) {
-                                Track* at = m_timeline->track(ai);
-                                if (!at || at->type() != TrackType::Audio) continue;
-                                for (size_t aci = 0; aci < at->clipCount(); ++aci) {
-                                    auto* ac = dynamic_cast<AudioClip*>(at->clip(aci));
-                                    if (ac && ac->mediaPath() == videoPath) {
-                                        audioTrackIdx = ai;
-                                        audioClipId = ac->id();
-                                        goto foundAudio;
-                                    }
-                                }
+                    for (size_t ai = 0; ai < m_timeline->trackCount() && !audioClipId; ++ai) {
+                        Track* at = m_timeline->track(ai);
+                        if (!at || at->type() != TrackType::Audio) continue;
+                        for (size_t aci = 0; aci < at->clipCount(); ++aci) {
+                            auto* ac = dynamic_cast<AudioClip*>(at->clip(aci));
+                            if (!ac) continue;
+                            const bool linked = videoClip->linkId() != 0
+                                && ac->linkId() == videoClip->linkId();
+                            const bool legacyPair = videoClip->linkId() == 0
+                                && ac->mediaPath() == videoClip->mediaPath()
+                                && ac->timelineIn() == liveTimelineIn;
+                            if (linked || legacyPair) {
+                                audioTrackIdx = ai;
+                                audioClipId = ac->id();
+                                break;
                             }
-                            foundAudio:;
                         }
                     }
 
@@ -741,12 +756,12 @@ void TimelinePanel::showClipContextMenu(const QPointF& globalPos, const ClipRef&
                         int64_t cutSrcTick = secondsToTicks(cutSrcSec);
 
                         // Convert source tick to timeline position
-                        int64_t splitTick = clipTimelineIn +
+                        int64_t splitTick = liveTimelineIn +
                             static_cast<int64_t>(
-                                static_cast<double>(cutSrcTick - clipSourceIn) / clipSpeed);
+                                static_cast<double>(cutSrcTick - liveSourceIn) / clipSpeed);
 
                         auto splitCmd = EditOperations::splitClip(
-                            *m_timeline, capturedTrack, currentClipId, splitTick);
+                            *m_timeline, videoTrackIdx, currentClipId, splitTick);
                         if (splitCmd) {
                             splitCmd->execute();
                             compound->addExecuted(std::move(splitCmd));
@@ -953,9 +968,11 @@ void TimelinePanel::showEmptyAreaContextMenu(const QPointF& globalPos, size_t tr
     if (!chosen) return;
 
     if (chosen == pasteAction) {
-        auto cmd = EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick);
-        if (cmd) {
-            executeCommand(std::move(cmd));
+        // paste applies while building: the gesture must open first.
+        if (executeTimelineEditBuiltLive(m_commandStack, m_timeline, "Paste",
+                [&] { return EditOperations::paste(*m_timeline, m_clipboard, m_playheadTick); })) {
+            onScrollChanged();
+            emit contentChanged();
             refreshTrackContents();
             // Sync playhead from the model (the command moves it to end
             // of pasted content as part of its undoable state).

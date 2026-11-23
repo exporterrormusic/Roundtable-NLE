@@ -10,6 +10,7 @@
 #include "widgets/ScrubbySpinBox.h"
 #include "widgets/FontFamilyCombo.h"
 #include "widgets/AudioFxSection.h"
+#include "widgets/EssentialSoundSection.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
@@ -948,6 +949,7 @@ void PropertiesPanel::populateFromAudio()
     m_panSpin->setValue(ac->pan().evaluate(0));
     m_fadeInSpin->setValue(static_cast<double>(ac->fadeInDuration()));
     m_fadeOutSpin->setValue(static_cast<double>(ac->fadeOutDuration()));
+    if (m_essentialSoundSection) m_essentialSoundSection->setClip(ac, m_timeline, m_commandStack);
     if (m_audioFxSection) m_audioFxSection->setClip(ac, m_commandStack);
 }
 

@@ -10,7 +10,9 @@
 #include "edit/EditSession.h"
 #include "command/LambdaCommand.h"
 
+#include "audiofx/AudioPresets.h"
 #include "audiofx/FxChain.h"
+#include "audiofx/ParamProcessor.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/Dynamics.h"
 
@@ -85,17 +87,31 @@ AudioFxSection::AudioFxSection(QWidget* parent)
     outer->addLayout(header);
 
     auto* menu = new QMenu(addBtn);
-    menu->addAction(tr("Parametric EQ"), this, [this]() {
-        commitEdit(tr("Add Parametric EQ"), [](audiofx::FxChain& c) {
-            c.add(audiofx::ProcessorKind::ParametricEQ);
+    for (int k = 0; k < static_cast<int>(audiofx::ProcessorKind::Count); ++k) {
+        const auto kind = static_cast<audiofx::ProcessorKind>(k);
+        QString label = QString::fromUtf8(audiofx::processorDisplayName(kind));
+        if (kind == audiofx::ProcessorKind::Dynamics) label = tr("Dynamics (Gate / Comp / Limiter)");
+        menu->addAction(label, this, [this, k]() {
+            commitEdit(tr("Add %1").arg(QString::fromUtf8(audiofx::audioFxCodeName(k))),
+                       [k](audiofx::FxChain& c) { audiofx::applyAudioFxCode(c, k); });
         });
-    });
-    menu->addAction(tr("Dynamics (Gate / Comp / Limiter)"), this, [this]() {
-        commitEdit(tr("Add Dynamics"), [](audiofx::FxChain& c) {
-            auto* d = static_cast<audiofx::Dynamics*>(c.add(audiofx::ProcessorKind::Dynamics));
-            d->loadVoicePreset();
+    }
+
+    // Essential Sound style looks: each adds its configured processors.
+    menu->addSeparator();
+    auto* presets = menu->addMenu(tr("Presets"));
+    QMenu* group = nullptr;
+    QString groupName;
+    for (int i = 0; i < static_cast<int>(audiofx::AudioPreset::Count); ++i) {
+        const auto preset = static_cast<audiofx::AudioPreset>(i);
+        const QString g = QString::fromUtf8(audiofx::audioPresetCategory(preset));
+        if (!group || g != groupName) { group = presets->addMenu(g); groupName = g; }
+        const int code = audiofx::kPresetCodeBase + i;
+        group->addAction(QString::fromUtf8(audiofx::audioPresetName(preset)), this, [this, code]() {
+            commitEdit(tr("Apply %1").arg(QString::fromUtf8(audiofx::audioFxCodeName(code))),
+                       [code](audiofx::FxChain& c) { audiofx::applyAudioFxCode(c, code); });
         });
-    });
+    }
     addBtn->setMenu(menu);
 
     m_chainLayout = new QVBoxLayout;
@@ -109,6 +125,21 @@ AudioFxSection::~AudioFxSection() = default;
 void AudioFxSection::setClip(AudioClip* clip, CommandStack* stack)
 {
     m_clip = clip;
+    if (!clip) {
+        setTarget({}, {}, stack, nullptr);
+        return;
+    }
+    setTarget([clip]() -> const audiofx::FxChain* { return &clip->audioFx(); },
+              [clip](audiofx::FxChain c) { clip->audioFx() = std::move(c); },
+              stack, clip);
+}
+
+void AudioFxSection::setTarget(ChainGetter get, ChainSetter set, CommandStack* stack,
+                               const void* owner)
+{
+    m_get = std::move(get);
+    m_set = std::move(set);
+    m_owner = owner;
     m_commandStack = stack;
     rebuild();
 }
@@ -116,18 +147,20 @@ void AudioFxSection::setClip(AudioClip* clip, CommandStack* stack)
 void AudioFxSection::commitEdit(const QString& name,
                                 const std::function<void(audiofx::FxChain&)>& mutate)
 {
-    if (!m_clip) return;
+    const audiofx::FxChain* current = chain();
+    if (!current || !m_set) return;
 
-    auto before = std::make_shared<audiofx::FxChain>(m_clip->audioFx().clone());
-    auto after  = std::make_shared<audiofx::FxChain>(m_clip->audioFx().clone());
+    auto before = std::make_shared<audiofx::FxChain>(current->clone());
+    auto after  = std::make_shared<audiofx::FxChain>(current->clone());
     mutate(*after);
 
-    AudioClip* ac = m_clip;
+    const void* owner = m_owner;
+    ChainSetter setter = m_set;
     QPointer<AudioFxSection> self(this);
 
-    auto refresh = [self, ac]() {
+    auto refresh = [self, owner]() {
         if (!self) return;
-        if (self->m_clip == ac && !self->m_rebuildQueued) {
+        if (self->m_owner == owner && !self->m_rebuildQueued) {
             // Defer: an edit may originate from a child widget's own callback,
             // and rebuild() deletes that widget. Rebuild after the event returns.
             self->m_rebuildQueued = true;
@@ -138,8 +171,8 @@ void AudioFxSection::commitEdit(const QString& name,
         emit self->changed();
     };
 
-    auto redo = [ac, after, refresh]() { ac->audioFx() = after->clone(); refresh(); };
-    auto undo = [ac, before, refresh]() { ac->audioFx() = before->clone(); refresh(); };
+    auto redo = [setter, after, refresh]() { setter(after->clone()); refresh(); };
+    auto undo = [setter, before, refresh]() { setter(before->clone()); refresh(); };
 
     if (m_commandStack)
         executeTimelineEdit(m_commandStack, nullptr, std::make_unique<LambdaCommand>(name.toStdString(), redo, undo));
@@ -155,10 +188,11 @@ void AudioFxSection::rebuild()
         delete item;
     }
 
-    if (!m_clip) { setVisible(false); return; }
+    const audiofx::FxChain* editing = chain();
+    if (!editing) { setVisible(false); return; }
     setVisible(true);
 
-    const auto& chain = m_clip->audioFx();
+    const auto& chain = *editing;
     if (chain.empty()) {
         auto* hint = new QLabel(tr("No audio effects. Use “Add ▾”."));
         hint->setEnabled(false);
@@ -171,6 +205,7 @@ void AudioFxSection::rebuild()
         QWidget* w = nullptr;
         if (dynamic_cast<const audiofx::ParametricEQ*>(&p))   w = buildEqWidget(i);
         else if (dynamic_cast<const audiofx::Dynamics*>(&p))  w = buildDynamicsWidget(i);
+        else if (dynamic_cast<const audiofx::ParamProcessor*>(&p)) w = buildParamWidget(i);
         if (w) m_chainLayout->addWidget(w);
     }
 }
@@ -217,7 +252,7 @@ QGroupBox* makeProcessorGroup(const QString& title, bool enabled,
 
 QWidget* AudioFxSection::buildEqWidget(int index)
 {
-    auto* eq = dynamic_cast<audiofx::ParametricEQ*>(&m_clip->audioFx().at(index));
+    auto* eq = dynamic_cast<const audiofx::ParametricEQ*>(&chain()->at(index));
     if (!eq) return nullptr;
 
     QFormLayout* form = nullptr; QCheckBox* enable = nullptr; QToolButton* remove = nullptr;
@@ -335,7 +370,7 @@ QWidget* AudioFxSection::buildEqWidget(int index)
 
 QWidget* AudioFxSection::buildDynamicsWidget(int index)
 {
-    auto* dyn = dynamic_cast<audiofx::Dynamics*>(&m_clip->audioFx().at(index));
+    auto* dyn = dynamic_cast<const audiofx::Dynamics*>(&chain()->at(index));
     if (!dyn) return nullptr;
 
     QFormLayout* form = nullptr; QCheckBox* enable = nullptr; QToolButton* remove = nullptr;
@@ -444,6 +479,78 @@ QWidget* AudioFxSection::buildDynamicsWidget(int index)
             connect(s, &ScrubbySpinBox::valueCommitted, this, [apply](double, double) { apply(tr("Limiter Param")); });
     }
 
+    return box;
+}
+
+QWidget* AudioFxSection::buildParamWidget(int index)
+{
+    auto* proc = dynamic_cast<const audiofx::ParamProcessor*>(&chain()->at(index));
+    if (!proc) return nullptr;
+    const QString title = QString::fromUtf8(
+        audiofx::processorDisplayName(audiofx::processorKindOf(*proc)));
+
+    QFormLayout* form = nullptr; QCheckBox* enable = nullptr; QToolButton* remove = nullptr;
+    auto* box = makeProcessorGroup(title, proc->isEnabled(), this, &form, &enable, &remove);
+
+    connect(enable, &QCheckBox::toggled, this, [this, index, title](bool on) {
+        commitEdit(tr("Toggle %1").arg(title), [index, on](audiofx::FxChain& c) {
+            c.at(index).setEnabled(on);
+        });
+    });
+    connect(remove, &QToolButton::clicked, this, [this, index, title]() {
+        commitEdit(tr("Remove %1").arg(title), [index](audiofx::FxChain& c) { c.remove(index); });
+    });
+
+    // Reset: every parameter back to its default (one undo step).
+    auto* reset = new QToolButton;
+    reset->setText(QStringLiteral("↺"));
+    reset->setToolTip(tr("Reset %1 to defaults").arg(title));
+    form->addRow(new QLabel, reset);
+    connect(reset, &QToolButton::clicked, this, [this, index, title]() {
+        commitEdit(tr("Reset %1").arg(title), [index](audiofx::FxChain& c) {
+            static_cast<audiofx::ParamProcessor&>(c.at(index)).resetToDefaults();
+        });
+    });
+
+    for (int pi = 0; pi < proc->paramCount(); ++pi) {
+        const audiofx::ParamSpec& sp = proc->spec(pi);
+        const QString name = QString::fromUtf8(sp.name);
+        const float value = proc->param(pi);
+        auto commit = [this, index, pi, title, name](float v) {
+            commitEdit(tr("%1 %2").arg(title, name), [index, pi, v](audiofx::FxChain& c) {
+                static_cast<audiofx::ParamProcessor&>(c.at(index)).setParam(pi, v);
+            });
+        };
+
+        switch (sp.kind) {
+        case audiofx::ParamKind::Toggle: {
+            auto* cb = new QCheckBox;
+            cb->setChecked(value > 0.5f);
+            form->addRow(name + QStringLiteral(":"), cb);
+            connect(cb, &QCheckBox::toggled, this, [commit](bool on) { commit(on ? 1.0f : 0.0f); });
+            break;
+        }
+        case audiofx::ParamKind::Choice: {
+            auto* combo = new QComboBox;
+            for (int ci = 0; ci < sp.choiceCount; ++ci)
+                combo->addItem(QString::fromUtf8(sp.choices[ci]));
+            combo->setCurrentIndex(static_cast<int>(value + 0.5f));
+            form->addRow(name + QStringLiteral(":"), combo);
+            connect(combo, qOverload<int>(&QComboBox::activated), this,
+                    [commit](int ci) { commit(static_cast<float>(ci)); });
+            break;
+        }
+        case audiofx::ParamKind::Number:
+        default: {
+            auto* spin = makeSpin(sp.min, sp.max, sp.step, sp.decimals, value,
+                                  QString::fromUtf8(sp.suffix));
+            form->addRow(name + QStringLiteral(":"), spin);
+            connect(spin, &ScrubbySpinBox::valueCommitted, this,
+                    [commit](double, double newValue) { commit(static_cast<float>(newValue)); });
+            break;
+        }
+        }
+    }
     return box;
 }
 

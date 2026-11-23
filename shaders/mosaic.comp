@@ -1,0 +1,42 @@
+#version 450
+// Mosaic (Premiere Stylize): fills a grid of blocks with one colour each.
+//   [0] Horizontal Blocks  [1] Vertical Blocks
+//   [2] Sharp Colors (1 = block-centre pixel, 0 = block average)
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1) uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+} pc;
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+    vec2 uv = (vec2(px) + 0.5) / vec2(pc.width, pc.height);
+
+    vec2 blocks = max(vec2(pc.params[0], pc.params[1]), vec2(1.0));
+    bool sharp  = pc.params[2] > 0.5;
+    vec2 cell   = floor(uv * blocks);
+    vec2 cellLo = cell / blocks;
+    vec2 cellSz = 1.0 / blocks;
+
+    vec4 c;
+    if (sharp) {
+        c = texture(inputImage, cellLo + 0.5 * cellSz);
+    } else {
+        // 6x6 sample average (bilinear taps cover the rest of the block).
+        c = vec4(0.0);
+        for (int y = 0; y < 6; ++y)
+            for (int x = 0; x < 6; ++x)
+                c += texture(inputImage, cellLo + (vec2(x, y) + 0.5) / 6.0 * cellSz);
+        c /= 36.0;
+    }
+    imageStore(outputImage, px, c);
+}

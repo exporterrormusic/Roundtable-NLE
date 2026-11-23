@@ -1118,21 +1118,21 @@ void OverlayController::onOverlayEmptyAreaClicked(float frameX, float frameY,
 
         auto newTrack = std::make_unique<Track>(TrackType::Video, trackName);
         targetTrack = newTrack.get();
-        m_ws->timeline()->insertTrack(0, std::move(newTrack));
         targetTrackIdx = 0;
         createdNewTrack = true;
 
         if (m_ws->commandStack()) {
             textCompound = std::make_unique<CompoundCommand>("Add Text Layer");
-            // Undo: remove the track we just inserted at index 0.
-            Timeline* tl = m_ws->timeline();
-            textCompound->addExecuted(std::make_unique<LambdaCommand>(
-                "Add Track",
-                [](){},  // already executed above
-                [tl](){
-                    if (tl && tl->trackCount() > 0)
-                        tl->removeTrack(0);
-                }));
+            // AddTrackCommand keeps the track object alive on undo and puts
+            // that same object back on redo. (A hand-written lambda used to
+            // destroy it on undo and do nothing on redo, so redo re-added the
+            // text clip to a freed Track.)
+            auto trackCmd = std::make_unique<AddTrackCommand>(
+                m_ws->timeline(), std::move(newTrack), 0);
+            trackCmd->execute();
+            textCompound->addExecuted(std::move(trackCmd));
+        } else {
+            m_ws->timeline()->insertTrack(0, std::move(newTrack));
         }
 
         if (!targetTrack) return;

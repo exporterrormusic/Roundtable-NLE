@@ -184,6 +184,12 @@ bool AudioPlaybackService::needsPlaybackWindowRefresh() const
 {
     if (!m_playbackController || !m_audioEngine) return false;
 
+    // Polled regularly from the UI thread during playback: a convenient
+    // main-thread spot to report NaN guard trips (the callback can't log).
+    m_audioEngine->logNonFiniteGuardTrips();
+    // Same spot: reopen the output device if it stopped calling back.
+    m_audioEngine->checkStreamHealth();
+
     const auto state = m_playbackController->state();
     if (state != PlayState::Playing && state != PlayState::Shuttling) return false;
 

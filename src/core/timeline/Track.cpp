@@ -222,6 +222,14 @@ int64_t Track::duration() const noexcept
 
 // ── Snapshot copy ───────────────────────────────────────────────────────────
 
+void Track::setAudioFx(audiofx::FxChain chain)
+{
+    // Process-wide counter: a revision is never reused, even across tracks.
+    static std::atomic<uint64_t> s_revision{0};
+    m_audioFx = std::move(chain);
+    m_audioFxRevision = s_revision.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 std::unique_ptr<Track> Track::cloneForSnapshot() const
 {
     auto dup = std::make_unique<Track>(m_type, m_name);
@@ -241,6 +249,8 @@ std::unique_ptr<Track> Track::cloneForSnapshot() const
     dup->m_color              = m_color;
     dup->m_volume             = m_volume;
     dup->m_pan                = m_pan;
+    dup->m_audioFx            = m_audioFx.clone();
+    dup->m_audioFxRevision    = m_audioFxRevision;
 
     dup->m_id = m_id;
     dup->m_clips.reserve(m_clips.size());

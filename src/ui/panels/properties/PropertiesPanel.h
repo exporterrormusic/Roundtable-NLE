@@ -77,6 +77,7 @@ class GraphicLayer;
 class FontFamilyCombo;
 class ScrubbySpinBox;
 class AudioFxSection;
+class EssentialSoundSection;
 class CommandStack;
 class ModelManager;
 class ShotPresetManager;
@@ -592,6 +593,7 @@ private:
 
     // Audio effect chain editor (EQ / Dynamics) — shown for audio clips
     AudioFxSection* m_audioFxSection{nullptr};
+    EssentialSoundSection* m_essentialSoundSection{nullptr};
 
     // Title section
     QWidget*        m_titleSection{nullptr};

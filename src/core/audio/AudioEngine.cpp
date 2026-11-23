@@ -3,6 +3,7 @@
  */
 
 #include "audio/AudioEngine.h"
+#include "audiofx/FxChain.h"
 #include "playback/AVSyncClock.h"
 #include "audio/TimeStretch.h"
 #include <spdlog/spdlog.h>
@@ -78,6 +79,33 @@ struct AudioEngine::MixerSnapshot
     std::vector<PreparedSource> sources;
     double playbackSpeed{1.0};
 };
+
+struct AudioEngine::Bus
+{
+    uint64_t trackId{0};
+    uint64_t revision{0};
+    audiofx::FxChain chain;      ///< prepared clone, owned by the callback once published
+    std::vector<float> scratch;  ///< one callback block of the bus input
+};
+
+struct AudioEngine::BusSet
+{
+    std::vector<std::shared_ptr<Bus>> buses;
+
+    [[nodiscard]] Bus* find(uint64_t trackId) const noexcept
+    {
+        for (const auto& b : buses)
+            if (b->trackId == trackId) return b.get();
+        return nullptr;
+    }
+};
+
+namespace {
+/// Largest callback block a bus can take; a bigger block mixes its sources
+/// straight to the output for that block (no track effects) rather than
+/// allocating on the audio thread.
+constexpr unsigned long kMaxBusBlockFrames = 16384;
+} // namespace
 
 // ─── Constructor / Destructor ───────────────────────────────────────────────
 
@@ -203,6 +231,7 @@ void AudioEngine::shutdown()
     {
         std::lock_guard lock(m_snapshotUpdateMutex);
         m_retiredSnapshots.clear();
+        m_retiredBusSets.clear();
     }
     spdlog::info("AudioEngine: shutdown");
 }
@@ -267,6 +296,9 @@ void AudioEngine::play()
             spdlog::error("AudioEngine: play Pa_StartStream failed: {}",
                           Pa_GetErrorText(err));
             m_state.store(TransportState::Paused);
+            // The device may have gone away under the stream; reopen once
+            // (reopenStream() calls play() again on success).
+            if (!m_reopening && reopenStream()) return;
         } else {
             // Start the sync clock AFTER the audio stream is active.
             // This prevents the 50-100ms Pa_StopStream + Pa_StartStream
@@ -329,6 +361,7 @@ void AudioEngine::seekToFrame(int64_t frame)
 {
     m_playPosition.store(frame);
     m_seekGeneration.fetch_add(1, std::memory_order_release);
+    m_busResetPending.store(true, std::memory_order_release);   // a tail does not follow a seek
 
     resetStretchers();
 
@@ -345,6 +378,7 @@ void AudioEngine::seekToFrame(int64_t frame)
 void AudioEngine::scrub(int64_t frame, int64_t durationFrames)
 {
     resetStretchers();
+    m_busResetPending.store(true, std::memory_order_release);
     m_playPosition.store(frame);
     m_scrubEnd.store(frame + durationFrames);
     m_seekGeneration.fetch_add(1, std::memory_order_release);
@@ -386,6 +420,7 @@ void AudioEngine::setTrackSources(std::vector<AudioTrackSource> sources)
 void AudioEngine::clearTrackSources()
 {
     setTrackSources({});
+    setTrackBuses({});
 }
 
 void AudioEngine::updateSourceLevels(uint64_t trackId, float volume, float pan, bool muted)
@@ -507,6 +542,50 @@ void AudioEngine::publishTrackSourcesLocked(std::vector<AudioTrackSource> source
         m_retiredSnapshots.clear();
 }
 
+void AudioEngine::setTrackBuses(const std::vector<AudioBusSpec>& specs)
+{
+    std::lock_guard lock(m_snapshotUpdateMutex);
+    auto next = std::make_shared<BusSet>();
+    for (const auto& spec : specs) {
+        if (spec.trackId == 0 || !spec.chain) continue;
+        if (next->find(spec.trackId)) continue;   // first spec per track wins
+        std::shared_ptr<Bus> bus;
+        if (m_activeBusSet)
+            for (const auto& b : m_activeBusSet->buses)
+                if (b->trackId == spec.trackId && b->revision == spec.revision) { bus = b; break; }
+        if (!bus) {
+            bus = std::make_shared<Bus>();
+            bus->trackId = spec.trackId;
+            bus->revision = spec.revision;
+            bus->chain = spec.chain->clone();
+            bus->chain.prepare(static_cast<double>(m_config.sampleRate),
+                               static_cast<int>(std::max<uint32_t>(1, m_config.channels)));
+            bus->scratch.assign(static_cast<size_t>(kMaxBusBlockFrames)
+                                * std::max<uint32_t>(1, m_config.channels), 0.0f);
+        }
+        next->buses.push_back(std::move(bus));
+    }
+    if (next->buses.empty()) next.reset();
+    publishBusSetLocked(std::move(next));
+}
+
+size_t AudioEngine::trackBusCount() const
+{
+    std::lock_guard lock(m_snapshotUpdateMutex);
+    return m_activeBusSet ? m_activeBusSet->buses.size() : 0;
+}
+
+void AudioEngine::publishBusSetLocked(std::shared_ptr<BusSet> next)
+{
+    auto previous = std::move(m_activeBusSet);
+    m_activeBusSet = std::move(next);
+    m_callbackBusSet.store(m_activeBusSet.get(), std::memory_order_seq_cst);
+    if (previous)
+        m_retiredBusSets.push_back(std::move(previous));
+    if (m_callbackReaders.load(std::memory_order_seq_cst) == 0)
+        m_retiredBusSets.clear();
+}
+
 void AudioEngine::setMasterVolume(float vol) noexcept
 {
     m_masterVolume.store(vol);
@@ -545,6 +624,114 @@ void AudioEngine::resetCallbackStats() noexcept
     m_outputOverflows.store(0, std::memory_order_relaxed);
     m_callbacksOverBudget.store(0, std::memory_order_relaxed);
     m_maxCallbackMicros.store(0, std::memory_order_relaxed);
+}
+
+void AudioEngine::logNonFiniteGuardTrips()
+{
+    const uint64_t out = m_nonFiniteOutputBlocks.load(std::memory_order_relaxed);
+    if (out != m_loggedNonFiniteOutput) {
+        spdlog::warn("AudioEngine: output mix had NaN/Inf — silenced {} block(s) so far "
+                     "(track effects restarted)", out);
+        m_loggedNonFiniteOutput = out;
+    }
+    const uint64_t fx = audiofx::nonFiniteResetCount();
+    if (fx != m_loggedNonFiniteFx) {
+        spdlog::warn("AudioEngine: audio effect '{}' produced NaN/Inf — reset it {} time(s) so far",
+                     audiofx::processorDisplayName(audiofx::lastNonFiniteProcessor()), fx);
+        m_loggedNonFiniteFx = fx;
+    }
+}
+
+// ─── Stream watchdog ────────────────────────────────────────────────────────
+
+bool AudioEngine::checkStreamHealth()
+{
+#ifdef ROUNDTABLE_HAS_PORTAUDIO
+    // Longest gap between callbacks we accept while playing. Normal blocks
+    // are a few ms; a second and a half is far past any real hiccup.
+    constexpr auto kStallLimit = std::chrono::milliseconds(1500);
+
+    if (m_reopening || m_state.load() != TransportState::Playing) {
+        m_healthWatching = false;
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t count = m_callbackCount.load(std::memory_order_relaxed);
+    if (!m_healthWatching || count != m_healthLastCount) {
+        m_healthWatching     = true;
+        m_healthLastCount    = count;
+        m_healthLastProgress = now;
+        return false;
+    }
+
+    // Back off after failed reopens so a missing device is not hammered.
+    const auto limit = kStallLimit * (1 + std::min(m_reopenFailures, 8));
+    if (now - m_healthLastProgress < limit) return false;
+
+    const auto stalledMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - m_healthLastProgress).count();
+    if (m_reopenFailures == 0) {
+        spdlog::warn("AudioEngine: output device stopped responding ({} ms with no "
+                     "audio callback while playing) — reopening the audio device",
+                     static_cast<long long>(stalledMs));
+    }
+    m_healthWatching = false;
+    return reopenStream();
+#else
+    return false;
+#endif
+}
+
+bool AudioEngine::reopenStream()
+{
+#ifdef ROUNDTABLE_HAS_PORTAUDIO
+    m_reopening = true;
+    const TransportState state = m_state.load();
+    const AudioEngineConfig config = m_config;
+
+    if (m_impl->stream) {
+        Pa_AbortStream(m_impl->stream);
+        Pa_CloseStream(m_impl->stream);
+        m_impl->stream = nullptr;
+    }
+    // Re-initialize PortAudio so the device list (and the default device)
+    // is enumerated again — a reset device comes back as a new endpoint.
+    if (m_impl->paInitialized) {
+        Pa_Terminate();
+        m_impl->paInitialized = false;
+    }
+    m_peakL.store(0.0f); m_peakR.store(0.0f);
+    m_rmsL.store(0.0f);  m_rmsR.store(0.0f);
+    m_busResetPending.store(true, std::memory_order_release);
+
+    const bool ok = initialize(config);
+    if (!ok) {
+        if (m_reopenFailures++ == 0)
+            spdlog::warn("AudioEngine: could not reopen the audio device ({}); "
+                         "will keep retrying while playing", m_lastError);
+        m_reopening = false;
+        return false;
+    }
+
+    if (m_reopenFailures > 0 || state == TransportState::Playing) {
+        const PaDeviceInfo* info = Pa_GetDeviceInfo(Pa_GetDefaultOutputDevice());
+        spdlog::warn("AudioEngine: audio device reopened ('{}')",
+                     info && info->name ? info->name : "?");
+    }
+    m_reopenFailures = 0;
+
+    if (state == TransportState::Playing) {
+        m_state.store(TransportState::Paused);   // play() only starts from not-Playing
+        play();
+    } else {
+        m_state.store(state == TransportState::Scrubbing ? TransportState::Paused : state);
+    }
+    m_reopening = false;
+    return true;
+#else
+    return false;
+#endif
 }
 
 // ─── Sync clock ─────────────────────────────────────────────────────────────
@@ -699,6 +886,17 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount,
     // Mode and speed belong to the same immutable mixer snapshot.
     const double speed = snapshot ? snapshot->playbackSpeed : 1.0;
 
+    // Track buses: clear each bus input for this block (a block too big for
+    // the preallocated scratch skips the buses and mixes direct).
+    BusSet* busSet = m_callbackBusSet.load(std::memory_order_seq_cst);
+    if (busSet && frameCount > kMaxBusBlockFrames) busSet = nullptr;
+    if (busSet) {
+        if (m_busResetPending.exchange(false, std::memory_order_acq_rel))
+            for (const auto& bus : busSet->buses) bus->chain.reset();
+        for (const auto& bus : busSet->buses)
+            std::fill_n(bus->scratch.data(), totalSamples, 0.0f);
+    }
+
     // Mix all active sources.
     if (snapshot) {
         for (const auto& prepared : snapshot->sources) {
@@ -711,9 +909,23 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount,
             const bool muted = prepared.levels
                 ? prepared.levels->muted.load(std::memory_order_acquire)
                 : prepared.source.muted;
-            mixSource(prepared.source, prepared.stretcher.get(), output,
+            float* target = output;
+            if (busSet && prepared.source.busId != 0)
+                if (Bus* bus = busSet->find(prepared.source.busId))
+                    target = bus->scratch.data();
+            mixSource(prepared.source, prepared.stretcher.get(), target,
                       frameCount, playPos, speed, hasSolo,
                       volume, pan, muted);
+        }
+    }
+
+    // Run each bus through its track effects and sum it into the output.
+    // Buses run even with no clip playing, so tails ring out past clip ends.
+    if (busSet) {
+        for (const auto& bus : busSet->buses) {
+            float* b = bus->scratch.data();
+            bus->chain.process(b, static_cast<int>(frameCount));
+            for (unsigned long i = 0; i < totalSamples; ++i) output[i] += b[i];
         }
     }
 
@@ -723,6 +935,15 @@ int AudioEngine::onAudioCallback(float* output, unsigned long frameCount,
         for (unsigned long i = 0; i < totalSamples; ++i) {
             output[i] *= masterVol;
         }
+    }
+
+    // Last line of defence: never hand NaN / Inf to the device. Silence this
+    // block and restart the track effects so a bad value cannot linger in
+    // their state; playback recovers on the next block.
+    if (!audiofx::allFinite(output, totalSamples)) {
+        std::fill_n(output, totalSamples, 0.0f);
+        m_busResetPending.store(true, std::memory_order_release);
+        m_nonFiniteOutputBlocks.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Update metering

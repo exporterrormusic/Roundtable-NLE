@@ -9,6 +9,7 @@
 
 #include "timeline/Clip.h"
 #include "timeline/KeyframeTrack.h"
+#include "audiofx/EssentialSound.h"
 #include "audiofx/FxChain.h"
 #include <string>
 
@@ -61,6 +62,19 @@ public:
     audiofx::FxChain&       audioFx()       noexcept { return m_audioFx; }
     const audiofx::FxChain& audioFx() const noexcept { return m_audioFx; }
 
+    // ── Essential Sound ─────────────────────────────────────────────────
+    /// Premiere-style Essential Sound settings (type + task sliders). They
+    /// compile to processors that run BEFORE audioFx() (see EssentialSound.h).
+    [[nodiscard]] const audiofx::EssentialSoundSettings& essentialSound() const noexcept
+    { return m_essentialSound; }
+    void setEssentialSound(const audiofx::EssentialSoundSettings& s) { m_essentialSound = s; }
+
+    /// Everything that processes this clip's samples, in order: the compiled
+    /// Essential Sound chain, then audioFx(). Un-prepared copy for a renderer.
+    [[nodiscard]] audiofx::FxChain buildProcessingChain() const;
+    /// True when buildProcessingChain() would alter the signal.
+    [[nodiscard]] bool hasProcessing() const;
+
     // ── Fades ───────────────────────────────────────────────────────────
     [[nodiscard]] int64_t fadeInDuration()  const noexcept { return m_fadeIn; }
     [[nodiscard]] int64_t fadeOutDuration() const noexcept { return m_fadeOut; }
@@ -88,6 +102,7 @@ private:
     int64_t m_fadeOut{0};
 
     audiofx::FxChain m_audioFx;
+    audiofx::EssentialSoundSettings m_essentialSound;
 };
 
 } // namespace rt

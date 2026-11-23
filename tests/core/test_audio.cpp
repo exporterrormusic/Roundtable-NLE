@@ -31,6 +31,8 @@ extern "C" {
 
 #include "audio/AudioFile.h"
 #include "audio/AudioEngine.h"
+#include "audiofx/FxChain.h"
+#include "audiofx/Delay.h"
 #include "audio/AudioPlaybackService.h"
 #include "playback/PlaybackController.h"
 #include "timeline/Timeline.h"
@@ -1521,4 +1523,101 @@ TEST(TempMarianReplay, Audio1Lag)
                     bestLag > 0 ? "late" : "early", best, energy / o.size());
     }
 }
+
+// ── Track buses (track audio effects) ───────────────────────────────────────
+
+namespace {
+
+/// 256 frames of 0.5 (mono) at timeline frame 0, routed to bus 7.
+AudioTrackSource busBurstSource(const std::shared_ptr<std::vector<float>>& samples)
+{
+    AudioTrackSource src;
+    src.trackId = 1;
+    src.busId = 7;
+    src.sampleBuffer = samples;
+    src.samples = samples->data();
+    src.totalFrames = static_cast<int64_t>(samples->size());
+    src.channels = 1;
+    src.maintainPitch = false;
+    return src;
+}
+
+/// Bus 7 with a 10 ms (480 frame) echo: no feedback, no dry, flat filters.
+AudioBusSpec echoBus(uint64_t revision)
+{
+    audiofx::FxChain chain;
+    auto* d = static_cast<audiofx::ParamProcessor*>(chain.add(audiofx::ProcessorKind::Delay));
+    d->setParam(audiofx::Delay::Time, 10.0f);
+    d->setParam(audiofx::Delay::Feedback, 0.0f);
+    d->setParam(audiofx::Delay::LowCut, 20.0f);
+    d->setParam(audiofx::Delay::HighCut, 20000.0f);
+    d->setParam(audiofx::Delay::Dry, 0.0f);
+    d->setParam(audiofx::Delay::Wet, 100.0f);
+    AudioBusSpec spec;
+    spec.trackId = 7;
+    spec.revision = revision;
+    spec.chain = std::make_shared<const audiofx::FxChain>(std::move(chain));
+    return spec;
+}
+
+float absSum(const std::vector<float>& v, size_t from, size_t to)
+{
+    float s = 0.0f;
+    for (size_t i = from; i < to && i < v.size(); ++i) s += std::fabs(v[i]);
+    return s;
+}
+
+} // namespace
+
+TEST(AudioEngineTest, TrackBusEffectRingsPastTheSource)
+{
+    AudioEngine engine;
+    auto samples = std::make_shared<std::vector<float>>(256, 0.5f);
+    engine.setTrackBuses({echoBus(1)});
+    EXPECT_EQ(engine.trackBusCount(), 1u);
+    engine.setTrackSources({busBurstSource(samples)});
+    AudioEngineTestAccess::setPlaying(engine);
+
+    std::vector<float> out(1024 * 2);
+    AudioEngineTestAccess::process(engine, out.data(), 1024);
+    // Dry is 0: nothing while the source plays, its echo 480 frames later
+    // (after the source itself has ended at frame 256).
+    EXPECT_LT(absSum(out, 0, 480 * 2), 1e-6f);
+    EXPECT_GT(absSum(out, 480 * 2, 736 * 2), 1.0f);
+    EXPECT_LT(absSum(out, 760 * 2, 1024 * 2), 1e-3f);
+}
+
+TEST(AudioEngineTest, TrackBusSurvivesRepublishAndResetsOnSeek)
+{
+    auto samples = std::make_shared<std::vector<float>>(256, 0.5f);
+    auto run = [&](bool republish, bool seek) {
+        AudioEngine engine;
+        engine.setTrackBuses({echoBus(1)});
+        engine.setTrackSources({busBurstSource(samples)});
+        AudioEngineTestAccess::setPlaying(engine);
+        std::vector<float> out(1024 * 2, 0.0f);
+        AudioEngineTestAccess::process(engine, out.data(), 400);   // echo still pending
+        if (republish) {
+            engine.setTrackBuses({echoBus(1)});                    // same revision
+            engine.setTrackSources({busBurstSource(samples)});
+        }
+        if (seek) engine.seekToFrame(400);
+        AudioEngineTestAccess::process(engine, out.data() + 400 * 2, 624);
+        return out;
+    };
+    const auto straight = run(false, false);
+    EXPECT_EQ(run(true, false), straight);        // the pending echo is kept
+    EXPECT_GT(absSum(straight, 480 * 2, 736 * 2), 1.0f);
+    const auto sought = run(false, true);
+    EXPECT_LT(absSum(sought, 480 * 2, 736 * 2), 1e-6f);   // seek cleared the tail
+
+    // A new revision (edited effects) starts the bus fresh.
+    AudioEngine engine;
+    engine.setTrackBuses({echoBus(1)});
+    engine.setTrackBuses({echoBus(2)});
+    EXPECT_EQ(engine.trackBusCount(), 1u);
+    engine.setTrackBuses({});
+    EXPECT_EQ(engine.trackBusCount(), 0u);
+}
+
 } // namespace rt

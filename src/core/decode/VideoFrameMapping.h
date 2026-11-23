@@ -57,7 +57,18 @@ struct MappedSourceFrame {
 /// (negative = earlier than the media has; mapTickToSourceFrame shows frame 0).
 inline int64_t unclampedSourceTick(const VideoClip& clip, int64_t tick)
 {
-    const int64_t localTick = tick - clip.timelineIn();
+    int64_t localTick = tick - clip.timelineIn();
+    // Posterize Time: hold each picture for 1/rate s by snapping clip time
+    // down to the rate's grid (clip start = first held frame). Every consumer
+    // (render, prefetch, export) maps through here, so they all agree.
+    if (clip.effects().effectCount() > 0) {
+        const double rate = clip.effects().posterizeTimeRate(localTick);
+        if (rate > 0.0 && localTick > 0) {
+            const double step = static_cast<double>(kTicksPerSecond) / rate;
+            localTick = static_cast<int64_t>(
+                std::floor(static_cast<double>(localTick) / step + 1e-9) * step);
+        }
+    }
     return clip.sourceIn() + static_cast<int64_t>(localTick * clip.effectiveSpeed(localTick));
 }
 

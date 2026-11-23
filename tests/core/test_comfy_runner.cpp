@@ -19,6 +19,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUrl>
+#include <QUrlQuery>
 
 #include <iostream>
 #include <memory>
@@ -38,7 +39,7 @@ public:
     bool        alive{true};
     QString     entryPoint;
     bool        rejectPrompts{false};
-    bool        failCacheDownloads{false};
+    QStringList downloads;
     int         failFirstN{0};            ///< the first N queued prompts end in execution_error
     QStringList uploads;                  ///< uploaded file names, in order
     QHash<QString, QImage> uploadedImages;
@@ -48,7 +49,6 @@ public:
     int         frees{0};
     QJsonObject freeRequest;
     QStringList released;
-    QStringList kept;
     QStringList sweeps;
     bool        batchNodesInstalled{true};
     QStringList nodeQueries;
@@ -160,7 +160,7 @@ private:
             return;
         }
         if (path.startsWith(QLatin1String("/view"))) {
-            if (failCacheDownloads && path.contains("frames.pt")) { reply(s, 500, "cache unavailable"); return; }
+            downloads << QUrlQuery(QUrl(path)).queryItemValue("filename");
             reply(s, 200, "FAKE-MP4-BYTES", "video/mp4"); return;
         }
         if (path.startsWith(QLatin1String("/object_info/"))) {   // real shape: {type: info}, or {} if unknown
@@ -175,10 +175,6 @@ private:
         }
         if (path == QLatin1String("/interrupt")) { ++interrupts; reply(s, 200, "{}"); return; }
         if (path == QLatin1String("/free")) { ++frees; freeRequest = QJsonDocument::fromJson(body).object(); reply(s, 200, "{}"); return; }
-        if (path == QLatin1String("/roundtable_batch/keep")) {
-            kept << QJsonDocument::fromJson(body).object().value("artifact_key").toString();
-            reply(s, 200, "{}"); return;
-        }
         if (path == QLatin1String("/roundtable_batch/sweep")) {
             sweeps << QJsonDocument::fromJson(body).object().value("batch_id").toString();
             reply(s, 200, "{}"); return;
@@ -263,11 +259,13 @@ protected:
     static bool waitFinished(ComfyRunner& runner, bool* stopped = nullptr)
     {
         bool done = false;
-        QObject::connect(&runner, &ComfyRunner::finished, [&](int, int, bool s) {
+        const auto connection = QObject::connect(&runner, &ComfyRunner::finished, [&](int, int, bool s) {
             done = true;
             if (stopped) *stopped = s;
         });
-        return QTest::qWaitFor([&]() { return done; }, 20000);
+        const bool finished = QTest::qWaitFor([&]() { return done; }, 20000);
+        QObject::disconnect(connection);
+        return finished;
     }
 
     static QJsonObject inputs(const QJsonObject& prompt, const char* id)
@@ -457,10 +455,9 @@ TEST_F(ComfyRunnerTest, StagedBatchGroupsReferencesWithoutChangingShotIdentity)
         EXPECT_EQ(inputs(fake.prompts[i + 6], "91").value("background_type"), "transparent");
         EXPECT_EQ(inputs(fake.prompts[i + 6], "rt_alpha_repair").value("image"), QJsonValue(QJsonArray{"91", 0}));
         EXPECT_TRUE(job.outputFile.endsWith(".mov"));
-        const QString cache = QDir(c.rendersDir).absoluteFilePath("../ComfyUI Cache/" + QFileInfo(job.outputFile).completeBaseName());
-        EXPECT_TRUE(QFileInfo::exists(cache + "/frames.pt"));
-        EXPECT_TRUE(QFileInfo::exists(cache + "/media.pt"));
-        EXPECT_TRUE(QFileInfo::exists(cache + "/recipe.json"));
+        EXPECT_TRUE(QFileInfo::exists(job.outputFile));
+        EXPECT_FALSE(job.hasArtifacts);
+        EXPECT_EQ(fake.released.count(job.artifactKey), 1);
         const auto original = fake.metadata[i + 6].value("roundtable_source_prompt").toObject();
         EXPECT_EQ(inputs(original, "23").value("steps").toInt(), 8);
         EXPECT_EQ(inputs(original, "60").value("video").toString(), QFileInfo(job.drivingVideo).fileName());
@@ -471,7 +468,9 @@ TEST_F(ComfyRunnerTest, StagedBatchGroupsReferencesWithoutChangingShotIdentity)
     EXPECT_FALSE(fake.freeRequest.value("free_memory").toBool());
     EXPECT_TRUE(fake.freeRequest.value("unload_models").toBool());
     EXPECT_EQ(fake.uploads.size(), 5); // two references and three driving clips, uploaded once
-    // Even one shot uses the staged path so its raw frames can be retained.
+    EXPECT_EQ(fake.downloads, (QStringList{"out_7.mov", "out_8.mov", "out_9.mov"}));
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath("ComfyUI Cache")));
+    // A single shot uses the same staged cleanup.
     QObject::disconnect(deliveryConnection);
     FakeComfy single;
     c.url = single.url();
@@ -479,19 +478,11 @@ TEST_F(ComfyRunnerTest, StagedBatchGroupsReferencesWithoutChangingShotIdentity)
     ASSERT_TRUE(waitFinished(runner));
     ASSERT_EQ(single.prompts.size(), 3);
     EXPECT_TRUE(runner.jobs().front().staged);
-    FakeComfy cacheFailure;
-    cacheFailure.failCacheDownloads = true;
-    c.url = cacheFailure.url();
-    runner.start(c, {jobs.front()});
-    ASSERT_TRUE(waitFinished(runner));
-    EXPECT_TRUE(QFileInfo::exists(runner.jobs().front().outputFile));
-    EXPECT_TRUE(cacheFailure.released.empty()); // never delete the sole raw copy after an archive error
-    // ...and it is marked on the server, so the next batch's clean-up leaves it alone too.
-    ASSERT_TRUE(QTest::qWaitFor([&]() { return cacheFailure.kept.size() == 1; }, 3000));
-    EXPECT_EQ(cacheFailure.kept.front(), runner.jobs().front().artifactKey);
-    // Every batch first clears what earlier crashed batches left behind, once, naming itself.
-    ASSERT_EQ(cacheFailure.sweeps.size(), 1);
-    EXPECT_TRUE(runner.jobs().front().artifactKey.startsWith(cacheFailure.sweeps.front() + "_"));
+    EXPECT_EQ(single.released, (QStringList{runner.jobs().front().artifactKey}));
+    EXPECT_EQ(single.downloads, (QStringList{"out_3.mov"}));
+    EXPECT_FALSE(QFileInfo::exists(dir.filePath("ComfyUI Cache")));
+    ASSERT_EQ(single.sweeps.size(), 1);
+    EXPECT_TRUE(runner.jobs().front().artifactKey.startsWith(single.sweeps.front() + "_"));
     EXPECT_EQ(fake.sweeps.size(), 1);
 }
 

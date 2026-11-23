@@ -1,7 +1,8 @@
 /*
  * AudioFxSection — Premiere-style editor for a clip's audio effect chain.
  *
- * Shows the AudioClip's audiofx::FxChain (Parametric EQ, Dynamics) with
+ * Shows the AudioClip's audiofx::FxChain (Parametric EQ, Dynamics, Reverb,
+ * Delay, Distortion, plus Essential Sound style presets) with
  * add / remove / reorder and per-parameter controls. All edits are routed
  * through the CommandStack for undo/redo using whole-chain snapshots, so the
  * structure stays simple and bullet-proof regardless of which parameter or
@@ -35,6 +36,15 @@ public:
     /// Point the editor at a clip (nullptr clears it). Rebuilds the UI.
     void setClip(AudioClip* clip, CommandStack* stack);
 
+    /// Read / replace the chain being edited (any owner: a clip, a track).
+    using ChainGetter = std::function<const audiofx::FxChain*()>;
+    using ChainSetter = std::function<void(audiofx::FxChain)>;
+
+    /// Edit an arbitrary chain. `get` may return nullptr once the owner is
+    /// gone; `set` must resolve its owner at call time (it runs from undo /
+    /// redo). `owner` only identifies the target for deferred refreshes.
+    void setTarget(ChainGetter get, ChainSetter set, CommandStack* stack, const void* owner);
+
     [[nodiscard]] AudioClip* clip() const noexcept { return m_clip; }
 
 signals:
@@ -52,8 +62,16 @@ private:
 
     QWidget* buildEqWidget(int index);
     QWidget* buildDynamicsWidget(int index);
+    /// Generic editor for table-described effects (Reverb, Delay, Distortion…).
+    QWidget* buildParamWidget(int index);
+
+    /// The chain being edited right now (nullptr when none).
+    [[nodiscard]] const audiofx::FxChain* chain() const { return m_get ? m_get() : nullptr; }
 
     AudioClip*    m_clip{nullptr};
+    ChainGetter   m_get;
+    ChainSetter   m_set;
+    const void*   m_owner{nullptr};
     CommandStack* m_commandStack{nullptr};
 
     class QVBoxLayout* m_chainLayout{nullptr};  ///< holds per-processor groups

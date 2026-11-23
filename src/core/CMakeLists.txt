@@ -96,6 +96,7 @@ add_library(roundtable_core STATIC
     audio/AudioEngine.cpp
     audio/TimeStretch.cpp
     audio/AudioFile.cpp
+    audio/ClipLoudness.cpp
     audio/AudioRegionReader.cpp
     audio/SampleBuffer.cpp
     decode/SharedFileIO.cpp
@@ -146,10 +147,20 @@ add_library(roundtable_core STATIC
     audiofx/ParametricEQ.cpp
     audiofx/Dynamics.cpp
     audiofx/FxChain.cpp
+    audiofx/ParamProcessor.cpp
+    audiofx/Reverb.cpp
+    audiofx/Delay.cpp
+    audiofx/Distortion.cpp
+    audiofx/AudioPresets.cpp
+    audiofx/RepairFx.cpp
+    audiofx/Loudness.cpp
+    audiofx/EssentialSound.cpp
+    audiofx/PitchShifter.cpp
 
     # Effects
     effects/EffectStack.cpp
     effects/EffectRegistry.cpp
+    effects/Echo.cpp
     effects/CpuComposite.cpp
     effects/ChromaKey.cpp
     effects/LUT.cpp

@@ -24,6 +24,8 @@
 #include <memory>
 
 #include "decode/VideoFrameMapping.h"
+#include "effects/Effect.h"
+#include "effects/EffectStack.h"
 
 namespace rt {
 namespace {
@@ -350,6 +352,39 @@ TEST(VideoFrameMapping, DecelRampFollowsPointwiseContractNotIntegration)
     EXPECT_EQ(mapTickToSourceFrame(*clip, 24000, nullptr).frame, 12);  // s=1.0
     EXPECT_EQ(mapTickToSourceFrame(*clip, 36000, nullptr).frame, 9);   // s=0.5
     EXPECT_EQ(mapTickToSourceFrame(*clip, 48000, nullptr).frame, 0);   // s=0.0
+}
+
+// ── Posterize Time ───────────────────────────────────────────────────────────
+// The effect holds each picture for 1/rate s, counted from the clip start,
+// through the same mapping every consumer uses.
+
+TEST(VideoFrameMapping, PosterizeTimeHoldsFramesOnTheRateGrid)
+{
+    auto clip = makeClip(10000, 0, 1.0, 24.0);
+    auto fx = createEffect(EffectType::PosterizeTime);
+    fx->param(0).track.setDefaultValue(6.0f);   // 6 fps = 8000 ticks = 4 source frames
+    clip->effects().addEffect(std::move(fx));
+
+    for (int64_t local = 0; local < 8000; local += 500)
+        EXPECT_EQ(mapTickToSourceFrame(*clip, 10000 + local, nullptr).frame, 0) << local;
+    for (int64_t local = 8000; local < 16000; local += 500)
+        EXPECT_EQ(mapTickToSourceFrame(*clip, 10000 + local, nullptr).frame, 4) << local;
+    EXPECT_EQ(mapTickToSourceFrame(*clip, 10000 + 48000, nullptr).frame, 24);
+
+    // Disabled: plain 24 fps mapping again.
+    clip->effects().effect(0).setEnabled(false);
+    EXPECT_EQ(mapTickToSourceFrame(*clip, 10000 + 6000, nullptr).frame, 3);
+}
+
+TEST(VideoFrameMapping, PosterizeTimeIsNotSentToTheGpu)
+{
+    EffectStack stack;
+    stack.addEffect(createEffect(EffectType::PosterizeTime));
+    stack.addEffect(createEffect(EffectType::Mosaic));
+    const auto snaps = stack.evaluate(0);
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_EQ(snaps[0].type, EffectType::Mosaic);
+    EXPECT_DOUBLE_EQ(stack.posterizeTimeRate(0), 12.0);   // table default
 }
 
 } // namespace

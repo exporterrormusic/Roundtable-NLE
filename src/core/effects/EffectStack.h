@@ -41,6 +41,11 @@ public:
 
     // ── Accessors ───────────────────────────────────────────────────────
     [[nodiscard]] size_t effectCount() const noexcept { return m_effects.size(); }
+
+    /// Frame rate of the first enabled Posterize Time effect at clip-local
+    /// `localTick`, or 0 when there is none. The source-frame mapping holds
+    /// each picture for 1/rate s (VideoFrameMapping.h).
+    [[nodiscard]] double posterizeTimeRate(int64_t localTick) const;
     [[nodiscard]] bool   isEmpty()     const noexcept { return m_effects.empty(); }
 
     [[nodiscard]] const Effect& effect(size_t i) const { return *m_effects[i]; }

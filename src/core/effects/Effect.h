@@ -72,6 +72,29 @@ enum class EffectType : uint8_t
     // Premiere-style black/white luminance color mapping. Appended to keep
     // every existing serialized uint8 effect identifier stable.
     Tint,
+    // Premiere-parity batch (2026-11). Appended to keep serialized ids stable.
+    LensChromaticAberration,
+    StrobeLight,
+    Mosaic,
+    FindEdges,
+    Emboss,
+    Threshold,
+    Solarize,
+    Invert,
+    BlackAndWhite,
+    LeaveColor,
+    Twirl,
+    Spherize,
+    WaveWarp,
+    LensDistortion,
+    Mirror,
+    Offset,
+    Replicate,
+    DirectionalBlur,
+    RadialBlur,
+    DropShadow,
+    PosterizeTime,
+    Echo,
     Count
 };
 

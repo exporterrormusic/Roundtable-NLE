@@ -6,6 +6,10 @@
  *           clearGapSelection(), notifyZoomChanged(), setAnimVideoCache().
  */
 
+#include <QVBoxLayout>
+#include <QLabel>
+#include <QDialog>
+#include "widgets/AudioFxSection.h"
 #include "panels/timeline/TimelinePanel.h"
 #include "panels/timeline/TimelinePanelInternal.h"
 #include "widgets/TimelineTrackWidget.h"
@@ -551,6 +555,9 @@ void TimelinePanel::rebuildTracks()
                 m_trackHeaders[trackIdx]->setHeight(height);
             updateMinHeaderWidth();
         });
+
+        QObject::connect(header, &TrackHeader::trackAudioFxRequested,
+            this, [this](size_t trackIdx) { openTrackAudioFxDialog(trackIdx); });
 
         // Connect track rename (undoable via command stack)
         QObject::connect(header, &TrackHeader::trackRenamed,
@@ -1327,6 +1334,59 @@ void TimelinePanel::setAnimVideoCache(const AnimationVideoCache* cache)
     m_animVideoCache = cache;
     for (auto tw : m_trackWidgets)
         tw->setAnimVideoCache(cache);
+}
+
+} // namespace rt
+
+namespace rt {
+
+void TimelinePanel::openTrackAudioFxDialog(size_t trackIndex)
+{
+    if (!m_timeline || trackIndex >= m_timeline->trackCount()) return;
+    Track* track = m_timeline->track(trackIndex);
+    if (!track || track->type() != TrackType::Audio) return;
+
+    // Edits resolve the track by id every time (undo / redo may run after a
+    // track was removed or the sequence switched): a missing track is a no-op.
+    const uint64_t trackId = track->id();
+    QPointer<TimelinePanel> self(this);
+    auto findTrack = [self, trackId]() -> Track* {
+        if (!self || !self->m_timeline) return nullptr;
+        for (size_t i = 0; i < self->m_timeline->trackCount(); ++i)
+            if (Track* t = self->m_timeline->track(i); t && t->id() == trackId) return t;
+        return nullptr;
+    };
+
+    auto* dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(tr("Track Audio Effects \u2014 %1").arg(QString::fromStdString(track->name())));
+    auto* layout = new QVBoxLayout(dlg);
+    auto* note = new QLabel(tr("Runs on everything playing on this track, so reverb and echo "
+                               "tails continue past the end of a clip."));
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto* scroll = new QScrollArea(dlg);
+    scroll->setWidgetResizable(true);
+    auto* section = new AudioFxSection;
+    scroll->setWidget(section);
+    layout->addWidget(scroll, 1);
+
+    section->setTarget(
+        [findTrack]() -> const audiofx::FxChain* {
+            Track* t = findTrack();
+            return t ? &t->audioFx() : nullptr;
+        },
+        [findTrack](audiofx::FxChain chain) {
+            if (Track* t = findTrack()) t->setAudioFx(std::move(chain));
+        },
+        m_commandStack, track);
+    QObject::connect(section, &AudioFxSection::changed, this, [this]() {
+        emit trackAudioFxChanged();
+        for (auto& h : m_trackHeaders) if (h) h->update();
+    });
+
+    dlg->resize(420, 560);
+    dlg->show();
 }
 
 } // namespace rt

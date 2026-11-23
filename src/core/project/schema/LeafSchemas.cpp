@@ -6,6 +6,7 @@
 #include "project/schema/LeafSchemas.h"
 
 #include "audiofx/FxChain.h"
+#include "audiofx/ParamProcessor.h"
 #include "effects/BeatEffects.h"
 #include "effects/Effect.h"
 #include "effects/LUT.h"
@@ -485,6 +486,39 @@ const Schema<audiofx::Dynamics::CompSettings>& SchemaOf<audiofx::Dynamics::CompS
     return s;
 }
 
+const Schema<audiofx::EssentialSoundSettings>&
+SchemaOf<audiofx::EssentialSoundSettings>::get()
+{
+    using E = audiofx::EssentialSoundSettings;
+    static const Schema<E> s("EssentialSound", {
+        field<E>(1, "type", [](const E& e) { return static_cast<int32_t>(e.type); },
+            [](E& e, int32_t v) {
+                e.type = (v >= 0 && v < static_cast<int32_t>(audiofx::SoundType::Count))
+                    ? static_cast<audiofx::SoundType>(v) : audiofx::SoundType::None;
+            }),
+        RT_MEMBER(E, 2, reduceRumble),
+        RT_MEMBER(E, 3, rumbleAmount),
+        RT_MEMBER(E, 4, deHum),
+        RT_MEMBER(E, 5, deHumAmount),
+        RT_MEMBER(E, 6, hum60Hz),
+        RT_MEMBER(E, 7, deEss),
+        RT_MEMBER(E, 8, deEssAmount),
+        RT_MEMBER(E, 9, dynamics),
+        RT_MEMBER(E, 10, dynamicsAmount),
+        RT_MEMBER(E, 11, clarityEq),
+        RT_MEMBER(E, 12, eqPreset),
+        RT_MEMBER(E, 13, eqAmount),
+        RT_MEMBER(E, 14, enhanceSpeech),
+        RT_MEMBER(E, 15, reverb),
+        RT_MEMBER(E, 16, reverbPreset),
+        RT_MEMBER(E, 17, reverbAmount),
+        RT_MEMBER(E, 18, stereoWidth),
+        RT_MEMBER(E, 19, widthAmount),
+        RT_MEMBER(E, 20, loudnessTarget),
+    });
+    return s;
+}
+
 const Schema<audiofx::Dynamics::LimiterSettings>&
 SchemaOf<audiofx::Dynamics::LimiterSettings>::get()
 {
@@ -552,10 +586,14 @@ const Schema<Dynamics>& dynamicsSchema()
 
 bool isEq(const AudioProcessor& p) { return dynamic_cast<const ParametricEQ*>(&p) != nullptr; }
 bool isDynamics(const AudioProcessor& p) { return dynamic_cast<const Dynamics*>(&p) != nullptr; }
+bool isParamProc(const AudioProcessor& p)
+{
+    return dynamic_cast<const audiofx::ParamProcessor*>(&p) != nullptr;
+}
 
 ProcessorKind kindOf(const AudioProcessor& p)
 {
-    return isEq(p) ? ProcessorKind::ParametricEQ : ProcessorKind::Dynamics;
+    return audiofx::processorKindOf(p);
 }
 
 const Schema<AudioProcessor>& processorSchema()
@@ -596,6 +634,15 @@ const Schema<AudioProcessor>& processorSchema()
                 if (!r.readRecord(child) || !dynamicsSchema().read(child, *dyn)) r.fail();
                 return true;
             })),
+        // Reverb / Delay / Distortion…: the whole state is the parameter list
+        // (by index, append only — see ParamProcessor.h).
+        when<A>(isParamProc, field<A>(5, "params",
+            [](const A& p) -> const std::vector<float>& {
+                return static_cast<const audiofx::ParamProcessor&>(p).params();
+            },
+            [](A& p, std::vector<float> v) {
+                static_cast<audiofx::ParamProcessor&>(p).setParams(v);
+            })),
     });
     return s;
 }
@@ -607,7 +654,7 @@ void writeFxChain(RecordWriter& w, uint32_t id, const audiofx::FxChain& chain)
     RecordWriter list = w.nested();
     for (size_t i = 0; i < chain.size(); ++i) {
         const AudioProcessor& p = chain.at(i);
-        if (!isEq(p) && !isDynamics(p)) continue;   // nothing to save it as
+        if (kindOf(p) == ProcessorKind::Count) continue;   // nothing to save it as
         RecordWriter n = list.nested();
         processorSchema().write(n, p);
         list.writeRecord(detail::kListElement, n);
@@ -628,8 +675,7 @@ bool readFxChain(RecordReader& r, audiofx::FxChain& chain)
         uint64_t kind = std::numeric_limits<uint64_t>::max();
         while (scan.next())
             if (scan.id() == 1 && scan.readVarint(kind)) break;
-        if (kind != static_cast<uint64_t>(ProcessorKind::ParametricEQ)
-            && kind != static_cast<uint64_t>(ProcessorKind::Dynamics))
+        if (kind >= static_cast<uint64_t>(ProcessorKind::Count))
             continue;   // a kind this build doesn't know
         AudioProcessor* p = chain.add(static_cast<ProcessorKind>(kind));
         if (p && !processorSchema().read(item, *p)) list.fail();

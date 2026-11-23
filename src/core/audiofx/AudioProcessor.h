@@ -69,6 +69,11 @@ public:
     /// processors that are at unity (e.g. an EQ with all bands flat).
     [[nodiscard]] virtual bool isActive() const noexcept = 0;
 
+    /// Fixed delay (frames) this processor adds: output[n] = effect of
+    /// input[n - latency]. Offline hosts compensate (FxChain::latencyFrames).
+    /// Valid after prepare(); most processors have none.
+    [[nodiscard]] virtual int latencyFrames() const noexcept { return 0; }
+
     /// Deep copy of settings (NOT runtime state — clones start un-prepared).
     /// Lets a host snapshot a chain for an offline render without touching the
     /// live processor's filter / envelope state.

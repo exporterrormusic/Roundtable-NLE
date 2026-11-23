@@ -15,6 +15,8 @@
 
 #include "audiofx/AudioProcessor.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,14 +24,37 @@
 namespace rt::audiofx {
 
 /// Built-in processor kinds the factory can create (for serialization / UI).
+/// The integer values are SAVED in projects: append only, never reorder.
 enum class ProcessorKind
 {
     ParametricEQ,
     Dynamics,
+    Reverb,
+    Delay,
+    Distortion,
+    DeEsser,
+    DeHum,
+    StereoWidth,
+    PitchShifter,
+    Count
 };
 
 [[nodiscard]] const char* processorKindName(ProcessorKind k) noexcept;
+/// Name shown in the Effects panel / Effect Controls.
+[[nodiscard]] const char* processorDisplayName(ProcessorKind k) noexcept;
 [[nodiscard]] std::unique_ptr<AudioProcessor> createProcessor(ProcessorKind k);
+/// The kind of an existing processor (from its typeName); Count if unknown.
+[[nodiscard]] ProcessorKind processorKindOf(const AudioProcessor& p) noexcept;
+
+/// True if every sample of `data` is a finite number (no NaN / Inf).
+[[nodiscard]] bool allFinite(const float* data, size_t count) noexcept;
+
+/// Non-finite guard (process-wide, any thread): how many times an FxChain
+/// caught a processor outputting NaN / Inf, reset it and silenced that block,
+/// and which kind did it last (Count if none / unknown). A non-finite sample
+/// would otherwise poison every filter after it and silence playback for good.
+[[nodiscard]] uint64_t nonFiniteResetCount() noexcept;
+[[nodiscard]] ProcessorKind lastNonFiniteProcessor() noexcept;
 
 class FxChain
 {
@@ -64,6 +89,11 @@ public:
 
     /// True if any enabled processor would alter the signal.
     [[nodiscard]] bool isActive() const noexcept;
+
+    /// Total delay of the enabled, active processors (frames; valid after
+    /// prepare()). Offline hosts feed this many extra frames and drop that
+    /// many from the front so the result lines up with the input.
+    [[nodiscard]] int latencyFrames() const noexcept;
 
 private:
     std::vector<std::unique_ptr<AudioProcessor>> m_processors;

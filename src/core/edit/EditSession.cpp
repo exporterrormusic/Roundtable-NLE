@@ -222,6 +222,23 @@ void executeTimelineEdit(CommandStack* stack, Timeline* timeline,
         stack->execute(std::move(cmd));
 }
 
+bool executeTimelineEditBuiltLive(CommandStack* stack, Timeline* timeline,
+                                  std::string description,
+                                  const std::function<std::unique_ptr<Command>()>& build)
+{
+    if (!stack || !build) return false;
+    EditSession* edits = stack->editSession();
+    Timeline* target = timeline ? timeline : (edits ? edits->activeSequence() : nullptr);
+    EditGesture gesture;
+    if (edits && target)
+        gesture = EditGesture(*edits, std::move(description), *target);
+    std::unique_ptr<Command> cmd = build();
+    if (!cmd) return false;   // gesture cancels on scope exit
+    executeTimelineEdit(stack, target, std::move(cmd));   // joins the gesture
+    gesture.commit();
+    return true;
+}
+
 Timeline* EditSession::resolve(uint64_t sequenceId) const
 {
     return m_resolver ? m_resolver(sequenceId) : nullptr;

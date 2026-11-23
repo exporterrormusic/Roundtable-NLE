@@ -67,7 +67,13 @@ bool CudaContext::init(int preferredDevice)
     // Create context — AUTO scheduling adapts to workload patterns,
     // better for mixed sync/async workloads like video editing
     CUcontext ctx;
+#if CUDA_VERSION >= 13000
+    // CUDA 13: cuCtxCreate gained a creation-params argument; nullptr gives
+    // the same regular context as the CUDA 12 three-argument form.
+    res = cuCtxCreate(&ctx, nullptr, CU_CTX_SCHED_AUTO, cuDev);
+#else
     res = cuCtxCreate(&ctx, CU_CTX_SCHED_AUTO, cuDev);
+#endif
     if (res != CUDA_SUCCESS) {
         spdlog::error("CudaContext: cuCtxCreate failed ({})", static_cast<int>(res));
         return false;

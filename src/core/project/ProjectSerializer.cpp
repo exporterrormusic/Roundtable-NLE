@@ -404,6 +404,19 @@ const Schema<Track>& trackSchema()
                     t.addTransition(tr, TrackMutationPolicy::BypassLock);
                 return true;
             }),
+        // Track (bus) audio effects; written only when there are any. (Not
+        // when(): its condition also gates reading, and a track being loaded
+        // has no effects yet.)
+        custom<T>(13, "audioFx",
+            [](RecordWriter& w, uint32_t id, const T& t) {
+                if (!t.audioFx().empty()) record::writeFxChain(w, id, t.audioFx());
+            },
+            [](RecordReader& r, T& t) {
+                audiofx::FxChain chain;
+                const bool ok = record::readFxChain(r, chain);
+                t.setAudioFx(std::move(chain));
+                return ok;
+            }),
     });
     return s;
 }

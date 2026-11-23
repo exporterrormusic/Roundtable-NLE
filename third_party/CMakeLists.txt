@@ -375,9 +375,14 @@ if(ROUNDTABLE_ENABLE_WHISPER)
     # bin directory so a partial or ambiguous Toolkit install fails at
     # configure time instead of producing an installer that cannot launch.
     if(WIN32 AND ROUNDTABLE_WHISPER_CUDA_FOUND)
+        # CUDA 12 keeps its DLLs in bin/, CUDA 13+ in bin/x64/.
         function(_roundtable_find_cuda_runtime_dll out_var glob_pattern description)
             file(GLOB _matches LIST_DIRECTORIES FALSE
                 "${CUDAToolkit_BIN_DIR}/${glob_pattern}")
+            if(NOT _matches)
+                file(GLOB _matches LIST_DIRECTORIES FALSE
+                    "${CUDAToolkit_BIN_DIR}/x64/${glob_pattern}")
+            endif()
             list(FILTER _matches EXCLUDE REGEX "[.]alt[.]dll$")
             list(SORT _matches)
             list(LENGTH _matches _match_count)
@@ -398,7 +403,10 @@ if(ROUNDTABLE_ENABLE_WHISPER)
         set(ROUNDTABLE_CUDA_RUNTIME_SEEDS
             "${_roundtable_cudart_dll};${_roundtable_cublas_dll}"
             CACHE INTERNAL "Direct CUDA runtime DLLs required by Roundtable" FORCE)
-        set(ROUNDTABLE_CUDA_RUNTIME_SOURCE_DIR "${CUDAToolkit_BIN_DIR}"
+        # Where the DLLs actually are (bin/ or bin/x64/); the deploy helper
+        # resolves their dependencies (cublasLt) from here.
+        get_filename_component(_roundtable_cuda_dll_dir "${_roundtable_cudart_dll}" DIRECTORY)
+        set(ROUNDTABLE_CUDA_RUNTIME_SOURCE_DIR "${_roundtable_cuda_dll_dir}"
             CACHE INTERNAL "CUDA runtime DLL source directory" FORCE)
     endif()
 

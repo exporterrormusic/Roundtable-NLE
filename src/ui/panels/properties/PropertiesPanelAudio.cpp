@@ -9,6 +9,7 @@
 #include "panels/properties/PropertiesPanel.h"
 #include "widgets/ScrubbySpinBox.h"
 #include "widgets/AudioFxSection.h"
+#include "widgets/EssentialSoundSection.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
@@ -179,6 +180,13 @@ void PropertiesPanel::setupAudioSection(QWidget* container)
     form->addRow("Fade Out:", m_fadeOutSpin);
 
     container->layout()->addWidget(m_audioSection);
+
+    // Essential Sound (type + task controls) - above the effect chain, as
+    // the quick path; it compiles to processors run before the chain.
+    m_essentialSoundSection = new EssentialSoundSection(container);
+    connect(m_essentialSoundSection, &EssentialSoundSection::changed,
+            this, &PropertiesPanel::propertyChanged);
+    container->layout()->addWidget(m_essentialSoundSection);
 
     // Audio effect chain editor (EQ / Dynamics) — sits just below the basic
     // audio controls. Hidden until an audio clip is selected.

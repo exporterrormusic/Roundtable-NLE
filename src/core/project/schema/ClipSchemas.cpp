@@ -172,6 +172,9 @@ const Schema<AudioClip>& audioSchema()
         custom<C>(11, "audioFx",
             [](RecordWriter& w, uint32_t id, const C& c) { writeFxChain(w, id, c.audioFx()); },
             [](RecordReader& r, C& c) { return readFxChain(r, c.audioFx()); }),
+        field<C>(12, "essentialSound",
+            [](const C& c) -> const audiofx::EssentialSoundSettings& { return c.essentialSound(); },
+            [](C& c, audiofx::EssentialSoundSettings v) { c.setEssentialSound(v); }),
     });
     return s;
 }

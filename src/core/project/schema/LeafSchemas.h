@@ -10,6 +10,7 @@
 #include "project/schema/Schema.h"
 
 #include "audiofx/Dynamics.h"
+#include "audiofx/EssentialSound.h"
 #include "audiofx/ParametricEQ.h"
 #include "effects/ColorGrading.h"
 #include "project/Settings.h"
@@ -52,6 +53,7 @@ RT_RECORD_SCHEMA(audiofx::ParametricEQ::Band);
 RT_RECORD_SCHEMA(audiofx::Dynamics::GateSettings);
 RT_RECORD_SCHEMA(audiofx::Dynamics::CompSettings);
 RT_RECORD_SCHEMA(audiofx::Dynamics::LimiterSettings);
+RT_RECORD_SCHEMA(audiofx::EssentialSoundSettings);
 
 #undef RT_RECORD_SCHEMA
 

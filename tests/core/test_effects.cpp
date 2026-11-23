@@ -9,6 +9,8 @@
 
 #include "effects/Effect.h"
 #include "effects/EffectStack.h"
+#include "effects/Echo.h"
+#include "Constants.h"
 #include "effects/ColorCorrect.h"
 #include "effects/Blur.h"
 #include "effects/Sharpen.h"
@@ -833,7 +835,8 @@ TEST(EffectRegistry, DefaultsLieInRangeAndGroupsAreWellFormed)
 {
     for (const auto& def : rt::allEffectDefs()) {
         SCOPED_TRACE(def.key);
-        EXPECT_EQ(def.has(rt::EffectFlag::Audio), def.shader == nullptr);
+        EXPECT_EQ(def.has(rt::EffectFlag::Audio) || def.has(rt::EffectFlag::TimeOnly),
+                  def.shader == nullptr);
         for (size_t i = 0; i < def.params.size(); ++i) {
             const auto& p = def.params[i];
             SCOPED_TRACE(p.name);
@@ -849,6 +852,34 @@ TEST(EffectRegistry, DefaultsLieInRangeAndGroupsAreWellFormed)
                 EXPECT_NE(p.group, nullptr);
             }
         }
+    }
+}
+
+// Every shader an effect names has a source in shaders/ (the build compiles
+// each .comp to .spv), and clock-driven effects leave the time / beat slots
+// free (an effect that used them for its own parameter would be overwritten).
+TEST(EffectRegistry, ShadersExistAndClockSlotsAreFree)
+{
+    const auto shaderDir =
+        std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() / "shaders";
+    for (const auto& def : rt::allEffectDefs()) {
+        SCOPED_TRACE(def.key);
+        if (def.shader) {
+            std::string src = def.shader;
+            const std::string ext = ".spv";
+            ASSERT_GT(src.size(), ext.size());
+            ASSERT_EQ(src.substr(src.size() - ext.size()), ext);
+            src.resize(src.size() - ext.size());
+            EXPECT_TRUE(std::filesystem::exists(shaderDir / src)) << src;
+        }
+        // Push-constant capacity (Color Grading packs its table into several
+        // GPU passes, so its table may be longer).
+        if (def.type != rt::EffectType::ColorGrading && def.type != rt::EffectType::LumetriColor)
+            EXPECT_LE(def.params.size(), size_t{28});
+        if (def.has(rt::EffectFlag::ProceduralTime))
+            EXPECT_LE(def.params.size(), rt::kGlitchTimeSlot);
+        if (def.has(rt::EffectFlag::BeatReact))
+            EXPECT_LE(def.params.size(), rt::kBeatPulseSlot);
     }
 }
 
@@ -970,4 +1001,94 @@ TEST(EffectRegistry, EveryEffectRoundTripsThroughTheProjectFile)
         for (size_t i = 0; i < a.paramCount(); ++i)
             EXPECT_FLOAT_EQ(a.evalParam(i, 0), b.evalParam(i, 0)) << a.param(i).name;
     }
+}
+
+// ─── Echo planning (Premiere Time > Echo) ───────────────────────────────────
+
+namespace {
+
+rt::EffectStack echoStack(float echoTime, float count, float start, float decay, float op)
+{
+    rt::EffectStack stack;
+    auto fx = rt::createEffect(rt::EffectType::Echo);
+    fx->param(0).track.setDefaultValue(echoTime);
+    fx->param(1).track.setDefaultValue(count);
+    fx->param(2).track.setDefaultValue(start);
+    fx->param(3).track.setDefaultValue(decay);
+    fx->param(4).track.setDefaultValue(op);
+    stack.addEffect(std::move(fx));
+    return stack;
+}
+
+} // namespace
+
+TEST(Echo, NoEchoEffectMeansNoPlan)
+{
+    rt::EffectStack stack;
+    stack.addEffect(rt::createEffect(rt::EffectType::Mosaic));
+    EXPECT_TRUE(rt::planEcho(stack, 0, 48000, 0).empty());
+    // And Echo never reaches the GPU.
+    auto echo = echoStack(-0.5f, 2, 1, 1, 0);
+    EXPECT_TRUE(echo.evaluate(48000).empty());
+}
+
+TEST(Echo, AddStacksOldestFirstWithDecayingOpacity)
+{
+    // 3 echoes, 0.25 s apart, decay 0.5, Add; well inside a 10 s clip.
+    auto stack = echoStack(-0.25f, 3, 1.0f, 0.5f, 0);
+    const auto plan = rt::planEcho(stack, 5 * rt::kTicksPerSecond, 10 * rt::kTicksPerSecond, 0);
+    ASSERT_EQ(plan.size(), 4u);
+    // Bottom first: k = 3, 2, 1, then the current frame on top.
+    EXPECT_EQ(plan[0].index, 3);
+    EXPECT_EQ(plan[3].index, 0);
+    EXPECT_EQ(plan[0].tickOffset, -3 * rt::kTicksPerSecond / 4);
+    EXPECT_EQ(plan[3].tickOffset, 0);
+    EXPECT_FLOAT_EQ(plan[0].opacity, 0.125f);
+    EXPECT_FLOAT_EQ(plan[2].opacity, 0.5f);
+    EXPECT_FLOAT_EQ(plan[3].opacity, 1.0f);
+    EXPECT_EQ(plan[0].blendMode, 0);   // bottom keeps the clip's own mode
+    for (size_t i = 1; i < plan.size(); ++i) EXPECT_EQ(plan[i].blendMode, 3);   // Add
+}
+
+TEST(Echo, CopiesOutsideTheClipAreDropped)
+{
+    auto stack = echoStack(-0.5f, 4, 1.0f, 1.0f, 0);
+    // 0.75 s into the clip: only the echo at -0.5 s exists besides "now".
+    const auto plan = rt::planEcho(stack, rt::kTicksPerSecond * 3 / 4, 10 * rt::kTicksPerSecond, 0);
+    ASSERT_EQ(plan.size(), 2u);
+    EXPECT_EQ(plan[0].index, 1);
+    EXPECT_EQ(plan[1].index, 0);
+}
+
+TEST(Echo, OperatorsMapToBlendModesAndOrder)
+{
+    const int64_t t = 5 * rt::kTicksPerSecond, len = 10 * rt::kTicksPerSecond;
+    auto modeOf = [&](float op) { return rt::planEcho(echoStack(-0.1f, 1, 1, 1, op), t, len, 0)[1].blendMode; };
+    EXPECT_EQ(modeOf(1), 12);   // Maximum -> Lighten
+    EXPECT_EQ(modeOf(2), 11);   // Minimum -> Darken
+    EXPECT_EQ(modeOf(3), 2);    // Screen
+    EXPECT_EQ(modeOf(4), 0);    // Composite In Back
+
+    // In Front: current frame at the bottom, echo drawn over it.
+    const auto front = rt::planEcho(echoStack(-0.1f, 1, 1, 1, 5), t, len, 0);
+    ASSERT_EQ(front.size(), 2u);
+    EXPECT_EQ(front[0].index, 0);
+    EXPECT_EQ(front[1].index, 1);
+
+    // Blend: running average, layer i at 1/(i+1).
+    const auto blend = rt::planEcho(echoStack(-0.1f, 2, 1, 1, 6), t, len, 0);
+    ASSERT_EQ(blend.size(), 3u);
+    EXPECT_FLOAT_EQ(blend[0].opacity, 1.0f);
+    EXPECT_FLOAT_EQ(blend[1].opacity, 0.5f);
+    EXPECT_NEAR(blend[2].opacity, 1.0f / 3.0f, 1e-6f);
+}
+
+TEST(Echo, DisabledOrZeroEchoesLeavesJustTheClip)
+{
+    auto stack = echoStack(-0.1f, 0, 1, 1, 0);
+    const auto plan = rt::planEcho(stack, 48000, 480000, 7);
+    ASSERT_EQ(plan.size(), 1u);
+    EXPECT_EQ(plan[0].blendMode, 7);   // the clip's own blend mode survives
+    stack.effect(0).setEnabled(false);
+    EXPECT_TRUE(rt::planEcho(stack, 48000, 480000, 0).empty());
 }

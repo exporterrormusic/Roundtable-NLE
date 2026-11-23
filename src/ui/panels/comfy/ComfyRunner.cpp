@@ -779,18 +779,10 @@ void ComfyRunner::releaseArtifacts(RenderJob& job)
                   QJsonObject{{QStringLiteral("artifact_key"), job.artifactKey}});
 }
 
-void ComfyRunner::releaseAfterEarlyEnd(int keepIndex)
+void ComfyRunner::releaseAfterEarlyEnd()
 {
-    for (int i = 0; i < static_cast<int>(m_jobs.size()); ++i) {
-        RenderJob& job = m_jobs[static_cast<size_t>(i)];
-        if (i == keepIndex) {
-            if (job.hasArtifacts)
-                fireAndForget(QStringLiteral("/roundtable_batch/keep"),
-                              QJsonObject{{QStringLiteral("artifact_key"), job.artifactKey}});
-        } else if (job.state != RenderJob::State::Done) {
-            releaseArtifacts(job);
-        }
-    }
+    for (auto& job : m_jobs)
+        releaseArtifacts(job);
     fireAndForget(QStringLiteral("/free"), QJsonObject{{QStringLiteral("unload_models"), true},
                                                        {QStringLiteral("free_memory"), false}});
 }
@@ -1238,12 +1230,13 @@ void ComfyRunner::downloadOutput(const QJsonObject& outputs)
             failCurrent(QStringLiteral("download failed: ") + reply->errorString());
             return;
         }
-        QFile f(dest);
-        if (!f.open(QIODevice::WriteOnly) || f.write(reply->readAll()) <= 0) {
-            failCurrent(QStringLiteral("cannot write %1").arg(dest), /*retry=*/false);
+        const QByteArray video = reply->readAll();
+        QSaveFile file(dest);
+        if (video.isEmpty() || !file.open(QIODevice::WriteOnly) ||
+            file.write(video) != video.size() || !file.commit()) {
+            failCurrent(QStringLiteral("cannot save %1").arg(dest), /*retry=*/false);
             return;
         }
-        f.close();
         RenderJob& job = current();
         job.state = RenderJob::State::Done;
         job.outputFile = dest;
@@ -1257,90 +1250,21 @@ void ComfyRunner::downloadOutput(const QJsonObject& outputs)
         emit log(QStringLiteral("%1: done → %2").arg(job.label, QFileInfo(dest).fileName()));
         emit jobChanged(m_index);
         emit jobRendered(m_index, dest);
-        if (m_stage && m_config.targets.engine == comfy::Engine::H3) {
-            // No raw frames to keep: just drop this shot's pass files.
-            auto* cleanup = postJson(QStringLiteral("/roundtable_batch/release"), QJsonObject{{"artifact_key", job.artifactKey}});
-            connect(cleanup, &QNetworkReply::finished, this, [this, cleanup, gen]() {
-                cleanup->deleteLater();
-                if (gen != m_generation) return;
-                if (cleanup->error() != QNetworkReply::NoError)
-                    emit log(QStringLiteral("Video saved; temporary batch files could not be released: ") + cleanup->errorString());
-                nextJob();
-            });
-            return;
-        }
         if (m_stage) {
-            archiveCurrent(dest, 0, [this, gen](bool ok, const QString& error) {
-            if (gen != m_generation) return;
-            if (!ok) {
-                stopBatch(QStringLiteral("Video saved, but raw cache could not be archived: %1. Server originals retained.").arg(error),
-                          /*keepArtifacts=*/true);
-                return;
-            }
-            auto& job = current();
             auto* cleanup = postJson(QStringLiteral("/roundtable_batch/release"), QJsonObject{{"artifact_key", job.artifactKey}});
             connect(cleanup, &QNetworkReply::finished, this, [this, cleanup, gen]() {
                 cleanup->deleteLater();
                 if (gen != m_generation) return;
-                if (cleanup->error() != QNetworkReply::NoError)
+                if (cleanup->error() == QNetworkReply::NoError)
+                    current().hasArtifacts = false;
+                else
                     emit log(QStringLiteral("Video saved; temporary batch files could not be released: ") + cleanup->errorString());
                 nextJob();
-            });
             });
             return;
         }
         nextJob();
     });
-}
-
-void ComfyRunner::archiveCurrent(const QString& videoFile, int fileIndex, Done then)
-{
-    // Stream full tensors to the show's media folder: never buffer a gigabyte-sized reply in RAM.
-    const QString directory = QDir(m_config.rendersDir).absoluteFilePath(
-        QStringLiteral("../ComfyUI Cache/") + QFileInfo(videoFile).completeBaseName());
-    if (!QDir().mkpath(directory)) { then(false, directory); return; }
-    const QStringList files{QStringLiteral("frames.pt"), QStringLiteral("media.pt")};
-    if (fileIndex == files.size()) {
-        QSaveFile recipe(directory + QStringLiteral("/recipe.json"));
-        const QByteArray bytes = QJsonDocument(QJsonObject{{"source_prompt", m_sourcePrompt},
-            {"render", videoFile}, {"artifact_key", current().artifactKey}, {"alpha_revision", 3}}).toJson();
-        if (!recipe.open(QIODevice::WriteOnly) || recipe.write(bytes) != bytes.size() || !recipe.commit()) {
-            then(false, QStringLiteral("Cannot save cache recipe")); return;
-        }
-        emit log(QStringLiteral("Raw frames retained in %1").arg(QDir::cleanPath(directory)));
-        then(true, {});
-        return;
-    }
-    const QString name = files[fileIndex];
-    auto file = std::make_shared<QSaveFile>(directory + QLatin1Char('/') + name);
-    if (!file->open(QIODevice::WriteOnly)) { then(false, file->errorString()); return; }
-    QUrlQuery query;
-    query.addQueryItem("filename", name);
-    query.addQueryItem("subfolder", QStringLiteral("roundtable_batch/") + current().artifactKey);
-    query.addQueryItem("type", "output");
-    auto* reply = get(QStringLiteral("/view?") + query.toString(QUrl::FullyEncoded));
-    const auto gen = m_generation;
-    auto failed = std::make_shared<bool>(false);
-    auto received = std::make_shared<qint64>(0);
-    auto drain = [reply, file, failed, received]() {
-        const auto bytes = reply->readAll();
-        *received += bytes.size();
-        if (file->write(bytes) != bytes.size()) *failed = true;
-    };
-    setStatus(QStringLiteral("Saving raw cache: %1").arg(name));
-    connect(reply, &QNetworkReply::readyRead, this, drain);
-    connect(reply, &QNetworkReply::finished, this,
-        [this, reply, file, failed, received, drain, gen, videoFile, fileIndex, then]() {
-            reply->deleteLater();
-            if (gen != m_generation) return;
-            drain();
-            const auto length = reply->header(QNetworkRequest::ContentLengthHeader);
-            if (*failed || *received <= 0 || (length.isValid() && length.toLongLong() != *received) ||
-                reply->error() != QNetworkReply::NoError || !file->commit()) {
-                then(false, reply->errorString() + QStringLiteral(" / ") + file->errorString()); return;
-            }
-            archiveCurrent(videoFile, fileIndex + 1, then);
-        });
 }
 
 void ComfyRunner::failCurrent(const QString& why, bool retry)
@@ -1385,7 +1309,7 @@ void ComfyRunner::failCurrent(const QString& why, bool retry)
     });
 }
 
-void ComfyRunner::stopBatch(const QString& why, bool keepArtifacts)
+void ComfyRunner::stopBatch(const QString& why)
 {
     emit log(QStringLiteral("STOPPED: ") + why);
     if (m_index >= 0 && m_index < static_cast<int>(m_jobs.size())) {
@@ -1396,7 +1320,7 @@ void ComfyRunner::stopBatch(const QString& why, bool keepArtifacts)
     }
     m_pollTimer->stop();
     ++m_generation;
-    releaseAfterEarlyEnd(keepArtifacts ? m_index : -1);
+    releaseAfterEarlyEnd();
     m_events->close();
     m_running = false;
     emit finished(m_done, m_failed, true);

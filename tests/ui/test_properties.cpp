@@ -54,6 +54,7 @@
 #include <QTreeWidget>
 #include <QWheelEvent>
 
+#include <functional>
 #include <map>
 #include <QTest>
 #include <QTimer>
@@ -2549,17 +2550,27 @@ TEST(EffectsPanel, BrowserListsEveryRegisteredEffectOnce)
     auto* tree = panel.findChild<QTreeWidget*>(QStringLiteral("EffectBrowserTree"));
     ASSERT_NE(tree, nullptr);
 
+    // Folder path of each listed effect: "Video Effects/Stylize" for an
+    // effect in the Stylize sub-folder, matching the table's category.
     std::map<int, QString> listedUnder;
+    std::function<void(QTreeWidgetItem*, const QString&)> walk =
+        [&](QTreeWidgetItem* folder, const QString& path) {
+        for (int i = 0; i < folder->childCount(); ++i) {
+            auto* child = folder->child(i);
+            const QVariant type = child->data(0, Qt::UserRole);
+            if (type.isValid()) {
+                EXPECT_TRUE(listedUnder.emplace(type.toInt(), path).second)
+                    << "listed twice: " << type.toInt();
+            } else if (child->childCount() > 0) {
+                walk(child, path + QLatin1Char('/') + child->text(0));
+            }
+        }
+    };
     for (int c = 0; c < tree->topLevelItemCount(); ++c) {
         auto* category = tree->topLevelItem(c);
         if (category->text(0).contains(QStringLiteral("Preset")))
             continue;   // multi-effect macros reuse the effect types
-        for (int i = 0; i < category->childCount(); ++i) {
-            const QVariant type = category->child(i)->data(0, Qt::UserRole);
-            if (!type.isValid()) continue;
-            EXPECT_TRUE(listedUnder.emplace(type.toInt(), category->text(0)).second)
-                << "listed twice: " << type.toInt();
-        }
+        walk(category, category->text(0));
     }
     for (const auto& def : rt::allEffectDefs()) {
         const auto it = listedUnder.find(static_cast<int>(def.type));

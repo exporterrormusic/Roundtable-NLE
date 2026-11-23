@@ -46,6 +46,10 @@
 #include "timeline/Transition.h"
 #include "timeline/KeyframeTrack.h"
 #include "command/CommandStack.h"
+#include "audiofx/Distortion.h"
+#include "audiofx/Delay.h"
+#include "audiofx/Reverb.h"
+#include "audiofx/EssentialSound.h"
 #include "audiofx/FxChain.h"
 #include "audiofx/ParametricEQ.h"
 #include "audiofx/Dynamics.h"
@@ -576,6 +580,120 @@ TEST_F(SerializerTest, AudioFxChainRoundTrip)
     EXPECT_TRUE(ldyn->compressor().enabled);
     EXPECT_FLOAT_EQ(ldyn->compressor().makeupDb, 4.0f);  // from loadVoicePreset
     EXPECT_TRUE(ldyn->limiter().enabled);
+}
+
+TEST_F(SerializerTest, AudioFxParamProcessorsRoundTrip)
+{
+    // Reverb / Delay / Distortion save their parameter lists by index.
+    auto p = Project::createNew("FX Params");
+    auto audio = std::make_unique<AudioClip>();
+    audio->setMediaPath("audio/voice.wav");
+    audio->setTimelineIn(0);
+    audio->setDuration(96000);
+
+    auto& chain = audio->audioFx();
+    auto* rev = static_cast<audiofx::ParamProcessor*>(chain.add(audiofx::ProcessorKind::Reverb));
+    rev->setParam(audiofx::Reverb::Decay, 2.75f);
+    rev->setParam(audiofx::Reverb::Wet, 42.0f);
+    auto* del = static_cast<audiofx::ParamProcessor*>(chain.add(audiofx::ProcessorKind::Delay));
+    del->setParam(audiofx::Delay::Time, 123.0f);
+    del->setParam(audiofx::Delay::PingPong, 1.0f);
+    del->setEnabled(false);
+    auto* dist = static_cast<audiofx::ParamProcessor*>(chain.add(audiofx::ProcessorKind::Distortion));
+    dist->setParam(audiofx::Distortion::Type, audiofx::Distortion::BitCrush);
+    p->timeline()->track(1)->addClip(std::move(audio));
+
+    auto loaded = serializer.deserialize(serializer.serialize(*p));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_GE(loaded->timeline()->track(1)->clipCount(), 1u);
+    const auto* aclip = dynamic_cast<const AudioClip*>(loaded->timeline()->track(1)->clip(0));
+    ASSERT_NE(aclip, nullptr);
+    const auto& lc = aclip->audioFx();
+    ASSERT_EQ(lc.size(), 3u);
+
+    const auto* lrev = dynamic_cast<const audiofx::Reverb*>(&lc.at(0));
+    ASSERT_NE(lrev, nullptr);
+    EXPECT_FLOAT_EQ(lrev->param(audiofx::Reverb::Decay), 2.75f);
+    EXPECT_FLOAT_EQ(lrev->param(audiofx::Reverb::Wet), 42.0f);
+    EXPECT_FLOAT_EQ(lrev->param(audiofx::Reverb::RoomSize), 50.0f);   // default kept
+
+    const auto* ldel = dynamic_cast<const audiofx::Delay*>(&lc.at(1));
+    ASSERT_NE(ldel, nullptr);
+    EXPECT_FALSE(ldel->isEnabled());
+    EXPECT_FLOAT_EQ(ldel->param(audiofx::Delay::Time), 123.0f);
+    EXPECT_FLOAT_EQ(ldel->param(audiofx::Delay::PingPong), 1.0f);
+
+    const auto* ldist = dynamic_cast<const audiofx::Distortion*>(&lc.at(2));
+    ASSERT_NE(ldist, nullptr);
+    EXPECT_FLOAT_EQ(ldist->param(audiofx::Distortion::Type),
+                    static_cast<float>(audiofx::Distortion::BitCrush));
+}
+
+TEST_F(SerializerTest, TrackAudioFxRoundTrip)
+{
+    auto p = Project::createNew("Track FX");
+    Track* a1 = p->timeline()->track(1);
+    ASSERT_EQ(a1->type(), TrackType::Audio);
+    EXPECT_TRUE(a1->audioFx().empty());
+    const uint64_t rev0 = a1->audioFxRevision();
+
+    audiofx::FxChain chain;
+    auto* rev = static_cast<audiofx::ParamProcessor*>(chain.add(audiofx::ProcessorKind::Reverb));
+    rev->setParam(audiofx::Reverb::Decay, 3.25f);
+    a1->setAudioFx(std::move(chain));
+    EXPECT_NE(a1->audioFxRevision(), rev0);
+
+    // A snapshot clone keeps the settings AND the revision (playback keeps
+    // the running bus across undo snapshots).
+    auto dup = a1->cloneForSnapshot();
+    ASSERT_EQ(dup->audioFx().size(), 1u);
+    EXPECT_EQ(dup->audioFxRevision(), a1->audioFxRevision());
+
+    auto loaded = serializer.deserialize(serializer.serialize(*p));
+    ASSERT_NE(loaded, nullptr);
+    // Find the audio track by type (loading may insert the V/A divider).
+    const Track* la1 = nullptr;
+    for (size_t i = 0; i < loaded->timeline()->trackCount(); ++i)
+        if (loaded->timeline()->track(i)->type() == TrackType::Audio) {
+            la1 = loaded->timeline()->track(i);
+            break;
+        }
+    ASSERT_NE(la1, nullptr);
+    ASSERT_EQ(la1->audioFx().size(), 1u);
+    const auto* lrev = dynamic_cast<const audiofx::Reverb*>(&la1->audioFx().at(0));
+    ASSERT_NE(lrev, nullptr);
+    EXPECT_FLOAT_EQ(lrev->param(audiofx::Reverb::Decay), 3.25f);
+    // Tracks without effects save nothing and load empty.
+    EXPECT_TRUE(loaded->timeline()->track(0)->audioFx().empty());
+}
+
+TEST_F(SerializerTest, EssentialSoundRoundTrip)
+{
+    auto p = Project::createNew("ES");
+    auto audio = std::make_unique<AudioClip>();
+    audio->setMediaPath("audio/voice.wav");
+    audio->setDuration(96000);
+    audiofx::EssentialSoundSettings es;
+    es.type = audiofx::SoundType::Dialogue;
+    es.deEss = true;
+    es.deEssAmount = 7.5f;
+    es.eqPreset = 3;
+    es.loudnessTarget = -16.0f;
+    audio->setEssentialSound(es);
+    EXPECT_TRUE(audio->hasProcessing());
+    EXPECT_EQ(audio->buildProcessingChain().size(), 1u);   // the DeEsser
+    p->timeline()->track(1)->addClip(std::move(audio));
+
+    auto loaded = serializer.deserialize(serializer.serialize(*p));
+    ASSERT_NE(loaded, nullptr);
+    const AudioClip* ac = nullptr;
+    for (size_t i = 0; i < loaded->timeline()->trackCount() && !ac; ++i) {
+        const Track* t = loaded->timeline()->track(i);
+        if (t->type() == TrackType::Audio && t->clipCount() > 0)
+            ac = dynamic_cast<const AudioClip*>(t->clip(0));
+    }
+    ASSERT_NE(ac, nullptr);
+    EXPECT_EQ(ac->essentialSound(), es);
 }
 
 TEST_F(SerializerTest, SpineClipRoundTrip)

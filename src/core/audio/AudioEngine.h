@@ -41,6 +41,7 @@ namespace rt {
 // Forward declarations
 class AVSyncClock;
 class AudioFile;
+namespace audiofx { class FxChain; }
 
 struct AudioSourceView
 {
@@ -96,6 +97,9 @@ struct AudioTrackSource
     bool                solo{false};
     bool                maintainPitch{true};  ///< Preserve pitch at non-1x speed
     double              clipSpeed{1.0};       ///< Per-clip speed multiplier (from Speed/Duration)
+    /// Track bus this source feeds (the track id), or 0 to mix straight to
+    /// the output. Must name a bus given to setTrackBuses(); else direct.
+    uint64_t            busId{0};
 
     /// Channel-routing effects applied once when the source snapshot is published.
     std::vector<EffectType> audioEffects;
@@ -119,6 +123,17 @@ struct AudioTrackSource
     return static_cast<double>(timelineFrame - windowStartFrame)
          * std::abs(clipSpeed);
 }
+
+/// A track bus: the track's clips are summed and run through `chain`
+/// (track audio effects) in the audio callback.
+struct AudioBusSpec
+{
+    uint64_t trackId{0};
+    /// Track::audioFxRevision(): a bus with the same id AND revision as the
+    /// playing one is kept as is, so its tail is not cut by a refresh.
+    uint64_t revision{0};
+    std::shared_ptr<const audiofx::FxChain> chain;   ///< settings (cloned + prepared)
+};
 
 /// Peak meter data
 struct AudioMeter
@@ -204,8 +219,16 @@ public:
     /// Called from the main thread when playback begins or composition changes.
     void setTrackSources(std::vector<AudioTrackSource> sources);
 
-    /// Clear all track sources.
+    /// Clear all track sources (and track buses).
     void clearTrackSources();
+
+    /// Replace the set of track buses (track audio effects). Buses whose id
+    /// and revision match the current ones keep running untouched; others
+    /// start fresh. Main thread; the callback never blocks on it.
+    void setTrackBuses(const std::vector<AudioBusSpec>& specs);
+
+    /// Number of active track buses (tests / diagnostics).
+    [[nodiscard]] size_t trackBusCount() const;
 
     /// Live-update volume/pan/mute for a single source identified by trackId
     /// (== clipId as set by AudioPlaybackService). No-op if no match.
@@ -239,6 +262,18 @@ public:
     /// Get/reset real-time callback timing and device-underrun diagnostics.
     [[nodiscard]] AudioCallbackStats callbackStats() const noexcept;
     void resetCallbackStats() noexcept;
+
+    /// Main thread: warn (once per new event) when the non-finite guard
+    /// silenced a block — in the output mix or inside an effect chain —
+    /// naming the effect, so a NaN source can be traced from the log.
+    void logNonFiniteGuardTrips();
+
+    /// Main thread, polled during playback: when the output device has not
+    /// called back for a while (device reset, default-device switch, Windows
+    /// audio service restart), close and reopen the stream on the current
+    /// default device and resume. PortAudio's WASAPI stream dies silently in
+    /// those cases and never recovers on its own. Returns true if it reopened.
+    bool checkStreamHealth();
 
     // ── Sync clock ──────────────────────────────────────────────────────
 
@@ -288,6 +323,9 @@ private:
                    float volume, float pan, bool muted);
 
     struct MixerSnapshot;
+    struct Bus;
+    struct BusSet;
+    void publishBusSetLocked(std::shared_ptr<BusSet> next);
     void publishTrackSourcesLocked(std::vector<AudioTrackSource> sources);
     [[nodiscard]] std::vector<AudioTrackSource> copyTrackSourcesLocked() const;
     void recordCallbackStats(std::chrono::steady_clock::time_point started,
@@ -318,6 +356,17 @@ private:
     std::atomic<uint64_t>       m_outputOverflows{0};
     std::atomic<uint64_t>       m_callbacksOverBudget{0};
     std::atomic<uint64_t>       m_maxCallbackMicros{0};
+    std::atomic<uint64_t>       m_nonFiniteOutputBlocks{0};   ///< output blocks zeroed by the guard
+    uint64_t                    m_loggedNonFiniteOutput{0};   ///< main thread only
+    uint64_t                    m_loggedNonFiniteFx{0};       ///< main thread only
+
+    // Stream watchdog (main thread only, see checkStreamHealth()).
+    bool reopenStream();
+    bool                        m_healthWatching{false};
+    bool                        m_reopening{false};
+    uint64_t                    m_healthLastCount{0};
+    std::chrono::steady_clock::time_point m_healthLastProgress{};
+    int                         m_reopenFailures{0};
 
     // Sync clock (set from main thread, read by audio thread)
     std::atomic<AVSyncClock*>   m_syncClock{nullptr};
@@ -329,6 +378,14 @@ private:
     std::atomic<MixerSnapshot*> m_callbackMixerSnapshot{nullptr};
     std::atomic<uint32_t> m_callbackReaders{0};
     std::vector<std::shared_ptr<MixerSnapshot>> m_retiredSnapshots;
+
+    // Track buses, swapped like the mixer snapshot (same mutex / reader
+    // count). Bus objects are shared between consecutive sets so their
+    // effect state (reverb tails) survives a republish.
+    std::shared_ptr<BusSet> m_activeBusSet;
+    std::atomic<BusSet*> m_callbackBusSet{nullptr};
+    std::vector<std::shared_ptr<BusSet>> m_retiredBusSets;
+    std::atomic<bool> m_busResetPending{false};   ///< set by seek/scrub
 };
 
 } // namespace rt

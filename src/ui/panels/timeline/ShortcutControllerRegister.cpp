@@ -195,10 +195,12 @@ void ShortcutController::registerKeyboardShortcuts()
                       Qt::CTRL | Qt::SHIFT | Qt::Key_C, [this]() {
         if (m_ws->timeline() && m_ws->timelinePanel() && m_ws->commandStack() && !m_ws->timelinePanel()->clipboard().empty()) {
             const int64_t pasteTick = m_ws->playbackController() ? m_ws->playbackController()->currentTick() : 0;
-            auto cmd = EditOperations::pasteInsert(
-                *m_ws->timeline(), m_ws->timelinePanel()->clipboard(), pasteTick);
-            if (cmd) {
-                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
+            // pasteInsert applies while building: the gesture must open first.
+            if (executeTimelineEditBuiltLive(m_ws->commandStack(), m_ws->timeline(),
+                    "Paste Insert", [&] {
+                        return EditOperations::pasteInsert(
+                            *m_ws->timeline(), m_ws->timelinePanel()->clipboard(), pasteTick);
+                    })) {
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                 // Sync playhead from the model (the command moves it to end
                 // of inserted content as part of its undoable state).
@@ -275,9 +277,12 @@ void ShortcutController::registerKeyboardShortcuts()
         }
         if (m_ws->timeline() && m_ws->timelinePanel() && m_ws->commandStack() && !m_ws->timelinePanel()->clipboard().empty()) {
             const int64_t pasteTick = m_ws->playbackController() ? m_ws->playbackController()->currentTick() : 0;
-            auto cmd = m_ws->timelinePanel()->makePasteCommand(pasteTick);
-            if (cmd) {
-                executeTimelineEdit(m_ws->commandStack(), m_ws->timeline(), std::move(cmd));
+            // paste applies while building (add + overwrite trims): the
+            // gesture must open first or undo leaves overwritten clips cut.
+            if (executeTimelineEditBuiltLive(m_ws->commandStack(), m_ws->timeline(),
+                    "Paste", [&] {
+                        return m_ws->timelinePanel()->makePasteCommand(pasteTick);
+                    })) {
                 if (m_ws->timelinePanel()) m_ws->timelinePanel()->refreshTrackContents();
                 // Sync playhead from the model (the command moves it to end
                 // of pasted content as part of its undoable state).

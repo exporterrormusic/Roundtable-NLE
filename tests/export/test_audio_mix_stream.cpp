@@ -17,6 +17,7 @@
 
 #include "audio/AudioFile.h"
 #include "audio/AudioRegionReader.h"
+#include "audiofx/Delay.h"
 #include "audiofx/Dynamics.h"
 #include "audiofx/FxChain.h"
 #include "audiofx/ParametricEQ.h"
@@ -433,6 +434,129 @@ TEST(AudioMixStream, BlockSizeDoesNotChangeTheMix)
                 << "range " << startSec << "-" << endSec << " block " << block;
         }
     }
+}
+
+
+// ── Track audio effects (bus) ───────────────────────────────────────────────
+
+namespace {
+
+/// A1 holds a 1 s clip at 0 s; the render runs to 2 s so a tail can show.
+/// Track effect: a plain 0.5 s echo (no feedback, flat filters).
+struct BusFixture
+{
+    Timeline timeline;
+    Track* a1{nullptr};
+    bool ok{false};
+
+    explicit BusFixture(const fs::path& dir, bool withTrackFx)
+    {
+        const auto wav = writeTestWav(dir / "bus.wav", 48000, 2, 1.0, 4);
+        if (wav.empty()) return;
+        a1 = timeline.addAudioTrack("A1");
+        addAudioClip(a1, wav, 48000, 2, 0.0, 1.0, 0.0, 1.0);
+        if (withTrackFx) {
+            audiofx::FxChain chain;
+            auto* d = static_cast<audiofx::ParamProcessor*>(chain.add(audiofx::ProcessorKind::Delay));
+            d->setParam(audiofx::Delay::Time, 500.0f);
+            d->setParam(audiofx::Delay::Feedback, 0.0f);
+            d->setParam(audiofx::Delay::LowCut, 20.0f);
+            d->setParam(audiofx::Delay::HighCut, 20000.0f);
+            d->setParam(audiofx::Delay::Wet, 100.0f);
+            a1->setAudioFx(std::move(chain));
+        }
+        ok = true;
+    }
+};
+
+AudioMixdownConfig busConfig()
+{
+    AudioMixdownConfig cfg;
+    cfg.sampleRate = 48000;
+    cfg.channels = 2;
+    cfg.startTime = 0.0;
+    cfg.endTime = 2.0;
+    return cfg;
+}
+
+float rmsOfRange(const std::vector<float>& mix, double fromSec, double toSec)
+{
+    const auto a = static_cast<size_t>(fromSec * 48000) * 2;
+    const auto b = std::min(mix.size(), static_cast<size_t>(toSec * 48000) * 2);
+    double acc = 0.0;
+    for (size_t i = a; i < b; ++i) acc += static_cast<double>(mix[i]) * mix[i];
+    return b > a ? static_cast<float>(std::sqrt(acc / static_cast<double>(b - a))) : 0.0f;
+}
+
+} // namespace
+
+TEST(AudioMixStream, TrackEffectTailContinuesPastTheClip)
+{
+    TempDir dir;
+    BusFixture plain(dir.path(), false);
+    BusFixture echoed(dir.path(), true);
+    ASSERT_TRUE(plain.ok && echoed.ok);
+
+    AudioMixdown mixdown;
+    const MixdownResult dry = mixdown.mix(plain.timeline, busConfig());
+    const MixdownResult wet = mixdown.mix(echoed.timeline, busConfig());
+    ASSERT_TRUE(dry.isValid() && wet.isValid());
+    if (rms(dry.samples) < 1e-3f) GTEST_SKIP() << "No audio backend available to read WAV";
+
+    // After the clip ends (1.0-1.5 s) the plain mix is silent, the echoed
+    // one still carries the 0.5-1.0 s echo.
+    EXPECT_LT(rmsOfRange(dry.samples, 1.05, 1.45), 1e-4f);
+    EXPECT_GT(rmsOfRange(wet.samples, 1.05, 1.45), 0.02f);
+    // And it is gone once the echo has played out.
+    EXPECT_LT(rmsOfRange(wet.samples, 1.55, 1.95), 1e-4f);
+}
+
+TEST(AudioMixStream, TrackEffectMixIsTheSameForAnyBlockSize)
+{
+    TempDir dir;
+    BusFixture fx(dir.path(), true);
+    ASSERT_TRUE(fx.ok);
+    AudioMixdown mixdown;
+    const MixdownResult whole = mixdown.mix(fx.timeline, busConfig());
+    ASSERT_TRUE(whole.isValid());
+    if (rms(whole.samples) < 1e-3f) GTEST_SKIP() << "No audio backend available to read WAV";
+    for (int64_t block : {7, 997, 4096}) {
+        AudioMixStream stream(fx.timeline, busConfig());
+        EXPECT_EQ(streamAll(stream, block), whole.samples) << "block " << block;
+    }
+}
+
+
+TEST(AudioMixStream, KeyframedClipVolumeFollowsTheCurve)
+{
+    TempDir dir;
+    const auto wav = writeTestWav(dir.path() / "kf.wav", 48000, 2, 2.0, 5);
+    ASSERT_FALSE(wav.empty());
+    auto mixWith = [&](bool keyed) {
+        Timeline timeline;
+        Track* a1 = timeline.addAudioTrack("A1");
+        AudioClip* clip = addAudioClip(a1, wav, 48000, 2, 0.0, 2.0, 0.0, 2.0);
+        if (keyed) {
+            // Full level for the first second, silent in the second.
+            clip->volume().addKeyframe(0, 1.0f);
+            clip->volume().addKeyframe(secondsToTicks(0.9), 1.0f);
+            clip->volume().addKeyframe(secondsToTicks(1.0), 0.0f);
+        }
+        AudioMixdownConfig cfg;
+        cfg.sampleRate = 48000;
+        cfg.channels = 2;
+        AudioMixdown mixdown;
+        return mixdown.mix(timeline, cfg).samples;
+    };
+    const auto flat = mixWith(false);
+    const auto keyed = mixWith(true);
+    if (rms(flat) < 1e-3f) GTEST_SKIP() << "No audio backend available to read WAV";
+    ASSERT_EQ(flat.size(), keyed.size());
+    // First half identical, second half silent.
+    for (size_t i = 0; i < static_cast<size_t>(0.8 * 48000) * 2; ++i)
+        ASSERT_FLOAT_EQ(keyed[i], flat[i]) << i;
+    for (size_t i = static_cast<size_t>(1.05 * 48000) * 2; i < keyed.size(); ++i)
+        ASSERT_EQ(keyed[i], 0.0f) << i;
 }
 
 // ── Clip speed (Speed/Duration) ─────────────────────────────────────────────

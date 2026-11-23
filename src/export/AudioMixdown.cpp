@@ -82,6 +82,16 @@ struct AudioMixStream::ClipSource
     std::vector<EffectType>     channelFills;   ///< enabled fill effects, stack order
     audiofx::FxChain fx;
     bool    hasFx{false};
+    int     busIndex{-1};      ///< track bus (m_buses) or -1 = straight to the mix
+    // FX latency compensation (pitch shifter): processed frames read ahead,
+    // the first `fxLatency` dropped, the source tail flushed with silence.
+    int64_t fxLatency{0};
+    int64_t fxDrop{0};
+    int64_t fxFlushLeft{0};
+    bool    fxSourceDone{false};
+    std::vector<float> fxAhead;   ///< processed frames not handed out yet
+    KeyframeTrack<float> volumeCurve{1.0f};   ///< clip volume, clip-local ticks
+    bool    volumeKeyed{false};               ///< apply volumeCurve per sample
     float   volume{1.0f};      ///< clip volume x master volume
     float   pan{0.0f};
 
@@ -257,6 +267,18 @@ AudioMixStream::AudioMixStream(const Timeline& timeline, const AudioMixdownConfi
         if (hasSolo && !track->isSoloed()) muted = true;
         if (muted) continue;
 
+        // Track audio effects: this track's clips sum into a bus that runs
+        // the chain block by block for the whole export (tails continue
+        // past clip ends, as in playback).
+        int busIndex = -1;
+        if (track->audioFx().isActive()) {
+            TrackBus bus;
+            bus.chain = track->audioFx().clone();
+            bus.chain.prepare(static_cast<double>(config.sampleRate), config.channels);
+            m_buses.push_back(std::move(bus));
+            busIndex = static_cast<int>(m_buses.size()) - 1;
+        }
+
         for (size_t ci = 0; ci < track->clipCount(); ++ci) {
             const Clip* clip = track->clip(ci);
             if (!clip || !clip->isAudio()) continue;
@@ -356,11 +378,12 @@ AudioMixStream::AudioMixStream(const Timeline& timeline, const AudioMixdownConfi
             }
 
             // Per-clip audio FX chain (EQ / dynamics), state kept across blocks.
-            if (aclip->audioFx().isActive()) {
-                source->fx    = aclip->audioFx().clone();
+            if (aclip->hasProcessing()) {
+                source->fx    = aclip->buildProcessingChain();
                 source->hasFx = true;
             }
 
+            source->busIndex     = busIndex;
             source->readStartSec = readStartSec;
             source->clipStartSec = clipStartSec;
             source->clipEndSec   = clipEndSec;
@@ -368,7 +391,15 @@ AudioMixStream::AudioMixStream(const Timeline& timeline, const AudioMixdownConfi
             source->fadeOutSec   = ticksToSeconds(aclip->fadeOutDuration());
 
             // ── Volume and pan ──────────────────────────────────────────
-            source->volume = aclip->volume().evaluate(clip->timelineIn()) * config.masterVolume;
+            // Keyframed volume (rubber band / ducking) follows the curve per
+            // sample in mixClip(); otherwise one value for the clip.
+            if (aclip->volume().keyframeCount() > 0) {
+                source->volumeCurve = aclip->volume();
+                source->volumeKeyed = true;
+                source->volume = config.masterVolume;
+            } else {
+                source->volume = aclip->volume().evaluate(0) * config.masterVolume;
+            }
             source->pan    = aclip->pan().evaluate(clip->timelineIn());
 
             m_clips.push_back(std::move(source));
@@ -383,15 +414,83 @@ int64_t AudioMixStream::read(float* out, int64_t frames)
     const int64_t blockFrames = std::min(frames, m_totalFrames - m_position);
     if (!out || blockFrames <= 0) return 0;
 
-    std::fill(out, out + static_cast<size_t>(blockFrames) * m_channels, 0.0f);
+    const size_t blockSamples = static_cast<size_t>(blockFrames) * m_channels;
+    std::fill(out, out + blockSamples, 0.0f);
+    for (auto& bus : m_buses) bus.input.assign(blockSamples, 0.0f);
     // Clips sum in track order, then clip order, every block: each output
     // sample accumulates in the same order whatever the block size.
     for (auto& clip : m_clips) {
         if (clip->done || clip->mixStart >= m_position + blockFrames) continue;
-        mixClip(*clip, out, blockFrames);
+        float* target = clip->busIndex >= 0
+            ? m_buses[static_cast<size_t>(clip->busIndex)].input.data() : out;
+        mixClip(*clip, target, blockFrames);
+    }
+    // Track buses run every block (even with no clip in it) and add in.
+    for (auto& bus : m_buses) {
+        bus.chain.process(bus.input.data(), static_cast<int>(blockFrames));
+        for (size_t i = 0; i < blockSamples; ++i) out[i] += bus.input[i];
     }
     m_position += blockFrames;
     return blockFrames;
+}
+
+namespace {
+
+void applyChannelFills(const std::vector<EffectType>& fills, uint16_t channels,
+                       float* src, int64_t frames)
+{
+    if (channels != 2) return;
+    for (const EffectType fill : fills) {
+        for (int64_t f = 0; f < frames; ++f) {
+            float* frame = src + f * 2;
+            if (fill == EffectType::FillLeftWithRight) frame[0] = frame[1];
+            else                                       frame[1] = frame[0];
+        }
+    }
+}
+
+} // namespace
+
+int64_t AudioMixStream::readProcessed(ClipSource& clip, int64_t wanted, std::vector<float>& out)
+{
+    const size_t ch = clip.sourceChannels;
+    // No latency: read, channel fills, effects - in place.
+    if (!clip.hasFx || clip.fxLatency == 0) {
+        const int64_t n = clip.readOutput(wanted, out);
+        if (n <= 0) return n;
+        applyChannelFills(clip.channelFills, clip.sourceChannels, out.data(), n);
+        if (clip.hasFx) clip.fx.process(out.data(), static_cast<int>(n));
+        return n;
+    }
+
+    // Latency: keep `wanted` processed frames ahead. The effect's first
+    // fxLatency output frames are its lead-in silence (dropped); once the
+    // source ends, fxLatency frames of silence push its tail out.
+    std::vector<float> chunk;
+    while (static_cast<int64_t>(clip.fxAhead.size() / ch) < wanted) {
+        int64_t n = 0;
+        if (!clip.fxSourceDone) {
+            n = clip.readOutput(wanted, chunk);
+            if (n <= 0) { clip.fxSourceDone = true; n = 0; }
+            else applyChannelFills(clip.channelFills, clip.sourceChannels, chunk.data(), n);
+        }
+        if (clip.fxSourceDone) {
+            if (clip.fxFlushLeft <= 0) break;
+            n = std::min<int64_t>(clip.fxFlushLeft, std::max<int64_t>(wanted, 1024));
+            chunk.assign(static_cast<size_t>(n) * ch, 0.0f);
+            clip.fxFlushLeft -= n;
+        }
+        clip.fx.process(chunk.data(), static_cast<int>(n));
+        const int64_t drop = std::min(clip.fxDrop, n);
+        clip.fxDrop -= drop;
+        clip.fxAhead.insert(clip.fxAhead.end(),
+                            chunk.begin() + static_cast<ptrdiff_t>(drop * ch),
+                            chunk.begin() + static_cast<ptrdiff_t>(n * ch));
+    }
+    const int64_t give = std::min<int64_t>(wanted, static_cast<int64_t>(clip.fxAhead.size() / ch));
+    out.assign(clip.fxAhead.begin(), clip.fxAhead.begin() + static_cast<ptrdiff_t>(give * ch));
+    clip.fxAhead.erase(clip.fxAhead.begin(), clip.fxAhead.begin() + static_cast<ptrdiff_t>(give * ch));
+    return give;
 }
 
 void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
@@ -419,7 +518,12 @@ void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
         }
         clip.sourceChannels = reader->channels();
         clip.outputRate     = static_cast<uint32_t>(m_sampleRate);
-        if (clip.hasFx) clip.fx.prepare(m_sampleRate, clip.sourceChannels);
+        if (clip.hasFx) {
+            clip.fx.prepare(m_sampleRate, clip.sourceChannels);
+            clip.fxLatency = std::max(0, clip.fx.latencyFrames());
+            clip.fxDrop = clip.fxLatency;
+            clip.fxFlushLeft = clip.fxLatency;
+        }
         clip.file   = std::move(file);
         clip.reader = std::move(reader);
     }
@@ -435,7 +539,7 @@ void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
     }
 
     const int64_t wanted = last - first;
-    const int64_t framesRead = clip.readOutput(wanted, m_source);
+    const int64_t framesRead = readProcessed(clip, wanted, m_source);
     if (framesRead <= 0) {
         clip.release();
         return;
@@ -443,21 +547,6 @@ void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
 
     const uint16_t srcCh = clip.sourceChannels;
     float* src = m_source.data();
-
-    // ── Apply audio effects (channel fill) on stereo ────────────────────
-    if (srcCh == 2) {
-        for (const EffectType fill : clip.channelFills) {
-            for (int64_t f = 0; f < framesRead; ++f) {
-                float* frame = src + f * 2;
-                if (fill == EffectType::FillLeftWithRight) frame[0] = frame[1];
-                else                                       frame[1] = frame[0];
-            }
-        }
-    }
-
-    // ── Per-clip audio FX chain (EQ / dynamics) ─────────────────────────
-    // Samples are already in the output sample-rate domain.
-    if (clip.hasFx) clip.fx.process(src, static_cast<int>(framesRead));
 
     // ── Per-sample fade envelope ────────────────────────────────────────
     // Combines: per-clip fade in/out + transition crossfades.
@@ -505,6 +594,11 @@ void AudioMixStream::mixClip(ClipSource& clip, float* out, int64_t blockFrames)
             }
         }
 
+        if (clip.volumeKeyed) {
+            const auto localTick = static_cast<int64_t>(
+                std::max(0.0, tSec - clip.clipStartSec) * static_cast<double>(kTicksPerSecond));
+            gain *= std::max(0.0f, clip.volumeCurve.evaluate(localTick));
+        }
         m_gains[static_cast<size_t>(i)] = gain;
     }
 
