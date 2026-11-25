@@ -194,7 +194,16 @@ void PropertiesPanel::setupAudioSection(QWidget* container)
     m_audioFxSection->setVisible(false);
     connect(m_audioFxSection, &AudioFxSection::changed,
             this, &PropertiesPanel::propertyChanged);
+    connect(m_audioFxSection, &AudioFxSection::changed,
+            this, &PropertiesPanel::audioFxChanged);
     container->layout()->addWidget(m_audioFxSection);
+}
+
+void PropertiesPanel::refreshAudioFx()
+{
+    if (!m_audioFxSection) return;
+    auto* ac = (m_clip && m_clip->isAudio()) ? dynamic_cast<AudioClip*>(m_clip) : nullptr;
+    if (ac) m_audioFxSection->setClip(ac, m_commandStack);
 }
 
 } // namespace rt

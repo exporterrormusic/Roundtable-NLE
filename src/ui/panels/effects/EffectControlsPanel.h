@@ -63,6 +63,8 @@
 #include <functional>
 #include <map>
 #include <memory>
+
+#include "audiofx/AudioProcessor.h"
 #include <optional>
 #include <set>
 #include <string>
@@ -83,6 +85,8 @@ class GraphicLayer;
 class Timeline;
 class Track;
 class ScrubbySpinBox;
+class AudioFxSection;
+namespace audiofx { class FxChain; }
 template <typename T> class KeyframeTrack;
 enum class InterpMode : uint8_t;
 
@@ -428,6 +432,8 @@ public:
     [[nodiscard]] Clip* clip() const noexcept { return m_clip; }
 
     void refresh();
+    /// Re-read the clip's audio effect chain (another panel or a drop changed it).
+    void refreshAudioFx();
     void clearClip();
 
     /// Remove every keyframe on the current clip, its effects and masks, and
@@ -477,7 +483,13 @@ public:
     [[nodiscard]] const std::vector<PropertyRow*>& propertyRows() const noexcept { return m_propertyRows; }
 
     /// Returns true if an applied effect is currently selected.
-    [[nodiscard]] bool hasSelectedEffect() const noexcept { return m_selectedEffectIndex >= 0; }
+    /// (A video-style effect or one of an audio clip's audio effects.)
+    [[nodiscard]] bool hasSelectedEffect() const noexcept
+    {
+        return m_selectedEffectIndex >= 0 || m_selectedAudioFxIndex >= 0;
+    }
+    /// Index into the audio clip's FxChain of the selected audio effect, -1 if none.
+    [[nodiscard]] int selectedAudioFxIndex() const noexcept { return m_selectedAudioFxIndex; }
 
     /// Returns true if a clip/effect mask is the active Effect Controls
     /// selection. The workspace uses this to keep Delete from falling
@@ -485,13 +497,19 @@ public:
     [[nodiscard]] bool hasSelectedMask() const noexcept { return m_hasSelectedMask; }
 
     /// Returns true if an effect has been copied and is ready to paste.
-    [[nodiscard]] bool hasCopiedEffect() const noexcept { return m_copiedEffect != nullptr; }
+    [[nodiscard]] bool hasCopiedEffect() const noexcept
+    {
+        return m_copiedEffect != nullptr || m_copiedAudioFx != nullptr;
+    }
 
     /// Clear the copied effect clipboard. Call this when the user copies
     /// a clip (or anything else) so that Ctrl+V doesn't keep pasting the
     /// stale effect.
     /// Also clears a copied mask (the effect/mask clipboard is one slot).
-    void clearCopiedEffect() noexcept { m_copiedEffect.reset(); m_copiedMask.reset(); }
+    void clearCopiedEffect() noexcept
+    {
+        m_copiedEffect.reset(); m_copiedAudioFx.reset(); m_copiedMask.reset();
+    }
 
     /// Returns true if a mask has been copied and is ready to paste.
     [[nodiscard]] bool hasCopiedMask() const noexcept { return m_copiedMask.has_value(); }
@@ -561,6 +579,9 @@ protected:
 
 signals:
     void propertyChanged();
+    /// The clip's audio effect chain was edited here: playback must rebuild
+    /// its processed audio and the Properties panel must re-read the chain.
+    void audioFxChanged();
     void clipChanged(Clip* clip);
     void seekRequested(int64_t tick);
     void eyedropperRequested(size_t effectIdx);  // request eyedropper for Ultra Key color sampling
@@ -586,6 +607,15 @@ private:
     /// tick's evaluated value before the user commits.
     [[nodiscard]] bool isAnySpinBoxBeingEdited() const;
     void deleteEffect(size_t index);
+
+    // ── Audio effects (the audio clip's FxChain) ──────────────────────────
+    /// Replace the audio clip's chain with `mutate` applied to a copy, as one
+    /// undoable step; then rebuild the panel and tell the workspace.
+    void commitAudioFxEdit(const std::string& name,
+                           const std::function<void(audiofx::FxChain&)>& mutate);
+    void deleteAudioFx(size_t index);
+    /// Select audio effect `index` (-1 clears) and highlight its header.
+    void selectAudioFx(int index);
 
     /// Build Ultra Key grouped sections (key color, matte gen, cleanup, spill, CC)
     void buildUltraKeyUI(Effect& fx, size_t effectIdx, int& rowIdx);
@@ -740,6 +770,11 @@ protected:
     bool           m_updating{false};
     int64_t        m_playheadTick{0};
     int            m_selectedEffectIndex{-1};  // -1 = none selected
+    /// Selected audio effect (index into the audio clip's FxChain), -1 = none.
+    /// Exclusive with m_selectedEffectIndex.
+    int            m_selectedAudioFxIndex{-1};
+    /// One Premiere-style header per audio effect, in chain order.
+    std::vector<QWidget*> m_audioFxHeaders;
     bool           m_hasSelectedMask{false};
     /// Opacity header selected (new masks are assigned to Opacity).
     bool           m_opacitySelected{false};
@@ -752,6 +787,9 @@ protected:
     uint64_t       m_selectedMaskId{0};
     /// Clipboard for copy/paste of a single effect with its settings.
     std::unique_ptr<Effect> m_copiedEffect;
+    /// Clipboard for a copied audio effect (Hologram Voice, EQ…). Exclusive
+    /// with m_copiedEffect and m_copiedMask.
+    std::unique_ptr<audiofx::AudioProcessor> m_copiedAudioFx;
     /// Clipboard for copy/paste of a single mask. Exclusive with
     /// m_copiedEffect: copying one clears the other.
     std::optional<OpacityMask> m_copiedMask;

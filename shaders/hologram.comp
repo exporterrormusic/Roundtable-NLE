@@ -1,0 +1,117 @@
+#version 450
+// Hologram: turns the clip into a one-colour, see-through projection with a
+// glowing outline, rolling scanlines, flicker and the occasional glitch.
+// The outline follows the clip's alpha, so it shows best on cut-out
+// characters; on a fully opaque clip only the inner detail lines glow.
+//   [0..2] Color          [3] Opacity (0-100 %)
+//   [4] Edge Glow (0-100 %)   [5] Edge Width (px)
+//   [6] Scanlines (0-100 %)   [7] Line Spacing (px)   [8] Scroll Speed (px/s)
+//   [9] Flicker (0-100 %)     [10] Glitch (0-100 %)
+//   [11] Original Color (0-100 %)   [12] Random Seed
+//   [15] clip-local seconds
+// Straight (non-premultiplied) alpha in and out.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba8) uniform writeonly image2D outputImage;
+layout(binding = 1) uniform sampler2D inputImage;
+
+layout(push_constant) uniform PushConstants {
+    int   width;
+    int   height;
+    int   paramCount;
+    int   _pad;
+    float params[16];
+} pc;
+
+const float PI = 3.14159265;
+
+float hash11(float p) { p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
+
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= pc.width || px.y >= pc.height) return;
+    vec2 res = vec2(pc.width, pc.height);
+    vec2 uv  = (vec2(px) + 0.5) / res;
+
+    vec3  color    = clamp(vec3(pc.params[0], pc.params[1], pc.params[2]), 0.0, 1.0);
+    float opacity  = clamp(pc.params[3] / 100.0, 0.0, 1.0);
+    float edgeGlow = clamp(pc.params[4] / 100.0, 0.0, 1.0);
+    float edgeW    = max(pc.params[5], 1.0);
+    float scan     = clamp(pc.params[6] / 100.0, 0.0, 1.0);
+    float spacing  = max(pc.params[7], 2.0);
+    float speed    = pc.params[8];
+    float flicker  = clamp(pc.params[9] / 100.0, 0.0, 1.0);
+    float glitch   = clamp(pc.params[10] / 100.0, 0.0, 1.0);
+    float keep     = clamp(pc.params[11] / 100.0, 0.0, 1.0);
+    float seed     = pc.params[12];
+    float t        = max(pc.params[15], 0.0);
+
+    // ── Glitch: a gentle constant wobble plus, now and then, a horizontal
+    // band that jumps sideways for a moment.
+    float dx = sin(uv.y * 40.0 + t * 6.0) * 0.0015 * glitch;
+    float slot = floor(t * 12.0);
+    float bandGlow = 0.0;
+    if (hash11(slot * 1.37 + seed * 7.1) < glitch * 0.15) {
+        float y0 = hash11(slot * 2.11 + seed * 3.7);
+        float h  = mix(0.02, 0.10, hash11(slot * 5.3 + seed));
+        if (abs(uv.y - y0) < h) {
+            dx += (hash11(slot * 9.7 + seed * 1.9) - 0.5) * 0.08 * glitch;
+            bandGlow = 0.3;
+        }
+    }
+    vec2 suv = vec2(uv.x + dx, uv.y);
+    vec4 src = texture(inputImage, suv);
+    float a  = src.a;
+
+    // ── Outline from the alpha: average alpha on two rings around the pixel.
+    // Inside near an edge → inner rim; outside near the clip → outer halo.
+    float avg = 0.0;
+    const int N = 12;
+    for (int i = 0; i < N; ++i) {
+        float ang = (float(i) + 0.5) * (2.0 * PI / float(N));
+        vec2 dir = vec2(cos(ang), sin(ang)) / res;
+        avg += texture(inputImage, suv + dir * edgeW).a;
+        avg += texture(inputImage, suv + dir * edgeW * 0.5).a;
+    }
+    avg /= float(2 * N);
+    float rim = clamp((a * (1.0 - avg) + 0.8 * (1.0 - a) * avg) * 2.5, 0.0, 1.0);
+
+    // Inner detail lines (eyes, hair, clothing edges) glow faintly too.
+    vec2 e = 1.0 / res;
+    float gx = luma(texture(inputImage, suv + vec2(e.x, 0)).rgb)
+             - luma(texture(inputImage, suv - vec2(e.x, 0)).rgb);
+    float gy = luma(texture(inputImage, suv + vec2(0, e.y)).rgb)
+             - luma(texture(inputImage, suv - vec2(0, e.y)).rgb);
+    float detail = clamp(length(vec2(gx, gy)) * 3.0, 0.0, 1.0) * a * 0.5;
+
+    // ── Body: the clip's brightness mapped onto the hologram colour, with
+    // highlights washing towards white.
+    float l = luma(src.rgb);
+    vec3 holo = color * (0.35 + 0.85 * l) + vec3(l * l * l) * 0.35;
+    vec3 body = mix(holo, src.rgb, keep);
+
+    // Scanlines scrolling at Scroll Speed; the dark lines are also more
+    // see-through. Plus a soft bright band that rolls down the image.
+    float phase = (float(px.y) + t * speed) / spacing;
+    float line  = 0.5 + 0.5 * cos(phase * 2.0 * PI);
+    float scanMul = 1.0 - scan * (1.0 - line);
+    float d = fract(uv.y - fract(t * 0.25 + seed * 0.37) + 0.5) - 0.5;
+    float roll = exp(-d * d * 400.0) * 0.35;
+
+    // Flicker: brightness and opacity dip at random, 20 times a second.
+    float fl = 1.0 - flicker * 0.6 * hash11(floor(t * 20.0) + seed * 13.0);
+
+    float bodyA = a * opacity * scanMul * fl;
+    vec3  bodyC = body * (1.0 + roll + bandGlow) * mix(1.0, fl, 0.5);
+
+    float glowA = clamp((rim + detail) * edgeGlow * 1.5, 0.0, 1.0) * fl;
+    vec3  glowC = mix(color, vec3(1.0), 0.5);
+
+    // Add the glow on top of the body (light adds; it never darkens).
+    float outA = clamp(bodyA + glowA, 0.0, 1.0);
+    vec3 rgb = outA > 0.0 ? (bodyC * bodyA + glowC * glowA) / outA : vec3(0.0);
+    imageStore(outputImage, px, vec4(clamp(rgb, 0.0, 1.0), outA));
+}

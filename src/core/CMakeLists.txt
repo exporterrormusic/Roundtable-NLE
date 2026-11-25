@@ -151,6 +151,7 @@ add_library(roundtable_core STATIC
     audiofx/Reverb.cpp
     audiofx/Delay.cpp
     audiofx/Distortion.cpp
+    audiofx/HologramVoice.cpp
     audiofx/AudioPresets.cpp
     audiofx/RepairFx.cpp
     audiofx/Loudness.cpp

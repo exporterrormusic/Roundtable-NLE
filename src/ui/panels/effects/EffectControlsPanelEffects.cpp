@@ -855,6 +855,9 @@ void EffectControlsPanel::refreshMaskOwnerHighlight()
     for (size_t i = 0; i < m_effectHeaders.size(); ++i)
         m_effectHeaders[i]->setStyleSheet(headerStyle(
             static_cast<int>(i) == m_selectedEffectIndex));
+    for (size_t i = 0; i < m_audioFxHeaders.size(); ++i)
+        m_audioFxHeaders[i]->setStyleSheet(headerStyle(
+            static_cast<int>(i) == m_selectedAudioFxIndex));
     if (!m_hasSelectedMask) {
         for (auto& section : m_sectionArrows) {
             if (!section.header->property("maskId").isValid()) continue;

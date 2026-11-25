@@ -79,9 +79,11 @@ AudioFxSection::AudioFxSection(QWidget* parent)
 
     // Header row: title + "Add" menu button.
     auto* header = new QHBoxLayout;
-    header->addWidget(new QLabel(tr("<b>Audio Effects</b>")));
+    m_titleLabel = new QLabel(tr("<b>Audio Effects</b>"));
+    header->addWidget(m_titleLabel);
     header->addStretch();
     auto* addBtn = new QPushButton(tr("Add ▾"));
+    m_addBtn = addBtn;
     addBtn->setToolTip(tr("Add an audio effect to this clip"));
     header->addWidget(addBtn);
     outer->addLayout(header);
@@ -121,6 +123,20 @@ AudioFxSection::AudioFxSection(QWidget* parent)
 }
 
 AudioFxSection::~AudioFxSection() = default;
+
+void AudioFxSection::setTitleVisible(bool visible)
+{
+    if (m_titleLabel) m_titleLabel->setVisible(visible);
+}
+
+void AudioFxSection::showOnly(int index)
+{
+    m_onlyIndex = index;
+    const bool chrome = index < 0;
+    if (m_titleLabel) m_titleLabel->setVisible(chrome);
+    if (m_addBtn) m_addBtn->setVisible(chrome);
+    rebuild();
+}
 
 void AudioFxSection::setClip(AudioClip* clip, CommandStack* stack)
 {
@@ -193,6 +209,18 @@ void AudioFxSection::rebuild()
     setVisible(true);
 
     const auto& chain = *editing;
+    if (m_onlyIndex >= 0) {
+        // Single-processor body (Effect Controls): just that one editor.
+        if (m_onlyIndex < static_cast<int>(chain.size())) {
+            const auto& p = chain.at(m_onlyIndex);
+            QWidget* w = nullptr;
+            if (dynamic_cast<const audiofx::ParametricEQ*>(&p))        w = buildEqWidget(m_onlyIndex);
+            else if (dynamic_cast<const audiofx::Dynamics*>(&p))       w = buildDynamicsWidget(m_onlyIndex);
+            else if (dynamic_cast<const audiofx::ParamProcessor*>(&p)) w = buildParamWidget(m_onlyIndex);
+            if (w) m_chainLayout->addWidget(w);
+        }
+        return;
+    }
     if (chain.empty()) {
         auto* hint = new QLabel(tr("No audio effects. Use “Add ▾”."));
         hint->setEnabled(false);
@@ -218,9 +246,11 @@ namespace {
 /// Returns the group box and (via out-params) its body form to fill.
 QGroupBox* makeProcessorGroup(const QString& title, bool enabled,
                               QWidget* parent, QFormLayout** outForm,
-                              QCheckBox** outEnable, QToolButton** outRemove)
+                              QCheckBox** outEnable, QToolButton** outRemove,
+                              bool bodyOnly = false)
 {
     auto* box = new QGroupBox(parent);
+    if (bodyOnly) box->setFlat(true);   // the host draws the frame/header
     auto* v = new QVBoxLayout(box);
     v->setContentsMargins(6, 6, 6, 6);
     v->setSpacing(4);
@@ -236,6 +266,7 @@ QGroupBox* makeProcessorGroup(const QString& title, bool enabled,
     rm->setToolTip(QObject::tr("Remove this effect"));
     head->addWidget(rm);
     v->addLayout(head);
+    if (bodyOnly) { en->hide(); rm->hide(); }   // still wired, just not shown
 
     auto* form = new QFormLayout;
     form->setContentsMargins(0, 0, 0, 0);
@@ -257,7 +288,7 @@ QWidget* AudioFxSection::buildEqWidget(int index)
 
     QFormLayout* form = nullptr; QCheckBox* enable = nullptr; QToolButton* remove = nullptr;
     auto* box = makeProcessorGroup(tr("Parametric EQ"), eq->isEnabled(),
-                                   this, &form, &enable, &remove);
+                                   this, &form, &enable, &remove, m_onlyIndex >= 0);
 
     connect(enable, &QCheckBox::toggled, this, [this, index](bool on) {
         commitEdit(tr("Toggle EQ"), [index, on](audiofx::FxChain& c) {
@@ -375,7 +406,7 @@ QWidget* AudioFxSection::buildDynamicsWidget(int index)
 
     QFormLayout* form = nullptr; QCheckBox* enable = nullptr; QToolButton* remove = nullptr;
     auto* box = makeProcessorGroup(tr("Dynamics"), dyn->isEnabled(),
-                                   this, &form, &enable, &remove);
+                                   this, &form, &enable, &remove, m_onlyIndex >= 0);
 
     connect(enable, &QCheckBox::toggled, this, [this, index](bool on) {
         commitEdit(tr("Toggle Dynamics"), [index, on](audiofx::FxChain& c) {
@@ -490,7 +521,7 @@ QWidget* AudioFxSection::buildParamWidget(int index)
         audiofx::processorDisplayName(audiofx::processorKindOf(*proc)));
 
     QFormLayout* form = nullptr; QCheckBox* enable = nullptr; QToolButton* remove = nullptr;
-    auto* box = makeProcessorGroup(title, proc->isEnabled(), this, &form, &enable, &remove);
+    auto* box = makeProcessorGroup(title, proc->isEnabled(), this, &form, &enable, &remove, m_onlyIndex >= 0);
 
     connect(enable, &QCheckBox::toggled, this, [this, index, title](bool on) {
         commitEdit(tr("Toggle %1").arg(title), [index, on](audiofx::FxChain& c) {

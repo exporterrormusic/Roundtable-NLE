@@ -27,6 +27,7 @@
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
 #include "timeline/SpineClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "timeline/NestTransitionTransfer.h"
 #include "timeline/SequenceClip.h"
 #include "timeline/GraphicClip.h"
@@ -712,6 +713,37 @@ TEST(EditOperations, TrimClipHead)
     EXPECT_EQ(tt.vTrack->clip(idx)->duration(), 2 * TPS); // 3–5s
 }
 
+// PNG puppets loop their talk/blink images on timeline time, so they have no
+// source start: the head can be dragged left past sourceIn 0, like a Spine
+// character (it used to stop dead there).
+TEST(EditOperations, PngPuppetHeadExtendsPastSourceStart)
+{
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    auto puppet = std::make_unique<rt::PngPuppetClip>("K2F", "Default");
+    puppet->setTimelineIn(10 * TPS);
+    puppet->setDuration(2 * TPS);
+    puppet->setSourceIn(0);
+    const uint64_t id = puppet->id();
+    ASSERT_NE(track->addClip(std::move(puppet)), nullptr);
+    const size_t ti = 0;
+
+    rt::CommandStack stack;
+    auto cmd = rt::EditOperations::trimClip(timeline, ti, id, rt::ClipEdge::Head, 4 * TPS);
+    ASSERT_NE(cmd, nullptr);
+    stack.execute(std::move(cmd));
+
+    const rt::Clip* c = track->clip(track->findClipIndexById(id));
+    EXPECT_EQ(c->timelineIn(), 4 * TPS);
+    EXPECT_EQ(c->duration(), 8 * TPS);
+    EXPECT_EQ(c->sourceIn(), -6 * TPS);   // loops: negative source in-point is fine
+
+    ASSERT_TRUE(stack.undo());
+    c = track->clip(track->findClipIndexById(id));
+    EXPECT_EQ(c->timelineIn(), 10 * TPS);
+    EXPECT_EQ(c->sourceIn(), 0);
+}
+
 TEST(EditOperations, TrimClipTail)
 {
     TestTimeline tt;
@@ -1247,6 +1279,53 @@ TEST(EditOperations, PasteUndo)
 
     tt.stack.undo();
     EXPECT_EQ(tt.vTrack->clipCount(), 3u);
+}
+
+// Paste moves the playhead to the end of the pasted clip (as Premiere does),
+// so pasting again lays the next copy right after it. Undo puts it back.
+TEST(EditOperations, PasteMovesPlayheadToEndForRepeatedPaste)
+{
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    const uint64_t src = addClip(track, 0.0, 2.0);
+    rt::CommandStack stack;
+
+    rt::SelectionSet sel;
+    sel.selectClip({0, src});
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(timeline, sel, clipboard);
+
+    timeline.setPlayheadPosition(10 * TPS);
+    stack.execute(rt::EditOperations::paste(timeline, clipboard, timeline.playheadPosition()));
+    EXPECT_EQ(timeline.playheadPosition(), 12 * TPS);
+
+    stack.execute(rt::EditOperations::paste(timeline, clipboard, timeline.playheadPosition()));
+    EXPECT_EQ(timeline.playheadPosition(), 14 * TPS);
+    ASSERT_EQ(track->clipCount(), 3u);
+    EXPECT_EQ(track->clip(2)->timelineIn(), 12 * TPS);
+
+    stack.undo();
+    EXPECT_EQ(timeline.playheadPosition(), 12 * TPS);
+}
+
+TEST(EditOperations, PasteInsertMovesPlayheadToEnd)
+{
+    rt::Timeline timeline;
+    rt::Track* track = timeline.addVideoTrack("V1");
+    const uint64_t src = addClip(track, 0.0, 2.0);
+    rt::CommandStack stack;
+
+    rt::SelectionSet sel;
+    sel.selectClip({0, src});
+    rt::ClipboardContents clipboard;
+    rt::EditOperations::copySelection(timeline, sel, clipboard);
+
+    timeline.setPlayheadPosition(5 * TPS);
+    stack.execute(rt::EditOperations::pasteInsert(timeline, clipboard, timeline.playheadPosition()));
+    EXPECT_EQ(timeline.playheadPosition(), 7 * TPS);
+
+    stack.undo();
+    EXPECT_EQ(timeline.playheadPosition(), 5 * TPS);
 }
 
 TEST(EditOperations, FitTransitionShortensToSpaceLeftByOppositeEdge)

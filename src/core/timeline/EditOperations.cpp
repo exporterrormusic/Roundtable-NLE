@@ -841,6 +841,25 @@ static ClipboardDestinationPlan planClipboardDestinations(
     return plan;
 }
 
+// Appends a step that moves the playhead to the end of the pasted content.
+// It runs when the compound executes, and the edit's undo snapshot puts the
+// playhead back.
+static void appendPlayheadToPasteEnd(CompoundCommand& compound, Timeline& timeline,
+                                     const ClipboardContents& clipboard,
+                                     int64_t playhead)
+{
+    int64_t end = playhead;
+    for (const auto& entry : clipboard.entries) {
+        if (!entry.clip) continue;
+        end = std::max(end, playhead + entry.relativeTime + entry.clip->duration());
+    }
+    const int64_t before = timeline.playheadPosition();
+    compound.addCommand(std::make_unique<LambdaCommand>(
+        "Playhead",
+        [&timeline, end]() { timeline.setPlayheadPosition(end); },
+        [&timeline, before]() { timeline.setPlayheadPosition(before); }));
+}
+
 std::unique_ptr<Command> EditOperations::paste(
     Timeline& timeline, const ClipboardContents& clipboard,
     int64_t playhead)
@@ -1002,13 +1021,11 @@ std::unique_ptr<Command> EditOperations::paste(
         compound->addExecuted(std::move(addTrans));
     }
 
-    // Leave the playhead where it was — at the paste point — rather than
-    // jumping it to the end of the pasted content. The paste commands above
-    // don't touch the playhead, so the model already holds the paste-point
-    // tick; the UI callers sync from it after executing. (Deliberate: do NOT
-    // re-add a "move playhead to end" LambdaCommand here.)
-
-    return compound->size() > 0 ? std::move(compound) : nullptr;
+    if (compound->size() == 0) return nullptr;
+    // Move the playhead to the end of the pasted content (Premiere does
+    // this), so pressing paste again lays the next copy right after it.
+    appendPlayheadToPasteEnd(*compound, timeline, clipboard, playhead);
+    return compound;
 }
 
 Transition EditOperations::defaultTransitionAtEdge(
@@ -1383,13 +1400,10 @@ std::unique_ptr<Command> EditOperations::pasteInsert(
             std::make_unique<AddTransitionCommand>(track, 0, 0, t));
     }
 
-    // Leave the playhead at the paste point rather than jumping it to the end
-    // of the inserted content (matches paste() above). The insert commands
-    // don't move the playhead, so the model already holds the paste-point tick
-    // and the UI callers sync from it. (Deliberate: do NOT re-add a "move
-    // playhead to end" LambdaCommand here.)
-
-    return compound->size() > 0 ? std::move(compound) : nullptr;
+    if (compound->size() == 0) return nullptr;
+    // Playhead to the end of the inserted content, as paste() does.
+    appendPlayheadToPasteEnd(*compound, timeline, clipboard, playhead);
+    return compound;
 }
 
 std::unique_ptr<Command> EditOperations::duplicateSelection(

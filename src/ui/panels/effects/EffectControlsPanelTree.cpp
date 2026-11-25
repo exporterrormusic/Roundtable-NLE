@@ -7,11 +7,13 @@
 
 #include "panels/effects/EffectControlsPanel.h"
 #include "panels/effects/KeyframeEditor.h"
+#include "widgets/AudioFxSection.h"
 #include "widgets/ScrubbySpinBox.h"
 #include "Theme.h"
 
 #include "timeline/Clip.h"
 #include "timeline/AudioClip.h"
+#include "audiofx/FxChain.h"
 #include "timeline/VideoClip.h"
 #include "timeline/SpineClip.h"
 #include "timeline/KeyframeTrack.h"
@@ -181,6 +183,8 @@ void EffectControlsPanel::clearPropertyTree()
     m_speedSpin = nullptr;
     m_panSpin = nullptr;
     m_audioVolumeSpin = nullptr;
+    m_audioFxHeaders.clear();
+    m_selectedAudioFxIndex = -1;
 }
 
 
@@ -892,6 +896,111 @@ void EffectControlsPanel::buildPropertyTree()
             // nested below the effect's own parameters).
             if (fx.maskCount() > 0)
                 buildMaskUI(fx.masks(), fx.id(), rowIdx);
+        }
+    }
+
+    // ── Audio effects (the clip's FxChain: EQ, Reverb, Hologram Voice…) ──
+    // Premiere: each applied audio effect is its own entry, like a video
+    // effect — fx on/off, collapse arrow, name, remove; click to select, then
+    // Ctrl+C / Ctrl+V / Delete. The controls under each header are the same
+    // editor the Properties panel uses, showing just that one effect.
+    if (auto* audioClip = dynamic_cast<AudioClip*>(m_clip)) {
+        const auto& chain = audioClip->audioFx();
+        for (size_t i = 0; i < chain.size(); ++i) {
+            const auto& proc = chain.at(i);
+            const QString title = QString::fromUtf8(
+                audiofx::processorDisplayName(audiofx::processorKindOf(proc)));
+
+            auto* header = new QWidget(m_propContainer);
+            header->setObjectName(QStringLiteral("audioFxHeader"));
+            header->setProperty("audioFxTitle", title);
+            header->setFixedHeight(28);
+            header->setCursor(Qt::PointingHandCursor);
+            header->setStyleSheet(QStringLiteral(
+                "background: %1; border-bottom: 1px solid %2;")
+                .arg(Theme::hex(tc.surface2), Theme::hex(tc.border)));
+            header->setContextMenuPolicy(Qt::CustomContextMenu);
+            auto* hl = new QHBoxLayout(header);
+            hl->setContentsMargins(6, 0, 6, 0);
+            hl->setSpacing(6);
+
+            auto* arrow = new QToolButton(header);
+            arrow->setText(QStringLiteral("\u25BC"));
+            arrow->setFixedSize(16, 20);
+            arrow->setStyleSheet(QStringLiteral(
+                "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
+                "QToolButton:hover { color: %2; }")
+                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.textPrimary))
+                .arg(Theme::typography().sizeXxs));
+            hl->addWidget(arrow);
+
+            auto* fxToggle = new QToolButton(header);
+            fxToggle->setObjectName(QStringLiteral("audioFxEnable"));
+            fxToggle->setText(QStringLiteral("fx"));
+            fxToggle->setCheckable(true);
+            fxToggle->setChecked(proc.isEnabled());
+            fxToggle->setToolTip(tr("Turn this effect on or off"));
+            fxToggle->setFixedSize(18, 18);
+            fxToggle->setStyleSheet(QStringLiteral(
+                "QToolButton { color: %1; font-size: %3px; font-weight: bold; font-style: italic; "
+                "background: transparent; border: none; padding: 0; }"
+                "QToolButton:!checked { color: %2; }")
+                .arg(Theme::hex(tc.accent), Theme::hex(tc.textTertiary))
+                .arg(Theme::typography().sizeXxs));
+            hl->addWidget(fxToggle);
+
+            auto* titleLabel = new QLabel(title, header);
+            titleLabel->setStyleSheet(QStringLiteral(
+                "color: %1; font-size: %2px; font-weight: bold; background: transparent;")
+                .arg(Theme::hex(proc.isEnabled() ? tc.textPrimary : tc.textTertiary))
+                .arg(Theme::typography().sizeXs));
+            hl->addWidget(titleLabel);
+            hl->addStretch();
+
+            auto* deleteBtn = new QToolButton(header);
+            deleteBtn->setText(QStringLiteral("\u2715"));
+            deleteBtn->setToolTip(tr("Remove this effect"));
+            deleteBtn->setFixedSize(20, 20);
+            deleteBtn->setStyleSheet(QStringLiteral(
+                "QToolButton { color: %1; font-size: %3px; background: transparent; border: none; padding: 0; }"
+                "QToolButton:hover { color: %2; }")
+                .arg(Theme::hex(tc.textTertiary), Theme::hex(tc.error))
+                .arg(Theme::typography().sizeXs));
+            hl->addWidget(deleteBtn);
+
+            const size_t index = i;
+            connect(fxToggle, &QToolButton::toggled, this, [this, index](bool on) {
+                commitAudioFxEdit(on ? "Turn On Audio Effect" : "Turn Off Audio Effect",
+                    [index, on](audiofx::FxChain& c) {
+                        if (index < c.size()) c.at(index).setEnabled(on);
+                    });
+            });
+            connect(deleteBtn, &QToolButton::clicked, this,
+                    [this, index]() { deleteAudioFx(index); });
+            connect(header, &QWidget::customContextMenuRequested,
+                    this, [this, index, header](const QPoint& pos) {
+                selectAudioFx(static_cast<int>(index));
+                QMenu menu(header);
+                menu.addAction(tr("Copy"), this, [this]() { copySelectedEffect(); });
+                menu.addAction(tr("Remove Effect"), this,
+                               [this, index]() { deleteAudioFx(index); });
+                menu.exec(header->mapToGlobal(pos));
+            });
+            header->installEventFilter(this);   // click selects (eventFilter)
+
+            m_sectionArrows.push_back({header, arrow, {}});
+            m_audioFxHeaders.push_back(header);
+            m_propLayout->addWidget(header);
+
+            // Body: that one effect's controls.
+            auto* body = new AudioFxSection(m_propContainer);
+            body->setObjectName(QStringLiteral("audioFxBody"));
+            body->setContentsMargins(8, 2, 8, 4);
+            body->setClip(audioClip, m_commandStack);
+            body->showOnly(static_cast<int>(i));
+            connect(body, &AudioFxSection::changed,
+                    this, &EffectControlsPanel::audioFxChanged);
+            m_propLayout->addWidget(body);
         }
     }
 

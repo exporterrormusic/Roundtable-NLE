@@ -270,6 +270,24 @@ std::vector<EffectDef> buildTable()
                  "ots.comp.spv", otsParams(1.0f)});
     t.push_back({EffectType::OtsIntro, "ots_intro", "OTS INTRO", kVideo, 0,
                  "ots.comp.spv", otsParams(0.0f)});
+    // Hologram: one-colour, see-through, glowing outline, rolling scanlines,
+    // flicker and the odd glitch. Driven by clip-local time.
+    t.push_back({EffectType::Hologram, "hologram", "Hologram", kVideo,
+                 F::ProceduralTime, "hologram.comp.spv", {
+        color("Color R", 0.25f, K::ColorR, "Color"),
+        color("Color G", 0.85f, K::ColorG),
+        color("Color B", 1.0f, K::ColorB),
+        num("Opacity", 70.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Edge Glow", 60.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Edge Width", 6.0f, 1.0f, 40.0f, 1, 0.5, " px"),
+        num("Scanlines", 40.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Line Spacing", 4.0f, 2.0f, 40.0f, 1, 0.5, " px"),
+        num("Scroll Speed", 20.0f, -200.0f, 200.0f, 0, 1.0, " px/s"),
+        num("Flicker", 15.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Glitch", 30.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Original Color", 0.0f, 0.0f, 100.0f, 0, 1.0, " %"),
+        num("Random Seed", 0.0f, 0.0f, 100.0f, 0, 1.0),
+    }});
     // The axis is fixed by the type; it only rides along to the shader.
     t.push_back({EffectType::FlipHorizontal, "flip_horizontal", "Flip Horizontal",
                  kTransform, 0, "flip.comp.spv", {hidden("Axis", 0.0f, 0.0f, 1.0f)}});

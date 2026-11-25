@@ -25,7 +25,8 @@ struct Biquad
         HighShelf,  ///< Shelf above freq (uses gainDb)
         LowPass,    ///< 12 dB/oct low-pass (gainDb ignored)
         HighPass,   ///< 12 dB/oct high-pass (gainDb ignored)
-        Notch       ///< Band-reject (gainDb ignored)
+        Notch,      ///< Band-reject (gainDb ignored)
+        BandPass    ///< Band-pass, 0 dB at freq (gainDb ignored)
     };
 
     // Normalized coefficients (a0 folded in).
@@ -116,6 +117,15 @@ struct Biquad
             nb0 =  (1.0 + cosw0) / 2.0;
             nb1 = -(1.0 + cosw0);
             nb2 =  (1.0 + cosw0) / 2.0;
+            na0 =  1.0 + alpha;
+            na1 = -2.0 * cosw0;
+            na2 =  1.0 - alpha;
+            break;
+
+        case Type::BandPass:
+            nb0 =  alpha;
+            nb1 =  0.0;
+            nb2 = -alpha;
             na0 =  1.0 + alpha;
             na1 = -2.0 * cosw0;
             na2 =  1.0 - alpha;

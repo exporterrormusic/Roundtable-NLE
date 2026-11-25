@@ -15,6 +15,7 @@
 #include "timeline/SpineClip.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/TitleClip.h"
+#include "timeline/PngPuppetClip.h"
 #include "command/Command.h"
 #include "command/CompoundCommand.h"
 #include "command/LambdaCommand.h"
@@ -70,6 +71,23 @@ static bool isBackgroundStillClip(const Clip* c)
     if (!vc) return false;
     return c->layerId().rfind("background_", 0) == 0
            && !isVideoMediaPath(vc->mediaPath());
+}
+
+// Clips with no real source extent: they loop, hold a single frame, or are
+// generated from timeline time — Spine animations, video characters, PNG
+// puppets (talk/blink loop), still-image "videos" and backgrounds, image,
+// graphic and title clips. Trims and rolls may take their source in-point
+// below 0 and past the source end (playback wraps / holds).
+static bool hasUnboundedSource(const Clip* c)
+{
+    if (auto* vc = dynamic_cast<const VideoClip*>(c))
+        return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath())
+               || isBackgroundStillClip(c);
+    return dynamic_cast<const ImageClip*>(c)     != nullptr
+        || dynamic_cast<const SpineClip*>(c)     != nullptr
+        || dynamic_cast<const PngPuppetClip*>(c) != nullptr
+        || dynamic_cast<const GraphicClip*>(c)   != nullptr
+        || dynamic_cast<const TitleClip*>(c)     != nullptr;
 }
 
 // ─── Split ───────────────────────────────────────────────────────────────────
@@ -298,17 +316,7 @@ std::unique_ptr<Command> EditOperations::trimClip(
     // hold a single frame / are procedurally generated. For these we skip
     // sourceIn>=0 / source-extent clamps so the user can drag the head
     // edge backwards past tick 0 of the source.
-    auto isLoopingClip = [](const Clip* c) -> bool {
-        if (auto* vc = dynamic_cast<const VideoClip*>(c))
-            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath())
-                   || isBackgroundStillClip(c);
-        if (dynamic_cast<const ImageClip*>(c))   return true;
-        if (dynamic_cast<const SpineClip*>(c))   return true;
-        if (dynamic_cast<const GraphicClip*>(c)) return true;
-        if (dynamic_cast<const TitleClip*>(c))   return true;
-        return false;
-    };
-    const bool looping = isLoopingClip(clip);
+    const bool looping = hasUnboundedSource(clip);
     const double speed = std::max(clip->speed(), 0.01);
 
     int64_t newIn = clip->timelineIn();
@@ -443,18 +451,8 @@ std::unique_ptr<Command> EditOperations::rollingEdit(
     // procedurally generated, so rolling should let the edit point travel
     // freely past sourceIn=0 / sourceDuration.  Mirrors the same exemption
     // in trimClip above.
-    auto isLoopingClip = [](const Clip* c) -> bool {
-        if (auto* vc = dynamic_cast<const VideoClip*>(c))
-            return vc->isVideoCharacter() || isStillImageMediaPath(vc->mediaPath())
-                   || isBackgroundStillClip(c);
-        if (dynamic_cast<const ImageClip*>(c))   return true;
-        if (dynamic_cast<const SpineClip*>(c))   return true;
-        if (dynamic_cast<const GraphicClip*>(c)) return true;
-        if (dynamic_cast<const TitleClip*>(c))   return true;
-        return false;
-    };
-    const bool leftLooping  = isLoopingClip(leftClip);
-    const bool rightLooping = isLoopingClip(rightClip);
+    const bool leftLooping  = hasUnboundedSource(leftClip);
+    const bool rightLooping = hasUnboundedSource(rightClip);
 
     // Clamp left clip tail to source media extent (non-looping clips)
     int64_t leftMaxDur = INT64_MAX;

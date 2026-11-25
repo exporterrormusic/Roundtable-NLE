@@ -6,6 +6,8 @@
  */
 
 #include "panels/effects/EffectControlsPanel.h"
+#include "widgets/AudioFxSection.h"
+#include "audiofx/FxChain.h"
 #include "widgets/ScrubbySpinBox.h"
 #include "Theme.h"
 
@@ -216,6 +218,7 @@ void EffectControlsPanel::setClip(Clip* clip, Track* track)
     // either stable ID selected across a clip switch would make the next
     // Delete target invisible state (or consume the key for no visible row).
     m_selectedEffectIndex = -1;
+    m_selectedAudioFxIndex = -1;
     m_hasSelectedMask = false;
     m_selectedMaskEffectId = 0;
     m_selectedMaskId = 0;
@@ -463,6 +466,13 @@ void EffectControlsPanel::refresh()
     m_kfTimeline->update();
 }
 
+
+void EffectControlsPanel::refreshAudioFx()
+{
+    // Each audio effect has its own header and body, so a chain change made
+    // elsewhere (Properties, a drop) rebuilds the tree.
+    if (m_clip && m_clip->isAudio()) refresh();
+}
 
 void EffectControlsPanel::setPlayheadTick(int64_t tick)
 {
@@ -1449,8 +1459,75 @@ void EffectControlsPanel::deleteEffect(size_t index)
 
 void EffectControlsPanel::deleteSelectedEffect()
 {
-    if (m_selectedEffectIndex >= 0)
+    if (m_selectedAudioFxIndex >= 0)
+        deleteAudioFx(static_cast<size_t>(m_selectedAudioFxIndex));
+    else if (m_selectedEffectIndex >= 0)
         deleteEffect(static_cast<size_t>(m_selectedEffectIndex));
+}
+
+// ── Audio effects ───────────────────────────────────────────────────────
+
+void EffectControlsPanel::commitAudioFxEdit(
+    const std::string& name, const std::function<void(audiofx::FxChain&)>& mutate)
+{
+    auto* ac = dynamic_cast<AudioClip*>(m_clip);
+    if (!ac || (m_track && m_track->isLocked())) return;
+
+    auto before = std::make_shared<audiofx::FxChain>(ac->audioFx().clone());
+    auto after  = std::make_shared<audiofx::FxChain>(ac->audioFx().clone());
+    mutate(*after);
+
+    // Undo/redo resolve the clip by id (it may have been re-created since).
+    const uint64_t clipId = ac->id();
+    Timeline* timeline = m_timeline;
+    AudioClip* direct = ac;
+    auto resolve = [timeline, clipId, direct]() -> AudioClip* {
+        if (!timeline) return direct;
+        for (size_t t = 0; t < timeline->trackCount(); ++t) {
+            Track* track = timeline->track(t);
+            if (!track) continue;
+            const size_t ci = track->findClipIndexById(clipId);
+            if (ci < track->clipCount())
+                return dynamic_cast<AudioClip*>(track->clip(ci));
+        }
+        return nullptr;
+    };
+    auto redo = [resolve, after]() { if (auto* c = resolve()) c->audioFx() = after->clone(); };
+    auto undo = [resolve, before]() { if (auto* c = resolve()) c->audioFx() = before->clone(); };
+    if (m_commandStack)
+        executeTimelineEdit(m_commandStack, nullptr,
+                            std::make_unique<LambdaCommand>(name, redo, undo));
+    else
+        redo();
+
+    const int keep = m_selectedAudioFxIndex;
+    refresh();
+    if (keep >= 0 && keep < static_cast<int>(ac->audioFx().size())) selectAudioFx(keep);
+    emit audioFxChanged();
+}
+
+void EffectControlsPanel::deleteAudioFx(size_t index)
+{
+    auto* ac = dynamic_cast<AudioClip*>(m_clip);
+    if (!ac || index >= ac->audioFx().size()) return;
+    m_selectedAudioFxIndex = -1;
+    commitAudioFxEdit("Remove Audio Effect", [index](audiofx::FxChain& c) {
+        if (index < c.size()) c.remove(index);
+    });
+}
+
+void EffectControlsPanel::selectAudioFx(int index)
+{
+    m_selectedAudioFxIndex = index;
+    if (index >= 0) {
+        m_selectedEffectIndex = -1;
+        m_hasSelectedMask = false;
+        m_selectedMaskEffectId = 0;
+        m_selectedMaskId = 0;
+        m_opacitySelected = false;
+    }
+    refreshMaskOwnerHighlight();
+    if (index >= 0) setFocus(Qt::MouseFocusReason);   // Ctrl+C / Delete reach us
 }
 
 bool EffectControlsPanel::deleteSelectedMask()
@@ -1553,14 +1630,14 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
     }
     // CTRL+C: copy selected effect (only when no keyframes are selected)
     if ((event->key() == Qt::Key_C) && (event->modifiers() & Qt::ControlModifier)
-        && m_selectedEffectIndex >= 0) {
+        && hasSelectedEffect()) {
         copySelectedEffect();
         event->accept();
         return;
     }
     // CTRL+V: paste copied effect (only when no kf clipboard data)
     if ((event->key() == Qt::Key_V) && (event->modifiers() & Qt::ControlModifier)
-        && m_copiedEffect && m_clip) {
+        && hasCopiedEffect() && m_clip) {
         pasteEffect();
         event->accept();
         return;
@@ -1572,8 +1649,8 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
         return;
     }
     if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)
-        && m_selectedEffectIndex >= 0) {
-        deleteEffect(static_cast<size_t>(m_selectedEffectIndex));
+        && hasSelectedEffect()) {
+        deleteSelectedEffect();
         event->accept();
         return;
     }
@@ -1582,10 +1659,22 @@ void EffectControlsPanel::keyPressEvent(QKeyEvent* event)
 
 void EffectControlsPanel::copySelectedEffect()
 {
+    if (m_selectedAudioFxIndex >= 0) {
+        auto* ac = dynamic_cast<AudioClip*>(m_clip);
+        const size_t idx = static_cast<size_t>(m_selectedAudioFxIndex);
+        if (!ac || idx >= ac->audioFx().size()) return;
+        m_copiedAudioFx = ac->audioFx().at(idx).clone();
+        m_copiedEffect.reset();
+        m_copiedMask.reset();
+        spdlog::info("EffectControlsPanel: copied audio effect '{}'",
+                     m_copiedAudioFx->typeName());
+        return;
+    }
     if (m_selectedEffectIndex < 0 || !m_clip) return;
     size_t idx = static_cast<size_t>(m_selectedEffectIndex);
     if (idx >= m_clip->effects().effectCount()) return;
     m_copiedEffect = m_clip->effects().effect(idx).cloneWithMasks();
+    m_copiedAudioFx.reset();
     m_copiedMask.reset();
     spdlog::info("EffectControlsPanel: copied effect '{}'",
                  m_copiedEffect->name());
@@ -1602,6 +1691,7 @@ bool EffectControlsPanel::copySelectedMask()
     if (it == list->end()) return false;
     m_copiedMask = *it;
     m_copiedEffect.reset();
+    m_copiedAudioFx.reset();
     if (m_kfTimeline) m_kfTimeline->clearKfClipboard();
     spdlog::info("EffectControlsPanel: copied mask '{}'", it->name);
     return true;
@@ -1668,6 +1758,20 @@ bool EffectControlsPanel::pasteMask()
 
 void EffectControlsPanel::pasteEffect()
 {
+    if (m_copiedAudioFx) {
+        // Audio effects go on audio clips only, appended like Premiere.
+        if (!m_clip || !m_clip->isAudio()) {
+            spdlog::warn("EffectControlsPanel: refusing to paste audio effect onto non-audio clip");
+            return;
+        }
+        auto* ac = dynamic_cast<AudioClip*>(m_clip);
+        if (!ac) return;
+        std::shared_ptr<const audiofx::AudioProcessor> proc(m_copiedAudioFx->clone());
+        m_selectedAudioFxIndex = static_cast<int>(ac->audioFx().size());   // the pasted one
+        commitAudioFxEdit("Paste Audio Effect",
+            [proc](audiofx::FxChain& c) { c.add(proc->clone()); });
+        return;
+    }
     if (!m_copiedEffect || !m_clip || !m_commandStack
         || (m_track && m_track->isLocked())) return;
 
@@ -1841,6 +1945,13 @@ bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)
             return false; // preserve the child's click/toggle action
         }
 
+        for (size_t i = 0; i < m_audioFxHeaders.size(); ++i) {
+            if (m_audioFxHeaders[i] == w) {
+                selectAudioFx(static_cast<int>(i));
+                return false;   // the header's own buttons still act
+            }
+        }
+
         // Find which effect header was clicked
         for (size_t i = 0; i < m_effectHeaders.size(); ++i) {
             // Reset all headers to default style
@@ -1851,6 +1962,7 @@ bool EffectControlsPanel::eventFilter(QObject* watched, QEvent* event)
         for (size_t i = 0; i < m_effectHeaders.size(); ++i) {
             if (m_effectHeaders[i] == w) {
                 m_selectedEffectIndex = static_cast<int>(i);
+                m_selectedAudioFxIndex = -1;
                 m_hasSelectedMask = false;
                 m_selectedMaskEffectId = 0;
                 m_selectedMaskId = 0;

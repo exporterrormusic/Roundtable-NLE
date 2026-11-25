@@ -674,8 +674,7 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
                 m_selectedMaskKeys.clear();
                 m_selectedMaskKeys.insert(key);
             }
-            emit playheadScrubbed(hit.time
-                + (m_clip ? m_clip->timelineIn() : 0));
+            // Clicking a keyframe selects it; the playhead stays put (Premiere).
             beginSelectionDrag(xToTick(event->pos().x()));
             setFocus();
             update();
@@ -683,8 +682,7 @@ void KeyframeTimeline::mousePressEvent(QMouseEvent* event)
         }
         if (hit.track) {
             const int64_t hitTime = hit.time;
-            emit playheadScrubbed(hitTime
-                + (m_clip ? m_clip->timelineIn() : 0));
+            // Clicking a keyframe selects it; the playhead stays put (Premiere).
 
             // Compound rows (Position = X + Y) render ONE diamond per time
             // across every bound track. Expand the selection so clicking
@@ -1027,31 +1025,9 @@ void KeyframeTimeline::mouseMoveEvent(QMouseEvent* event)
             m_selectedMaskKeys.insert({entry.id, newTime});
         }
 
-        // Keep the playhead on the keyframe being dragged. Property edits
-        // immediately after the drag must update this exact tick, not create
-        // a second key at the old or nearest rendered frame.
-        int64_t leaderTime = 0;
-        int64_t leaderDistance = std::numeric_limits<int64_t>::max();
-        bool haveLeader = false;
-        for (const auto& entry : m_dragEntries) {
-            const int64_t distance = std::abs(entry.origTime - m_dragAnchorTick);
-            if (distance < leaderDistance) {
-                leaderDistance = distance;
-                leaderTime = entry.currentTime;
-                haveLeader = true;
-            }
-        }
-        for (const auto& entry : m_maskDragEntries) {
-            const int64_t distance = std::abs(entry.origTime - m_dragAnchorTick);
-            if (distance < leaderDistance) {
-                leaderDistance = distance;
-                leaderTime = entry.currentTime;
-                haveLeader = true;
-            }
-        }
-        if (haveLeader)
-            emit playheadScrubbed(leaderTime
-                + (m_clip ? m_clip->timelineIn() : 0));
+        // The playhead does NOT follow the drag (Premiere). It used to, and
+        // since the playhead is also a snap target, every small move snapped
+        // the key straight back onto it, so keys stuck instead of sliding.
 
         // Emit live during the drag so the Effect Controls spinboxes and
         // the Program Monitor track the new keyframe positions in real

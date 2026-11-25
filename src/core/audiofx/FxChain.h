@@ -36,6 +36,7 @@ enum class ProcessorKind
     DeHum,
     StereoWidth,
     PitchShifter,
+    HologramVoice,   // appended: kinds are saved by value
     Count
 };
 

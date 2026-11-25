@@ -162,6 +162,9 @@ public:
 
     /// Refresh only the effects section (after drag-drop add).
     void refreshEffects();
+    /// Re-read the selected audio clip's effect chain (Effect Controls or a
+    /// drop changed it).
+    void refreshAudioFx();
 
     /// Clear the panel (no clip selected).
     void clearClip();
@@ -256,6 +259,9 @@ public:
 signals:
     /// Emitted when any property changes via the panel.
     void propertyChanged();
+    /// The audio effect chain was edited in this panel (Effect Controls
+    /// re-reads it).
+    void audioFxChanged();
 
     /// Emitted specifically when an audio clip's chosen audio stream changes,
     /// so the timeline can re-decode that clip's waveform (the generic

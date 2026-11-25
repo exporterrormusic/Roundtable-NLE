@@ -306,6 +306,12 @@ void DropController::wireEffectDropSignals()
                 if (ci == SIZE_MAX) return;
                 auto* c = tr->clip(ci);
                 if (m_ws->propertiesPanel()) m_ws->propertiesPanel()->setClip(c, tr);
+                // Effect Controls lists audio effects too. setClip() keeps the
+                // current tree when the clip is unchanged, so re-read the chain.
+                if (auto* ec = m_ws->effectControlsPanel()) {
+                    ec->setClip(c, tr);
+                    ec->refreshAudioFx();
+                }
                 m_ws->selection().clip = c;
                 m_ws->selection().trackIdx = primaryTrackIdx;
                 m_ws->selection().clipIdx = ci;

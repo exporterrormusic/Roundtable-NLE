@@ -2590,6 +2590,29 @@ TEST_F(CompositorTest, GPU_ParityGeometryEffectsMoveThePixelsTheyShould)
     }
 }
 
+TEST_F(CompositorTest, GPU_HologramTintsFadesAndOutlines)
+{
+    if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";
+    ParityRig rig;
+    ASSERT_TRUE(rig.ok);
+    std::vector<uint8_t> out;
+
+    // Glitch off so nothing moves; everything else at defaults.
+    ASSERT_TRUE(rig.run(rt::EffectType::Hologram, {{10, 0.0f}}, out));
+
+    // Inside the square: see-through and turned cyan (blue well above red).
+    const size_t in = ParityRig::at(32, 32);
+    EXPECT_GT(out[in + 3], 80);
+    EXPECT_LT(out[in + 3], 210);
+    EXPECT_GT(out[in + 2], out[in] + 50);
+
+    // Just outside the square's edge: the glowing outline.
+    EXPECT_GT(out[ParityRig::at(50, 32) + 3], 20);
+
+    // Far from the square: still fully transparent.
+    EXPECT_EQ(out[ParityRig::at(2, 2) + 3], 0);
+}
+
 TEST_F(CompositorTest, GPU_ParityDropShadowAndStrobe)
 {
     if (!hasGPU()) GTEST_SKIP() << "No Vulkan device";

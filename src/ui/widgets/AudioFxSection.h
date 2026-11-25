@@ -18,6 +18,10 @@
 #include <QWidget>
 #include <functional>
 
+class QLabel;
+class QPushButton;
+class QVBoxLayout;
+
 namespace rt {
 
 class AudioClip;
@@ -47,6 +51,15 @@ public:
 
     [[nodiscard]] AudioClip* clip() const noexcept { return m_clip; }
 
+    /// Hide the built-in "Audio Effects" title when the host already shows one
+    /// (Effect Controls puts the editor under its own section header).
+    void setTitleVisible(bool visible);
+
+    /// Show only the processor at `index`, as a bare body (no title, Add
+    /// button, enable checkbox or remove button): Effect Controls draws its
+    /// own Premiere-style header for each audio effect. -1 = whole chain.
+    void showOnly(int index);
+
 signals:
     /// Emitted after any edit (add/remove/parameter), for "modified" tracking.
     void changed();
@@ -74,7 +87,10 @@ private:
     const void*   m_owner{nullptr};
     CommandStack* m_commandStack{nullptr};
 
-    class QVBoxLayout* m_chainLayout{nullptr};  ///< holds per-processor groups
+    QVBoxLayout* m_chainLayout{nullptr};  ///< holds per-processor groups
+    QLabel*      m_titleLabel{nullptr};
+    QPushButton* m_addBtn{nullptr};
+    int                m_onlyIndex{-1};   ///< >= 0: single-processor body mode
     bool m_rebuildQueued{false};
 };
 

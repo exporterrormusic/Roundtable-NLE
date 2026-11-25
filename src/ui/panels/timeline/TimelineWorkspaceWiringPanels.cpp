@@ -160,6 +160,27 @@ void TimelineWorkspace::wirePanelFeedbackSignals()
             if (m_destroying.load(std::memory_order_acquire)) return;
             scheduleOverlayRefresh();
         });
+        // Audio effects are edited from both Effect Controls and Properties.
+        // An Effect Controls edit rebuilds the processed audio (the chain is
+        // baked into the playback window, as for a Properties edit) and makes
+        // Properties re-read the chain; a Properties edit makes Effect
+        // Controls re-read it.
+        connect(m_effectControlsPanel, &EffectControlsPanel::audioFxChanged,
+                this, [this]() {
+            if (m_destroying.load(std::memory_order_acquire)) return;
+            if (m_audioPlayback) {
+                m_audioPlayback->invalidateSources();
+                m_audioPlayback->loadSources(/*allowBlockingMisses=*/false);
+            }
+            if (m_propertiesPanel) m_propertiesPanel->refreshAudioFx();
+        });
+        if (m_propertiesPanel) {
+            connect(m_propertiesPanel, &PropertiesPanel::audioFxChanged,
+                    this, [this]() {
+                if (m_destroying.load(std::memory_order_acquire)) return;
+                if (m_effectControlsPanel) m_effectControlsPanel->refreshAudioFx();
+            });
+        }
         connect(m_effectControlsPanel, &EffectControlsPanel::maskChanged,
                 this, [this]() {
             if (m_destroying.load(std::memory_order_acquire)) return;

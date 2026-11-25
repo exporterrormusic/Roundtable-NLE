@@ -8,6 +8,7 @@
 #include "timeline/Timeline.h"
 #include "timeline/Track.h"
 #include "timeline/Clip.h"
+#include "audiofx/FxChain.h"
 #include "timeline/AudioClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/ImageClip.h"
@@ -1185,6 +1186,22 @@ void TimelinePanel::showPasteAttributesDialog()
         }
     }
 
+    // Audio effects (Hologram Voice, EQ, Reverb…): one checkbox per copied
+    // effect, appended after each target audio clip's own. Audio pastes only.
+    std::vector<QCheckBox*> audioFxChecks;
+    const audiofx::FxChain* copiedAudioFx = m_attrClipboard->audioFx.get();
+    if (copiedAudioFx && !copiedAudioFx->empty() && isAudio && !isVideo) {
+        layout->addWidget(new QLabel("Audio Effects:", &dlg));
+        for (size_t ai = 0; ai < copiedAudioFx->size(); ++ai) {
+            auto* chk = new QCheckBox(QString::fromUtf8(audiofx::processorDisplayName(
+                audiofx::processorKindOf(copiedAudioFx->at(ai)))), &dlg);
+            chk->setObjectName(QStringLiteral("pasteAttrAudioFx_%1").arg(ai));
+            chk->setChecked(true);
+            audioFxChecks.push_back(chk);
+            layout->addWidget(chk);
+        }
+    }
+
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     layout->addWidget(buttons);
@@ -1225,6 +1242,8 @@ void TimelinePanel::showPasteAttributesDialog()
             std::vector<uint64_t> oldEffectIds;
             // Clip masks present before the paste; undo removes all others.
             std::vector<uint64_t> oldMaskIds;
+            // Audio clip's effect chain before the paste (null: not audio).
+            std::shared_ptr<const audiofx::FxChain> oldAudioFx;
         };
         std::vector<AttrSnapshot> snapshots;
 
@@ -1238,6 +1257,19 @@ void TimelinePanel::showPasteAttributesDialog()
             for (size_t ei = 0; ei < states.size() && ei < attrs.effects->effectCount(); ++ei)
                 if (states[ei])
                     target->effects().addEffect(attrs.effects->effect(ei).cloneWithMasks());
+        };
+        std::vector<bool> audioFxStates;
+        for (auto* ck : audioFxChecks) audioFxStates.push_back(ck->isChecked());
+        const bool pastesAudioFx = std::find(audioFxStates.begin(), audioFxStates.end(), true)
+                                   != audioFxStates.end();
+        // Append the checked copied audio effects to an audio `target`
+        // (fresh clones each time, so redo after undo works).
+        auto pasteAudioFxInto = [](Clip* target, const AttributesClipboard& attrs,
+                                   const std::vector<bool>& states) {
+            auto* ac = dynamic_cast<AudioClip*>(target);
+            if (!ac || !attrs.audioFx) return;
+            for (size_t ai = 0; ai < states.size() && ai < attrs.audioFx->size(); ++ai)
+                if (states[ai]) ac->audioFx().add(attrs.audioFx->at(ai).clone());
         };
         // Opacity checked on a visual paste → append copies of the source's
         // Opacity masks (fresh ids, so pasting twice never shares an id).
@@ -1274,6 +1306,8 @@ void TimelinePanel::showPasteAttributesDialog()
                 snap.oldEffectIds.push_back(target->effects().effect(ei).id());
             for (const auto& m : target->masks())
                 snap.oldMaskIds.push_back(m.maskId);
+            if (auto* audio = dynamic_cast<AudioClip*>(target))
+                snap.oldAudioFx = std::make_shared<const audiofx::FxChain>(audio->audioFx().clone());
 
             if (isAudio && !isVideo) {
                 if (auto* ac = dynamic_cast<AudioClip*>(target)) {
@@ -1325,11 +1359,14 @@ void TimelinePanel::showPasteAttributesDialog()
             if (!m_commandStack) {
                 pasteEffectsInto(target, pastedAttributes, effectStates);
                 pasteMasksInto(target, pastedAttributes, pasteOpacityMasks);
+                pasteAudioFxInto(target, pastedAttributes, audioFxStates);
             }
         }
         if (!m_commandStack) {
             onScrollChanged();
             emit contentChanged();
+            // Clip audio effects are baked into the playback buffers.
+            if (pastesAudioFx) emit trackAudioFxChanged();
         }
 
         // Wrap the entire operation in a LambdaCommand for undo/redo.
@@ -1344,7 +1381,8 @@ void TimelinePanel::showPasteAttributesDialog()
                     for (auto* ck : checks) states.push_back(ck->isChecked());
                     return states;
                 }(), isAudio, isVideo, effectStates, pasteEffectsInto,
-                 pasteOpacityMasks, pasteMasksInto]() {
+                 pasteOpacityMasks, pasteMasksInto, audioFxStates, pasteAudioFxInto,
+                 pastesAudioFx]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
                     // Redo: re-apply the values captured by this command.
                     if (!m_timeline) return;
@@ -1380,11 +1418,14 @@ void TimelinePanel::showPasteAttributesDialog()
                         }
                         pasteEffectsInto(target, pastedAttributes, effectStates);
                         pasteMasksInto(target, pastedAttributes, pasteOpacityMasks);
+                        pasteAudioFxInto(target, pastedAttributes, audioFxStates);
                     }
                     onScrollChanged();
                     emit contentChanged();
+                    // Clip audio effects are baked into the playback buffers.
+                    if (pastesAudioFx) emit trackAudioFxChanged();
                 },
-                [this, snapshots, isAudio, isVideo]() {
+                [this, snapshots, isAudio, isVideo, pastesAudioFx]() {
                     if (m_destroying.load(std::memory_order_acquire)) return;
                     // Undo: restore old values
                     if (!m_timeline) return;
@@ -1425,9 +1466,13 @@ void TimelinePanel::showPasteAttributesDialog()
                                                  snap.oldMaskIds.end(), m.maskId)
                                     == snap.oldMaskIds.end();
                             }), masks.end());
+                        if (auto* audio = dynamic_cast<AudioClip*>(target);
+                            audio && snap.oldAudioFx)
+                            audio->audioFx() = snap.oldAudioFx->clone();
                     }
                     onScrollChanged();
                     emit contentChanged();
+                    if (pastesAudioFx) emit trackAudioFxChanged();
                 }));
         }
         pasteEdit.commit();
@@ -1471,6 +1516,8 @@ void TimelinePanel::copyAttributesFromSelection()
         ac.effects = std::shared_ptr<const EffectStack>(clip->effects().clone());
     for (const auto& mask : clip->masks())
         if (!mask.unassigned) ac.opacityMasks.push_back(mask);
+    if (auto* audio = dynamic_cast<AudioClip*>(clip); audio && !audio->audioFx().empty())
+        ac.audioFx = std::make_shared<const audiofx::FxChain>(audio->audioFx().clone());
     m_attrClipboard = std::move(ac);
 }
 

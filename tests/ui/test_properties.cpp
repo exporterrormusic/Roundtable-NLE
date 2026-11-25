@@ -25,6 +25,8 @@
 #include "timeline/SpineClip.h"
 #include "timeline/VideoClip.h"
 #include "timeline/AudioClip.h"
+#include "audiofx/FxChain.h"
+#include "audiofx/ParamProcessor.h"
 #include "timeline/GraphicClip.h"
 #include "timeline/TitleClip.h"
 #include "timeline/Timeline.h"
@@ -1320,6 +1322,113 @@ TEST(PropertiesPanel, BindAudioClip)
     EXPECT_DOUBLE_EQ(panel.fadeOutSpin()->value(), 9600.0);
 }
 
+namespace {
+/// Live audio-effect headers in Effect Controls, in order, by title.
+QStringList audioFxHeaderTitles(QWidget& panel)
+{
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QStringList out;
+    for (auto* h : panel.findChildren<QWidget*>(QStringLiteral("audioFxHeader")))
+        out << h->property("audioFxTitle").toString();
+    return out;
+}
+QWidget* audioFxHeader(QWidget& panel, int index)
+{
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const auto all = panel.findChildren<QWidget*>(QStringLiteral("audioFxHeader"));
+    return index < all.size() ? all[index] : nullptr;
+}
+} // namespace
+
+// Premiere: each audio effect is its own entry in Effect Controls (as well as
+// in Properties). A chain change made elsewhere shows after refreshAudioFx().
+TEST(EffectControlsPanel, ListsEachAudioEffectUnderItsOwnHeader)
+{
+    rt::Track track(rt::TrackType::Audio, "A1");
+    auto& clip = addToTrack<rt::AudioClip>(track);
+    clip.audioFx().add(rt::audiofx::ProcessorKind::HologramVoice);
+
+    rt::EffectControlsPanel panel;
+    panel.setClip(&clip, &track);
+    EXPECT_EQ(audioFxHeaderTitles(panel), QStringList{QStringLiteral("Hologram Voice")});
+    EXPECT_EQ(panel.findChildren<QWidget*>(QStringLiteral("audioFxBody")).size(), 1);
+
+    // Added from somewhere else (a drop, the Properties panel).
+    clip.audioFx().add(rt::audiofx::ProcessorKind::Reverb);
+    panel.refreshAudioFx();
+    EXPECT_EQ(audioFxHeaderTitles(panel),
+              (QStringList{QStringLiteral("Hologram Voice"), QStringLiteral("Studio Reverb")}));
+
+    // Video clips have no audio effect chain to show.
+    rt::Track vtrack(rt::TrackType::Video, "V1");
+    auto& video = addToTrack<rt::VideoClip>(vtrack);
+    panel.setClip(&video, &vtrack);
+    EXPECT_TRUE(audioFxHeaderTitles(panel).isEmpty());
+}
+
+// Premiere: click an audio effect's header to select it, Ctrl+C, select
+// another audio clip, Ctrl+V — the effect arrives with its settings.
+TEST(EffectControlsPanel, AudioEffectSelectsCopiesPastesTogglesAndDeletes)
+{
+    rt::CommandStack stack;
+    rt::Track track(rt::TrackType::Audio, "A1");
+    auto& source = addToTrack<rt::AudioClip>(track);
+    auto& target = addToTrack<rt::AudioClip>(track);
+    target.setTimelineIn(rt::kTicksPerSecond * 10);
+    auto* hv = static_cast<rt::audiofx::ParamProcessor*>(
+        source.audioFx().add(rt::audiofx::ProcessorKind::HologramVoice));
+    hv->setParam(0, 35.0f);   // Mix
+
+    rt::EffectControlsPanel panel;
+    panel.setCommandStack(&stack);
+    panel.resize(500, 700);
+    panel.show();
+    panel.setClip(&source, &track);
+    QApplication::processEvents();
+
+    QWidget* header = audioFxHeader(panel, 0);
+    ASSERT_NE(header, nullptr);
+    QTest::mouseClick(header, Qt::LeftButton, Qt::NoModifier, QPoint(120, 14));
+    EXPECT_TRUE(panel.hasSelectedEffect());
+    EXPECT_EQ(panel.selectedAudioFxIndex(), 0);
+
+    panel.copySelectedEffect();
+    EXPECT_TRUE(panel.hasCopiedEffect());
+
+    panel.setClip(&target, &track);
+    panel.pasteEffect();
+    ASSERT_EQ(target.audioFx().size(), 1u);
+    EXPECT_EQ(rt::audiofx::processorKindOf(target.audioFx().at(0)),
+              rt::audiofx::ProcessorKind::HologramVoice);
+    EXPECT_FLOAT_EQ(static_cast<const rt::audiofx::ParamProcessor&>(target.audioFx().at(0)).param(0),
+                    35.0f);
+    EXPECT_EQ(audioFxHeaderTitles(panel), QStringList{QStringLiteral("Hologram Voice")});
+    EXPECT_EQ(panel.selectedAudioFxIndex(), 0);   // the pasted effect is selected
+    ASSERT_TRUE(stack.undo());
+    EXPECT_TRUE(target.audioFx().empty());
+    ASSERT_TRUE(stack.redo());
+    ASSERT_EQ(target.audioFx().size(), 1u);
+
+    // A copied audio effect never lands on a video clip.
+    rt::Track vtrack(rt::TrackType::Video, "V1");
+    auto& video = addToTrack<rt::VideoClip>(vtrack);
+    panel.setClip(&video, &vtrack);
+    panel.pasteEffect();
+    EXPECT_EQ(video.effects().effectCount(), 0u);
+
+    // fx toggle turns it off; Delete removes it.
+    panel.setClip(&target, &track);
+    auto* fxToggle = audioFxHeader(panel, 0)->findChild<QToolButton*>(QStringLiteral("audioFxEnable"));
+    ASSERT_NE(fxToggle, nullptr);
+    fxToggle->click();
+    EXPECT_FALSE(target.audioFx().at(0).isEnabled());
+
+    QTest::mouseClick(audioFxHeader(panel, 0), Qt::LeftButton, Qt::NoModifier, QPoint(120, 14));
+    QTest::keyClick(&panel, Qt::Key_Delete);
+    EXPECT_TRUE(target.audioFx().empty());
+    EXPECT_FALSE(panel.hasSelectedEffect());
+}
+
 TEST(PropertiesPanel, AudioFadeChanges)
 {
     rt::PropertiesPanel panel;
@@ -1422,6 +1531,72 @@ TEST(TimelinePanel, PasteAudioAttributesCopiesTracksAndUndoRestoresThem)
     EXPECT_FLOAT_EQ(targetPtr->volume().keyframe(0).value, 0.25f);
     EXPECT_FLOAT_EQ(targetPtr->volume().keyframe(1).value, 0.75f);
     EXPECT_FLOAT_EQ(targetPtr->pan().defaultValue(), -0.4f);
+}
+
+// Premiere: Paste Attributes lists the copied clip's audio effects, one
+// checkbox each; the checked ones are appended to the target. Undo restores
+// the target's own chain.
+TEST(TimelinePanel, PasteAttributesOffersAndPastesAudioEffects)
+{
+    rt::Timeline timeline;
+    rt::Track* audioTrack = timeline.addAudioTrack("A1");
+
+    auto source = std::make_unique<rt::AudioClip>();
+    source->setDuration(48000);
+    auto* hv = static_cast<rt::audiofx::ParamProcessor*>(
+        source->audioFx().add(rt::audiofx::ProcessorKind::HologramVoice));
+    hv->setParam(0, 40.0f);
+    source->audioFx().add(rt::audiofx::ProcessorKind::Reverb);
+    const uint64_t sourceId = source->id();
+    ASSERT_NE(audioTrack->addClip(std::move(source)), nullptr);
+
+    auto target = std::make_unique<rt::AudioClip>();
+    target->setTimelineIn(48000);
+    target->setDuration(48000);
+    target->audioFx().add(rt::audiofx::ProcessorKind::Delay);   // its own
+    rt::AudioClip* targetPtr = target.get();
+    const uint64_t targetId = target->id();
+    ASSERT_NE(audioTrack->addClip(std::move(target)), nullptr);
+
+    rt::CommandStack stack;
+    rt::TimelinePanel panel;
+    panel.setCommandStack(&stack);
+    panel.setTimeline(&timeline);
+    size_t ti = SIZE_MAX;
+    for (size_t i = 0; i < timeline.trackCount(); ++i)
+        if (timeline.track(i)->findClipIndexById(sourceId) < timeline.track(i)->clipCount()) ti = i;
+    ASSERT_NE(ti, SIZE_MAX);
+
+    panel.selection().selectClip({ti, sourceId});
+    panel.copyAttributesFromSelection();
+    panel.selection().selectClip({ti, targetId});
+
+    QStringList offered;
+    QTimer::singleShot(0, [&offered]() {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        for (int i = 0;; ++i) {
+            auto* chk = dialog->findChild<QCheckBox*>(QStringLiteral("pasteAttrAudioFx_%1").arg(i));
+            if (!chk) break;
+            offered << chk->text();
+            if (i == 1) chk->setChecked(false);   // leave the Reverb out
+        }
+        dialog->accept();
+    });
+    panel.showPasteAttributesDialog();
+    EXPECT_EQ(offered, (QStringList{QStringLiteral("Hologram Voice"), QStringLiteral("Studio Reverb")}));
+
+    // Its own Delay first, then the pasted Hologram Voice with its settings.
+    ASSERT_EQ(targetPtr->audioFx().size(), 2u);
+    EXPECT_EQ(rt::audiofx::processorKindOf(targetPtr->audioFx().at(0)), rt::audiofx::ProcessorKind::Delay);
+    EXPECT_EQ(rt::audiofx::processorKindOf(targetPtr->audioFx().at(1)), rt::audiofx::ProcessorKind::HologramVoice);
+    EXPECT_FLOAT_EQ(static_cast<const rt::audiofx::ParamProcessor&>(targetPtr->audioFx().at(1)).param(0), 40.0f);
+
+    ASSERT_TRUE(stack.undo());
+    ASSERT_EQ(targetPtr->audioFx().size(), 1u);
+    EXPECT_EQ(rt::audiofx::processorKindOf(targetPtr->audioFx().at(0)), rt::audiofx::ProcessorKind::Delay);
+    ASSERT_TRUE(stack.redo());
+    EXPECT_EQ(targetPtr->audioFx().size(), 2u);
 }
 
 // Paste Attributes lists the copied clip's effects (filters) one per
@@ -3251,7 +3426,9 @@ TEST(EffectControlsPanel, MaskScalarTimelineUndoSurvivesMaskVectorReallocation)
     EXPECT_EQ(maskIt->feather.keyframe(0).time, 20000);
 }
 
-TEST(EffectControlsPanel, DraggingOntoKeyframeMergesAndPlayheadFollowsExactTick)
+// Premiere: clicking or dragging a keyframe never moves the playhead. (It
+// used to follow the drag; the playhead is a snap target, so keys stuck.)
+TEST(EffectControlsPanel, DraggingOntoKeyframeMergesAndPlayheadStaysPut)
 {
     rt::VideoClip clip;
     clip.setTimelineIn(5000);
@@ -3276,8 +3453,7 @@ TEST(EffectControlsPanel, DraggingOntoKeyframeMergesAndPlayheadFollowsExactTick)
     QSignalSpy seekSpy(&timeline, &rt::KeyframeTimeline::playheadScrubbed);
     QTest::mousePress(&timeline, Qt::LeftButton, Qt::NoModifier,
                       QPoint(100, 114));
-    ASSERT_GE(seekSpy.count(), 1);
-    EXPECT_EQ(seekSpy.last().at(0).toLongLong(), 15000);
+    QTest::mouseMove(&timeline, QPoint(150, 114));
     QTest::mouseMove(&timeline, QPoint(200, 114));
     QTest::mouseRelease(&timeline, Qt::LeftButton, Qt::NoModifier,
                         QPoint(200, 114));
@@ -3285,7 +3461,7 @@ TEST(EffectControlsPanel, DraggingOntoKeyframeMergesAndPlayheadFollowsExactTick)
     ASSERT_EQ(clip.positionX().keyframeCount(), 1u);
     EXPECT_EQ(clip.positionX().keyframe(0).time, 20000);
     EXPECT_FLOAT_EQ(clip.positionX().keyframe(0).value, 10.0f);
-    EXPECT_EQ(seekSpy.last().at(0).toLongLong(), 25000);
+    EXPECT_EQ(seekSpy.count(), 0);
 
     ASSERT_TRUE(stack.undo());
     ASSERT_EQ(clip.positionX().keyframeCount(), 2u);

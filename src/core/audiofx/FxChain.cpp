@@ -4,6 +4,7 @@
 #include "audiofx/Distortion.h"
 #include "audiofx/Dynamics.h"
 #include "audiofx/ParametricEQ.h"
+#include "audiofx/HologramVoice.h"
 #include "audiofx/PitchShifter.h"
 #include "audiofx/RepairFx.h"
 #include "audiofx/Reverb.h"
@@ -26,6 +27,7 @@ const char* processorKindName(ProcessorKind k) noexcept
     case ProcessorKind::DeHum:        return "DeHum";
     case ProcessorKind::StereoWidth:  return "StereoWidth";
     case ProcessorKind::PitchShifter: return "PitchShifter";
+    case ProcessorKind::HologramVoice: return "HologramVoice";
     case ProcessorKind::Count:        break;
     }
     return "Unknown";
@@ -43,6 +45,7 @@ const char* processorDisplayName(ProcessorKind k) noexcept
     case ProcessorKind::DeHum:        return "DeHum";
     case ProcessorKind::StereoWidth:  return "Stereo Width";
     case ProcessorKind::PitchShifter: return "Pitch Shifter";
+    case ProcessorKind::HologramVoice: return "Hologram Voice";
     case ProcessorKind::Count:        break;
     }
     return "Unknown";
@@ -71,6 +74,7 @@ std::unique_ptr<AudioProcessor> createProcessor(ProcessorKind k)
     case ProcessorKind::DeHum:        return std::make_unique<DeHum>();
     case ProcessorKind::StereoWidth:  return std::make_unique<StereoWidth>();
     case ProcessorKind::PitchShifter: return std::make_unique<PitchShifter>();
+    case ProcessorKind::HologramVoice: return std::make_unique<HologramVoice>();
     case ProcessorKind::Count:        break;
     }
     return nullptr;

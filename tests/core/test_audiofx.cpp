@@ -11,6 +11,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <random>
 #include <string>
@@ -24,6 +27,7 @@
 #include "audiofx/AudioProcessor.h"
 #include "audiofx/Delay.h"
 #include "audiofx/Distortion.h"
+#include "audiofx/HologramVoice.h"
 #include "audiofx/Reverb.h"
 #include "audiofx/Biquad.h"
 #include "audiofx/Dynamics.h"
@@ -1014,6 +1018,165 @@ TEST(AudioFxStress, ChainResetsAProcessorThatOutputsNan)
     chain.process(next.data(), 256);
     EXPECT_EQ(next, expected);
     EXPECT_EQ(nonFiniteResetCount(), before + 1);
+}
+
+// ── Hologram Voice ──────────────────────────────────────────────────────────
+
+/// A buzzy voice-like tone: 220 Hz with 20 harmonics, interleaved stereo.
+std::vector<float> voiceTone(int frames)
+{
+    std::vector<float> buf(static_cast<size_t>(frames) * 2);
+    for (int f = 0; f < frames; ++f) {
+        float v = 0.0f;
+        for (int k = 1; k <= 20; ++k)
+            v += std::sin(2.0f * 3.14159265f * 220.0f * k * f / static_cast<float>(kSR)) / k;
+        buf[static_cast<size_t>(f) * 2] = buf[static_cast<size_t>(f) * 2 + 1] = 0.2f * v;
+    }
+    return buf;
+}
+
+TEST(HologramVoice, DefaultsAreTheSinMatch)
+{
+    HologramVoice h;
+    EXPECT_FLOAT_EQ(h.param(HologramVoice::Mix), 50.0f);
+    EXPECT_FLOAT_EQ(h.param(HologramVoice::Bands), 28.0f);
+    EXPECT_FLOAT_EQ(h.param(HologramVoice::Smoothing), 120.0f);
+    EXPECT_FLOAT_EQ(h.param(HologramVoice::Brightness), 0.0f);
+    EXPECT_FLOAT_EQ(h.param(HologramVoice::Output), 0.0f);
+    EXPECT_TRUE(h.isActive());
+    EXPECT_STREQ(processorDisplayName(ProcessorKind::HologramVoice), "Hologram Voice");
+}
+
+TEST(HologramVoice, ZeroMixIsTheCleanVoice)
+{
+    HologramVoice h;
+    h.setParam(HologramVoice::Mix, 0.0f);
+    h.prepare(kSR, 2);
+    EXPECT_FALSE(h.isActive());
+    auto buf = voiceTone(4800);
+    const auto in = buf;
+    h.process(buf.data(), 4800);
+    for (size_t i = 0; i < buf.size(); ++i) ASSERT_FLOAT_EQ(buf[i], in[i]) << i;
+}
+
+// At the default 50 % the output is half voice, half an uncorrelated noise
+// layer at the same level: loudness is kept and the correlation with the
+// clean voice is about 1/sqrt(2).
+TEST(HologramVoice, EqualMixKeepsLoudnessAndAddsAnUncorrelatedLayer)
+{
+    HologramVoice h;
+    h.prepare(kSR, 2);
+    const int frames = static_cast<int>(kSR) * 2;
+    auto buf = voiceTone(frames);
+    const auto in = buf;
+    h.process(buf.data(), frames);
+    ASSERT_TRUE(allFinite(buf));
+
+    double si = 0, so = 0, sio = 0;
+    for (size_t i = buf.size() / 2; i < buf.size(); i += 2) {   // last second, left
+        si += in[i] * in[i]; so += buf[i] * buf[i]; sio += in[i] * buf[i];
+    }
+    const double levelDb = 10.0 * std::log10(so / si);
+    EXPECT_NEAR(levelDb, 0.0, 2.0);
+    const double corr = sio / std::sqrt(si * so);
+    EXPECT_GT(corr, 0.55);
+    EXPECT_LT(corr, 0.85);
+}
+
+// The layer must stay where the voice's energy is. Leaky bands let a strong
+// low tone fill every band, and the "converter" layer became broadband noise
+// that drowned the voice.
+TEST(HologramVoice, LayerStaysInTheVoicesBands)
+{
+    HologramVoice h;
+    h.setParam(HologramVoice::Mix, 100.0f);   // layer only
+    h.prepare(kSR, 2);
+    const int frames = static_cast<int>(kSR);
+    auto buf = sine(200.0f, 0.5f, frames, 2);
+    h.process(buf.data(), frames);
+
+    Biquad hp1, hp2;
+    hp1.setCoefficients(Biquad::Type::HighPass, kSR, 2000.0, 0.7071, 0.0);
+    hp2 = hp1;
+    double all = 0.0, high = 0.0;
+    for (int f = frames / 2; f < frames; ++f) {
+        const float v = buf[static_cast<size_t>(f) * 2];
+        const float hv = hp2.processSample(hp1.processSample(v));
+        all += v * v; high += hv * hv;
+    }
+    EXPECT_LT(10.0 * std::log10(high / all), -25.0);
+}
+
+// The bands must be the reference renders' filters exactly: 4th-order
+// Butterworth band-passes (scipy.signal.butter(4, [lo, hi], "bandpass")).
+// A Butterworth band-pass has the closed-form gain
+//   |H|^2 = 1 / (1 + ((W^2 - W0^2) / (W * BW))^(2N)),  W = 2 fs tan(pi f / fs)
+// so the designed sections are checked against it across and beyond the band.
+TEST(HologramVoice, BandFiltersAreFourthOrderButterworth)
+{
+    constexpr double kPi = 3.14159265358979323846;
+    for (auto [lo, hi] : {std::pair{90.0, 108.0}, std::pair{2000.0, 2400.0},
+                          std::pair{12000.0, 15000.0}}) {
+        const auto secs = HologramVoice::designBandPass(lo, hi, kSR);
+        const double wl = 2 * kSR * std::tan(kPi * lo / kSR);
+        const double wh = 2 * kSR * std::tan(kPi * hi / kSR);
+        const double bw = wh - wl, w0sq = wl * wh;
+        for (double f : {lo * 0.5, lo * 0.9, lo, std::sqrt(lo * hi), hi, hi * 1.1, hi * 2.0}) {
+            if (f >= kSR / 2) continue;
+            const std::complex<double> zi = std::exp(std::complex<double>(0, -2 * kPi * f / kSR));
+            std::complex<double> h(1, 0);
+            for (const auto& s : secs)
+                h *= (s.b0 + s.b1 * zi + s.b2 * zi * zi) / (1.0 + s.a1 * zi + s.a2 * zi * zi);
+            const double w = 2 * kSR * std::tan(kPi * f / kSR);
+            const double expected = 1.0 / std::sqrt(1.0 + std::pow((w * w - w0sq) / (w * bw), 8.0));
+            EXPECT_NEAR(20 * std::log10(std::abs(h)), 20 * std::log10(expected), 0.01)
+                << lo << "-" << hi << " Hz band at " << f << " Hz";
+        }
+    }
+}
+
+// Manual tool, skipped in normal runs: renders a mono raw float32 48 kHz file
+// through the effect at its defaults (as stereo, like a clip in the app), so
+// the real C++ output can be measured against the reference renders.
+//   ROUNDTABLE_HV_IN=in.f32 ROUNDTABLE_HV_OUT=out.f32 test_audiofx
+//     --gtest_filter=HologramVoice.RenderRawFileFromEnvironment
+TEST(HologramVoice, RenderRawFileFromEnvironment)
+{
+    const char* inPath = std::getenv("ROUNDTABLE_HV_IN");
+    const char* outPath = std::getenv("ROUNDTABLE_HV_OUT");
+    if (!inPath || !outPath) GTEST_SKIP() << "set ROUNDTABLE_HV_IN / ROUNDTABLE_HV_OUT";
+
+    std::FILE* in = std::fopen(inPath, "rb");
+    ASSERT_NE(in, nullptr);
+    std::vector<float> mono;
+    float v;
+    while (std::fread(&v, sizeof(float), 1, in) == 1) mono.push_back(v);
+    std::fclose(in);
+
+    HologramVoice h;
+    h.prepare(kSR, 2);
+    std::vector<float> st(mono.size() * 2);
+    for (size_t i = 0; i < mono.size(); ++i) st[2 * i] = st[2 * i + 1] = mono[i];
+    for (size_t off = 0; off < mono.size(); off += 4096) {
+        const int n = static_cast<int>(std::min<size_t>(4096, mono.size() - off));
+        h.process(st.data() + off * 2, n);
+    }
+    std::FILE* out = std::fopen(outPath, "wb");
+    ASSERT_NE(out, nullptr);
+    for (size_t i = 0; i < mono.size(); ++i) std::fwrite(&st[2 * i], sizeof(float), 1, out);
+    std::fclose(out);
+}
+
+TEST(HologramVoice, RendersAreRepeatableForPreviewAndExport)
+{
+    auto render = [] {
+        HologramVoice h;
+        h.prepare(kSR, 2);
+        auto buf = voiceTone(9600);
+        h.process(buf.data(), 9600);
+        return buf;
+    };
+    EXPECT_EQ(render(), render());
 }
 
 

@@ -39,6 +39,8 @@ class QImage;
 
 namespace rt {
 
+namespace audiofx { class FxChain; }
+
 struct TimelineDragClip;
 
 class Timeline;
@@ -674,6 +676,9 @@ private:
         /// The source clip's Opacity masks (assigned ones only). Pasted with
         /// the Opacity attribute, appended to the target's masks.
         std::vector<OpacityMask> opacityMasks;
+        /// The source audio clip's audio effects (Hologram Voice, EQ…),
+        /// frozen at copy time. Null or empty = nothing to paste.
+        std::shared_ptr<const audiofx::FxChain> audioFx;
     };
     std::optional<AttributesClipboard> m_attrClipboard;
 

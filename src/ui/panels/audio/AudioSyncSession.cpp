@@ -355,6 +355,12 @@ void AudioSync::updateExistingSessionScript(const std::string& sessionKey,
                 // Match runAutoSync's scriptSegment format ("CHAR: dialogue")
                 // so a re-synced clip looks identical to a freshly synced one.
                 clip.scriptSegment = newLine.character + ": " + newLine.dialogue;
+                // The line's wording changed (the unchanged case took the
+                // fast path above), so the recorded audio no longer says
+                // what the script says. Drop a confirmed match to tentative
+                // so it shows as needing review and stays out of export.
+                if (bestScore < 1.0f && clip.matchState == 2)
+                    clip.matchState = 1;
             } else {
                 // Could not remap — mark as unmatched
                 clip.scriptLineNumber = -1;

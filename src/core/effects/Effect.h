@@ -95,6 +95,8 @@ enum class EffectType : uint8_t
     DropShadow,
     PosterizeTime,
     Echo,
+    // Cyan see-through hologram look. Appended to keep serialized ids stable.
+    Hologram,
     Count
 };
 
